@@ -50,6 +50,7 @@ fn main() {
             "-callgraph" => compiler.enable_callgraph(),
             "-O" | "-opt" => compiler.enable_opt(),
             "-mir" => compiler.enable_show_mir(),
+            "-lifetime" => compiler.enable_lifetime(),
             "-adt" => {}
             "-z3" => {}
             "-meta" => {}
