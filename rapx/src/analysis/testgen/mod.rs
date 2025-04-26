@@ -57,7 +57,9 @@ impl<'tcx> Testgen<'tcx> {
         let mut rng = rand::rng();
         let mut rulf = rulf::Rulf::new();
         rulf.rulf_algorithm(self.tcx, &mut _api_dep_graph, 3, &mut cx, &mut rng);
+
         let max_coverage = rulf.max_coverage(&mut _api_dep_graph, self.tcx);
+
         match max_coverage {
             Some(max) => {
                 rap_info!("Max coverage: {:?}", max);
