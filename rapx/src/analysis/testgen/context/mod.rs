@@ -1,6 +1,6 @@
 mod stmt;
 
-use super::utils;
+use super::utils::{self, is_fuzzable_ty};
 
 use crate::rap_debug;
 use crate::rustc_infer::infer::TyCtxtInferExt;
@@ -12,6 +12,7 @@ use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt;
 use rustc_type_ir::RegionKind::ReErased;
 use std::{
     collections::{HashMap, HashSet},
+    env::var,
     rc::Rc,
 };
 pub use stmt::{ApiCall, Stmt, StmtKind, Var, DUMMY_INPUT_VAR};
@@ -86,7 +87,9 @@ pub trait Context<'tcx>: HoldTyCtxt<'tcx> {
             if arg == DUMMY_INPUT_VAR {
                 let var = self.add_input_stmt(input_ty);
                 call.args[idx] = var;
-                self.remove_var_from_available(var);
+                if !utils::is_ty_impl_copy(input_ty, tcx) {
+                    self.remove_var_from_available(var);
+                }
             }
         }
         let var = self.mk_var(output_ty, false);
@@ -95,7 +98,7 @@ pub trait Context<'tcx>: HoldTyCtxt<'tcx> {
         var
     }
 
-    // no need to check input, because all inputs exist, all inputs are not primitive already remove from available set
+    /// no need to check input, because all inputs exist, all inputs that is not primitive already be removed from available set
     fn add_call_stmt_all_exist(&mut self, mut call: ApiCall) -> Var {
         let tcx = self.tcx();
         let fn_sig = utils::fn_sig_without_binders(call.fn_did, tcx);
@@ -106,7 +109,9 @@ pub trait Context<'tcx>: HoldTyCtxt<'tcx> {
             if arg == DUMMY_INPUT_VAR {
                 let var = self.add_input_stmt(input_ty);
                 call.args[idx] = var;
-                self.remove_var_from_available(var);
+                if !utils::is_ty_impl_copy(input_ty, tcx) {
+                    self.remove_var_from_available(var);
+                }
             }
         }
         let var = self.mk_var(output_ty, false);
@@ -173,6 +178,8 @@ pub struct ContextBase<'tcx> {
     available: HashSet<Var>,
     var_ty: HashMap<Var, Ty<'tcx>>,
     var_is_mut: HashMap<Var, ty::Mutability>,
+    var_references: HashMap<Var, HashSet<Var>>, // records: T -> {&T, &mut T}
+    provider_cache: HashMap<Ty<'tcx>, Vec<Var>>, // records: T -> {var1, var2, ...}
     tcx: TyCtxt<'tcx>,
 }
 
@@ -189,12 +196,65 @@ impl<'tcx> ContextBase<'tcx> {
             available: HashSet::new(),
             var_ty: HashMap::new(),
             var_is_mut: HashMap::new(),
+            var_references: HashMap::new(),
+            provider_cache: HashMap::new(),
             tcx,
         }
     }
 
     pub fn type_of(&self, var: Var) -> Ty<'tcx> {
-        *self.var_ty.get(&var).expect("no type for var")
+        *self.var_ty.get(&var).expect("no type for var: {var:?}")
+    }
+
+    fn update_provider_cache(&mut self, var: Var, ty: Ty<'tcx>, add: bool) {
+        if add {
+            self.provider_cache
+                .entry(ty)
+                .or_insert_with(Vec::new)
+                .push(var);
+        } else {
+            if let Some(providers) = self.provider_cache.get_mut(&ty) {
+                providers.retain(|v| *v != var);
+            }
+        }
+    }
+
+    /// add mut-version when need to add reference
+    pub fn all_possible_providers_mut(&mut self, ty: Ty<'tcx>) -> Vec<Var> {
+        let mut ret = Vec::new();
+        if is_fuzzable_ty(ty, self.tcx()) {
+            ret.push(DUMMY_INPUT_VAR);
+        }
+        if let ty::Ref(_, inner_ty, mutability) = ty.kind() {
+            // find all possible providers for ty
+            if let Some(providers) = self.provider_cache.get(&ty) {
+                ret.extend(providers.iter().copied());
+            }
+            // find T values that can be converted to &T or &mut T
+            if ret.is_empty() {
+                let produce_ref_vars: Vec<Var> = self
+                    .all_possible_providers_mut(*inner_ty)
+                    .iter()
+                    .filter(|v| {
+                        let inner_mutability = self.var_mutability(**v);
+                        if inner_mutability == *mutability {
+                            return true;
+                        }
+                        false
+                    })
+                    .copied()
+                    .collect();
+                if !produce_ref_vars.is_empty() {
+                    let ref_var = self.add_ref_stmt(produce_ref_vars[0], *mutability);
+                    ret.push(ref_var);
+                }
+            }
+        } else {
+            if let Some(providers) = self.provider_cache.get(&ty) {
+                ret.extend(providers.iter().copied());
+            }
+        }
+        ret
     }
 }
 
@@ -223,14 +283,44 @@ impl<'tcx> Context<'tcx> for ContextBase<'tcx> {
         let next_var = Var(self.var_ty.len(), is_input);
         self.var_ty.insert(next_var, ty);
         self.available.insert(next_var);
+        self.update_provider_cache(next_var, ty, true);
         next_var
     }
 
+    /// refactor this function to modify var_references
     fn remove_var(&mut self, var: Var) {
         self.available.remove(&var);
+        if let Some(ty) = self.var_ty.get(&var) {
+            self.update_provider_cache(var, *ty, false);
+        }
+        // remove all references to this var
+        if let Some(refs) = self.var_references.remove(&var) {
+            for ref_var in refs {
+                self.remove_var(ref_var);
+            }
+        }
     }
 
     fn type_of(&self, var: Var) -> Ty<'tcx> {
         self.var_ty[&var]
+    }
+
+    /// refactor this function to use var_references
+    fn add_ref_stmt(&mut self, var: Var, mutability: ty::Mutability) -> Var {
+        self.lift_mutability(var, mutability);
+        let ref_ty = ty::Ty::new_ref(
+            self.tcx(),
+            self.ref_region(var),
+            self.type_of(var),
+            mutability,
+        );
+
+        let new_var = self.mk_var(ref_ty, false);
+        self.var_references
+            .entry(var)
+            .or_insert_with(HashSet::new)
+            .insert(new_var);
+        self.add_stmt(Stmt::ref_(new_var, var, mutability));
+        new_var
     }
 }

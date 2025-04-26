@@ -3,7 +3,7 @@
 /// Once the analysis stabilizes, this marker should be removed.
 
 #[allow(unused)]
-mod graph;
+pub mod graph;
 #[allow(unused)]
 mod visitor;
 

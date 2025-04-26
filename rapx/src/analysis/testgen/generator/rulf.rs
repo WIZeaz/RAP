@@ -1,4 +1,5 @@
 use crate::analysis::core::api_dep;
+use crate::analysis::testgen::api_dep::graph::TyWrapper;
 use crate::analysis::testgen::api_dep::DepEdge;
 use crate::analysis::testgen::context::DUMMY_INPUT_VAR;
 use crate::analysis::testgen::context::{ApiCall, Context};
@@ -11,11 +12,9 @@ use petgraph::visit::EdgeRef;
 use petgraph::visit::IntoNodeReferences;
 use petgraph::Direction;
 use rand::prelude::IndexedRandom;
-use rand::rng;
-use rand::seq::SliceRandom;
 use rand::Rng;
 use rustc_hir::def_id::DefId;
-use rustc_middle::ty::{self, AdtDef, FieldDef, Ty, TyCtxt, TyKind};
+use rustc_middle::ty::{self, AdtDef, FieldDef, FnSig, Ty, TyCtxt, TyKind};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::analysis::testgen::context::Var;
@@ -66,11 +65,8 @@ impl Rulf {
         let mut type_to_api_calls: HashMap<Ty<'tcx>, Vec<Vec<DefId>>> = HashMap::new();
         // 1. find start nodes
         let api_starts = self.find_api_starts(graph, tcx);
-        // for start_api in api_starts.iter() {
-        //     rap_info!("start_api: {:?}", start_api);
-        // }
-        // 2. start node push to queue
         rap_info!("start_api stage");
+
         for start_api in api_starts {
             if let api_dep::DepNode::Api(def_id) = start_api {
                 let fn_sig = utils::fn_sig_without_binders(def_id, tcx);
@@ -91,13 +87,21 @@ impl Rulf {
                     fn_did: def_id,
                     args,
                 };
-                cx.add_call_stmt_all_exist(call);
+                cx.add_call_stmt(call);
                 visited.insert(start_api.clone());
                 queue.push_back((start_api, vec![def_id], 1));
                 type_to_api_calls
                     .entry(fn_sig.output())
                     .or_insert_with(Vec::new)
                     .push(vec![def_id]);
+                if let Some(transforms) = graph.transform_map().get(&fn_sig.output()) {
+                    for (transformed_ty, kind) in transforms {
+                        type_to_api_calls
+                            .entry(*transformed_ty)
+                            .or_insert_with(Vec::new)
+                            .push(vec![def_id]);
+                    }
+                }
             }
         }
         // 3. BFS
@@ -105,6 +109,9 @@ impl Rulf {
         while let Some((last_api, current_seq, depth)) = queue.pop_front() {
             if depth > max_depth {
                 break; // depth bigger than max_depth, stop BFS
+            }
+            if visited.contains(&last_api) {
+                continue; // Skip already visited APIs
             }
             let last_idx = graph.get_node(last_api);
             // 4. produce edge
@@ -138,7 +145,14 @@ impl Rulf {
                             let mut param_providers: Vec<Vec<_>> = Vec::new();
                             let mut satisfy_all_input = true;
                             for input_ty in fn_sig.inputs() {
-                                let providers = cx.all_possible_providers(*input_ty);
+                                if let ty::Ref(_, inner_ty, ty::Mutability::Mut) = input_ty.kind() {
+                                    if inner_ty.is_str() {
+                                        rap_debug!("Skipping &mut str input type {:?}", input_ty);
+                                        satisfy_all_input = false;
+                                        break;
+                                    }
+                                }
+                                let providers = cx.all_possible_providers_mut(*input_ty);
                                 if providers.is_empty() {
                                     rap_debug!(
                                         "no providers for consumer node now, need input type {:?}",
@@ -153,9 +167,7 @@ impl Rulf {
                             if !satisfy_all_input {
                                 continue;
                             }
-                            let mut new_calls = Vec::new();
                             // params have diversity, generate at most 3 call seq
-                            let mut generated = HashSet::new();
                             for _ in 0..3 {
                                 let mut args = Vec::new();
                                 let enough_param = param_providers.iter().all(|p| p.len() > 0);
@@ -167,28 +179,28 @@ impl Rulf {
                                         providers.swap_remove(rng.random_range(0..providers.len()));
                                     args.push(var);
                                 }
-
-                                if generated.insert(args.clone()) {
-                                    let call = ApiCall {
-                                        fn_did: def_id,
-                                        args: args,
-                                    };
-                                    new_calls.push(call);
-                                }
-                            }
-
-                            // add new calls to context
-                            for call in new_calls {
+                                let call = ApiCall {
+                                    fn_did: def_id,
+                                    args,
+                                };
                                 cx.add_call_stmt(call);
                                 let mut new_seq = current_seq.clone();
                                 new_seq.push(def_id);
-
                                 // update type_to_api_calls
                                 type_to_api_calls
                                     .entry(fn_sig.output())
                                     .or_insert_with(Vec::new)
                                     .push(new_seq.clone());
-
+                                if let Some(transforms) =
+                                    graph.transform_map().get(&fn_sig.output())
+                                {
+                                    for (transformed_ty, kind) in transforms {
+                                        type_to_api_calls
+                                            .entry(*transformed_ty)
+                                            .or_insert_with(Vec::new)
+                                            .push(new_seq.clone());
+                                    }
+                                }
                                 visited.insert(consumer_api.clone());
                                 queue.push_back((consumer_api.clone(), new_seq, depth + 1));
                             }
@@ -246,44 +258,89 @@ impl Rulf {
         tcx: TyCtxt<'tcx>,
     ) -> bool {
         if let api_dep::DepNode::Api(def_id) = target_api {
+            rap_info!("backward search for target_api: {:?}", target_api);
             let fn_sig = utils::fn_sig_without_binders(*def_id, tcx);
             let mut vars = Vec::new();
             let mut dependency_seqs = Vec::new();
-
+            let mut used_vars = HashSet::new();
             // process input_ty
             for input_ty in fn_sig.inputs() {
-                let providers = cx.all_possible_providers(*input_ty);
-                if !providers.is_empty() {
-                    // have providers in cx
-                    let idx = rng.random_range(0..providers.len());
-                    let var = providers[idx];
-                    cx.remove_var(var);
-                    //rap_info!("input_ty: {:?}, var: {:?} from providers", input_ty, var);
-                    vars.push(var);
-                    if let Some(api_seqs) = type_to_api_calls.get(input_ty) {
-                        // choose var from type_to_api_calls
-                        if let Some(api_seq) = api_seqs.choose(rng) {
-                            dependency_seqs.push(api_seq.clone());
-                        } else if var == DUMMY_INPUT_VAR {
-                            continue;
-                        } else {
-                            rap_debug!("no api seq for input type {:?}", input_ty);
-                            return false;
-                        }
-                    } else if var == DUMMY_INPUT_VAR {
-                        continue;
-                    } else {
-                        rap_debug!("no api seq for input type {:?}", input_ty);
+                if let ty::Ref(_, inner_ty, ty::Mutability::Mut) = input_ty.kind() {
+                    if inner_ty.is_str() {
+                        rap_debug!("Skipping &mut str input type {:?}", input_ty);
                         return false;
                     }
-                } else if let Some(api_seqs) = type_to_api_calls.get(input_ty) {
+                }
+                let providers = cx.all_possible_providers_mut(*input_ty);
+                let vaild_providers: Vec<_> = providers
+                    .into_iter()
+                    .filter(|&var| !used_vars.contains(&var))
+                    .collect();
+                if !vaild_providers.is_empty() {
+                    // have providers in cx
+                    let idx = rng.random_range(0..vaild_providers.len());
+                    let var = vaild_providers[idx];
+                    rap_info!("input_ty: {:?}, var: {:?} from providers", input_ty, var);
+                    vars.push(var);
+                    used_vars.insert(var);
+                    if var == DUMMY_INPUT_VAR {
+                        continue;
+                    } else {
+                        if let Some(api_seqs) = type_to_api_calls.get(input_ty) {
+                            // choose var from type_to_api_calls
+                            if let Some(api_seq) = api_seqs.choose(rng) {
+                                dependency_seqs.push(api_seq.clone());
+                            } else {
+                                rap_debug!("no api seq for input type {:?}", input_ty);
+                                return false;
+                            }
+                        } else {
+                            let input_peel_ref = input_ty.peel_refs();
+                            if let Some(api_seqs) = type_to_api_calls.get(&input_peel_ref) {
+                                // choose var from type_to_api_calls
+                                if let Some(api_seq) = api_seqs.choose(rng) {
+                                    dependency_seqs.push(api_seq.clone());
+                                } else {
+                                    rap_info!("no api seq for input type {:?}", input_ty);
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                } else if let Some(api_seqs) = type_to_api_calls.get(&input_ty.peel_refs()) {
                     // choose var from type_to_api_calls
                     if let Some(api_seq) = api_seqs.choose(rng) {
-                        if let Some(var) = self.seq2call(api_seq, cx, &type_to_api_calls, rng, tcx)
-                        {
-                            //rap_info!("input_ty: {:?}, var: {:?} from seq2call", input_ty, var);
-                            vars.push(var);
-                            cx.remove_var(var);
+                        let input_ref_mut =
+                            if let ty::Ref(_, inner_ty, mutability) = input_ty.kind() {
+                                Some(*mutability)
+                            } else {
+                                None
+                            };
+                        if let Some(var) = self.seq2call(
+                            api_seq,
+                            cx,
+                            &type_to_api_calls,
+                            &mut used_vars,
+                            rng,
+                            tcx,
+                            input_ref_mut,
+                        ) {
+                            rap_info!("input_ty: {:?}, var: {:?} from seq2call", input_ty, var);
+                            let mut ref_vec: Vec<(Ty, ty::Mutability)> = vec![];
+                            let mut iter_ty = input_ty;
+                            while let ty::Ref(_, inner_ty, mutability) = iter_ty.kind() {
+                                ref_vec.push((*inner_ty, *mutability));
+                                iter_ty = inner_ty;
+                            }
+                            let mut ref_input_var = var;
+                            while !ref_vec.is_empty() {
+                                if let Some((_inner_ty, mutability)) = ref_vec.pop() {
+                                    used_vars.insert(ref_input_var);
+                                    ref_input_var = cx.add_ref_stmt(ref_input_var, mutability);
+                                }
+                            }
+                            vars.push(ref_input_var);
+                            used_vars.insert(ref_input_var);
                             dependency_seqs.push(api_seq.clone());
                         } else {
                             return false;
@@ -312,13 +369,21 @@ impl Rulf {
                 fn_did: *def_id,
                 args: vars,
             };
-            cx.add_call_stmt_all_exist(call);
+            cx.add_call_stmt(call);
 
             // update type_to_api_calls
             type_to_api_calls
                 .entry(fn_sig.output())
                 .or_insert_with(Vec::new)
                 .push(target_seq.clone());
+            if let Some(transforms) = graph.transform_map().get(&fn_sig.output()) {
+                for (transformed_ty, kind) in transforms {
+                    type_to_api_calls
+                        .entry(*transformed_ty)
+                        .or_insert_with(Vec::new)
+                        .push(target_seq.clone());
+                }
+            }
             true
         } else {
             false
@@ -330,8 +395,10 @@ impl Rulf {
         seq: &Vec<DefId>,
         cx: &mut ContextBase<'tcx>,
         type_to_api_calls: &HashMap<Ty<'tcx>, Vec<Vec<DefId>>>,
+        used_vars: &mut HashSet<Var>,
         rng: &mut R,
         tcx: TyCtxt<'tcx>,
+        input_ref_mut: Option<ty::Mutability>,
     ) -> Option<Var> {
         let mut ret_var: Option<Var> = None;
         for &def_id in seq {
@@ -340,16 +407,53 @@ impl Rulf {
 
             // find var for every input type
             for input_ty in fn_sig.inputs() {
-                let providers = cx.all_possible_providers(*input_ty);
-                let var = if providers.is_empty() {
+                if let ty::Ref(_, inner_ty, ty::Mutability::Mut) = input_ty.kind() {
+                    if inner_ty.is_str() {
+                        rap_debug!("Skipping &mut str input type {:?}", input_ty);
+                        return None;
+                    }
+                }
+                let providers = cx.all_possible_providers_mut(*input_ty);
+                let valid_providers: Vec<_> = providers
+                    .into_iter()
+                    .filter(|&var| !used_vars.contains(&var))
+                    .collect();
+
+                let var = if valid_providers.is_empty() {
                     if let Some(api_seqs) = type_to_api_calls.get(input_ty) {
                         // choose var from type_to_api_calls
                         if let Some(api_seq) = api_seqs.choose(rng) {
-                            if let Some(var) =
-                                self.seq2call(api_seq, cx, &type_to_api_calls, rng, tcx)
-                            {
+                            let iter_ty_mut =
+                                if let ty::Ref(_, inner_ty, mutability) = input_ty.kind() {
+                                    Some(*mutability)
+                                } else {
+                                    None
+                                };
+                            if let Some(var) = self.seq2call(
+                                api_seq,
+                                cx,
+                                &type_to_api_calls,
+                                used_vars,
+                                rng,
+                                tcx,
+                                iter_ty_mut,
+                            ) {
                                 //rap_info!("input_ty: {:?}, var: {:?} from seq2call", input_ty, var);
-                                var
+                                let mut ref_vec: Vec<(Ty, ty::Mutability)> = vec![];
+                                let mut iter_ty = input_ty;
+                                while let ty::Ref(_, inner_ty, mutability) = iter_ty.kind() {
+                                    ref_vec.push((*inner_ty, *mutability));
+                                    iter_ty = inner_ty;
+                                }
+                                let mut ref_input_var = var;
+                                while !ref_vec.is_empty() {
+                                    if let Some((_inner_ty, mutability)) = ref_vec.pop() {
+                                        used_vars.insert(ref_input_var);
+                                        ref_input_var = cx.add_ref_stmt(ref_input_var, mutability);
+                                    }
+                                }
+                                used_vars.insert(ref_input_var);
+                                ref_input_var
                             } else {
                                 panic!(
                                     "no providers for node {:?} , need input type {:?}",
@@ -370,9 +474,8 @@ impl Rulf {
                     }
                 } else {
                     // choose provider randomly
-                    let idx = rng.random_range(0..providers.len());
-                    let var = providers[idx];
-                    cx.remove_var(var);
+                    let idx = rng.random_range(0..valid_providers.len());
+                    let var = valid_providers[idx];
                     var
                 };
                 args.push(var);
@@ -383,16 +486,25 @@ impl Rulf {
                 fn_did: def_id,
                 args,
             };
-            ret_var = Some(cx.add_call_stmt_all_exist(call));
+            ret_var = Some(cx.add_call_stmt(call));
+        }
+        match input_ref_mut {
+            Some(mutability) => {
+                if let Some(ret_v) = ret_var {
+                    cx.lift_mutability(ret_v, mutability);
+                }
+            }
+            None => {}
         }
         ret_var
     }
+
     pub fn max_coverage<'tcx>(
         &self,
         graph: &mut api_dep::ApiDepGraph<'tcx>,
         tcx: TyCtxt<'tcx>,
     ) -> Option<(i32, i32)> {
-        // Get all API nodes
+        // collect all API nodes
         let all_api_nodes: HashSet<_> = graph
             .inner_graph()
             .node_references()
@@ -405,55 +517,91 @@ impl Rulf {
             })
             .collect();
 
-        // Initialize BFS
+        // initialization
         let mut queue = VecDeque::from(self.find_api_starts(graph, tcx));
         let mut visited: HashSet<api_dep::DepNode<'tcx>> = HashSet::new();
         let mut available_types: HashSet<Ty<'tcx>> = HashSet::new();
 
-        // BFS traversal
+        // BFS
+        rap_info!("Starting BFS for max_coverage");
         while let Some(current_api) = queue.pop_front() {
+            if visited.contains(&current_api) {
+                continue;
+            }
             visited.insert(current_api.clone());
             let current_idx = graph.get_node(current_api.clone());
+
             if let api_dep::DepNode::Api(def_id) = current_api {
-                // Get the function signature
                 let fn_sig = utils::fn_sig_without_binders(def_id, tcx);
-                // Add the return type to available types
-                available_types.insert(fn_sig.output());
-            }
-            // Find production edges (Ret)
-            let ret_edges = graph
-                .inner_graph()
-                .edges_directed(current_idx, Direction::Outgoing)
-                .filter(|e| matches!(e.weight(), DepEdge::Ret));
+                let output_ty = fn_sig.output();
+                available_types.insert(output_ty);
 
-            for ret_edge in ret_edges {
-                let ret_type_node = &graph.inner_graph()[ret_edge.target()];
-                if let api_dep::DepNode::Ty(ret_ty) = ret_type_node {
-                    // Find consumption edges (Arg)
-                    let consumer_edges = graph
-                        .inner_graph()
-                        .edges_directed(ret_edge.target(), Direction::Outgoing)
-                        .filter(|e| matches!(e.weight(), DepEdge::Arg(_)));
+                // Transform edges
+                let mut transform_queue = VecDeque::new();
+                transform_queue.push_back((TyWrapper::from(output_ty), 0));
+                while let Some((current_ty, depth)) = transform_queue.pop_front() {
+                    if depth >= 3 {
+                        continue;
+                    }
+                    available_types.insert(current_ty.ty());
+                    if let Some(ty_idx) =
+                        graph.get_node_index_by_node(api_dep::DepNode::Ty(current_ty))
+                    {
+                        let transform_edges = graph
+                            .inner_graph()
+                            .edges_directed(ty_idx, Direction::Outgoing)
+                            .filter(|e| matches!(e.weight(), DepEdge::Transform(_)));
+                        for edge in transform_edges {
+                            if let api_dep::DepNode::Ty(target_ty) =
+                                &graph.inner_graph()[edge.target()]
+                            {
+                                transform_queue.push_back((*target_ty, depth + 1));
+                            }
+                        }
+                    }
+                }
 
-                    for consumer_edge in consumer_edges {
-                        let consumer_api_idx = consumer_edge.target();
-                        let consumer_api = graph.inner_graph()[consumer_api_idx].clone();
-                        if let api_dep::DepNode::Api(def_id) = consumer_api {
-                            if !visited.contains(&consumer_api) {
-                                // Check if all input types are available
-                                let fn_sig = utils::fn_sig_without_binders(def_id, tcx);
-                                let all_inputs_satisfied = fn_sig.inputs().iter().all(|input_ty| {
-                                    if is_fuzzable_ty(*input_ty, tcx) {
-                                        true
+                // consumer API
+                let ret_edges = graph
+                    .inner_graph()
+                    .edges_directed(current_idx, Direction::Outgoing)
+                    .filter(|e| matches!(e.weight(), DepEdge::Ret));
+                for ret_edge in ret_edges {
+                    let ret_type_node = &graph.inner_graph()[ret_edge.target()];
+                    if let api_dep::DepNode::Ty(ret_ty) = ret_type_node {
+                        let consumer_edges = graph
+                            .inner_graph()
+                            .edges_directed(ret_edge.target(), Direction::Outgoing)
+                            .filter(|e| matches!(e.weight(), DepEdge::Arg(_)));
+                        for consumer_edge in consumer_edges {
+                            let consumer_api_idx = consumer_edge.target();
+                            let consumer_api = graph.inner_graph()[consumer_api_idx].clone();
+                            if let api_dep::DepNode::Api(def_id) = consumer_api {
+                                if !visited.contains(&consumer_api) {
+                                    let fn_sig = utils::fn_sig_without_binders(def_id, tcx);
+                                    let all_inputs_satisfied =
+                                        fn_sig.inputs().iter().all(|input_ty| {
+                                            if let ty::Ref(_, inner_ty, ty::Mutability::Mut) =
+                                                input_ty.kind()
+                                            {
+                                                if inner_ty.is_str() {
+                                                    rap_debug!(
+                                                        "Skipping &mut str input type {:?}",
+                                                        input_ty
+                                                    );
+                                                    return false;
+                                                }
+                                            }
+                                            is_fuzzable_ty(*input_ty, tcx)
+                                                || available_types.iter().any(|avail_ty| {
+                                                    utils::is_ty_eq(*input_ty, *avail_ty, tcx)
+                                                })
+                                        });
+                                    if all_inputs_satisfied {
+                                        queue.push_back(consumer_api);
                                     } else {
-                                        available_types.iter().any(|avail_ty| {
-                                            utils::is_ty_eq(*input_ty, *avail_ty, tcx)
-                                        })
+                                        rap_debug!("Consumer API {:?} not reachable", def_id);
                                     }
-                                });
-
-                                if all_inputs_satisfied {
-                                    queue.push_back(consumer_api);
                                 }
                             }
                         }
@@ -462,6 +610,74 @@ impl Rulf {
             }
         }
 
+        // Backward Search
+        rap_info!("Starting Backward Search for max_coverage");
+        let mut unvisited_api_nodes: Vec<_> = all_api_nodes.difference(&visited).cloned().collect();
+        let mut prev_unvisited_count = unvisited_api_nodes.len() + 1;
+
+        while !unvisited_api_nodes.is_empty() && prev_unvisited_count > unvisited_api_nodes.len() {
+            prev_unvisited_count = unvisited_api_nodes.len();
+            let mut i = 0;
+            while i < unvisited_api_nodes.len() {
+                let target_api = unvisited_api_nodes[i].clone();
+                let reachable = if let api_dep::DepNode::Api(def_id) = target_api {
+                    let fn_sig = utils::fn_sig_without_binders(def_id, tcx);
+                    let all_inputs_satisfied = fn_sig.inputs().iter().all(|input_ty| {
+                        if let ty::Ref(_, inner_ty, ty::Mutability::Mut) = input_ty.kind() {
+                            if inner_ty.is_str() {
+                                rap_debug!("Skipping &mut str input type {:?}", input_ty);
+                                return false;
+                            }
+                        }
+                        is_fuzzable_ty(*input_ty, tcx)
+                            || available_types
+                                .iter()
+                                .any(|avail_ty| utils::is_ty_eq(*input_ty, *avail_ty, tcx))
+                    });
+                    if all_inputs_satisfied {
+                        visited.insert(target_api.clone());
+                        let output_ty = fn_sig.output();
+                        available_types.insert(output_ty);
+                        // Transform edges
+                        let mut transform_queue = VecDeque::new();
+                        transform_queue.push_back((TyWrapper::from(output_ty), 0));
+                        while let Some((current_ty, depth)) = transform_queue.pop_front() {
+                            if depth >= 3 {
+                                continue;
+                            }
+                            available_types.insert(current_ty.ty());
+                            if let Some(ty_idx) =
+                                graph.get_node_index_by_node(api_dep::DepNode::Ty(current_ty))
+                            {
+                                let transform_edges = graph
+                                    .inner_graph()
+                                    .edges_directed(ty_idx, Direction::Outgoing)
+                                    .filter(|e| matches!(e.weight(), DepEdge::Transform(_)));
+                                for edge in transform_edges {
+                                    if let api_dep::DepNode::Ty(target_ty) =
+                                        &graph.inner_graph()[edge.target()]
+                                    {
+                                        transform_queue.push_back((*target_ty, depth + 1));
+                                    }
+                                }
+                            }
+                        }
+                        true
+                    } else {
+                        rap_debug!("Backward search: API {:?} not reachable", def_id);
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if reachable {
+                    unvisited_api_nodes.swap_remove(i);
+                } else {
+                    i += 1;
+                }
+            }
+        }
         Some((visited.len() as i32, all_api_nodes.len() as i32))
     }
 }
