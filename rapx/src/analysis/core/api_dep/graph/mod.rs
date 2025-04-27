@@ -20,7 +20,6 @@ type InnerGraph<'tcx> = Graph<DepNode<'tcx>, DepEdge>;
 pub struct ApiDepGraph<'tcx> {
     graph: InnerGraph<'tcx>,
     node_indices: HashMap<DepNode<'tcx>, NodeIndex>,
-    transfrom_map: HashMap<Ty<'tcx>, Vec<(Ty<'tcx>, TransformKind)>>, // given a type, what are the possible transformations
     config: Config,
     tcx: TyCtxt<'tcx>,
 }
@@ -42,7 +41,6 @@ impl<'tcx> ApiDepGraph<'tcx> {
         ApiDepGraph {
             graph: Graph::new(),
             node_indices: HashMap::new(),
-            transfrom_map: HashMap::new(),
             config,
             tcx,
         }
@@ -91,18 +89,13 @@ impl<'tcx> ApiDepGraph<'tcx> {
         }
 
         let mut ret = None;
-        let mut transforms = Vec::new();
         for kind in TransformKind::all() {
             let new_ty = current_ty.transform(*kind, self.tcx()); // &T or &mut T
             if let Some(next_index) = self.add_possible_transform::<MAX_DEPTH>(new_ty, depth + 1) {
                 let current_index = self.get_node(DepNode::Ty(current_ty));
                 self.add_edge_once(current_index, next_index, DepEdge::transform(*kind));
-                transforms.push((new_ty.ty(), *kind));
                 ret = Some(current_index);
             }
-        }
-        if !transforms.is_empty() {
-            self.transfrom_map.insert(current_ty.ty(), transforms);
         }
         ret
     }
@@ -117,9 +110,6 @@ impl<'tcx> ApiDepGraph<'tcx> {
         &self.graph
     }
 
-    pub fn transform_map(&self) -> &HashMap<Ty<'tcx>, Vec<(Ty<'tcx>, TransformKind)>> {
-        &self.transfrom_map
-    }
     pub fn statistics(&self) -> Statistics {
         let mut api_cnt = 0;
         let mut ty_cnt = 0;

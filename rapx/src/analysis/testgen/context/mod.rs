@@ -87,9 +87,7 @@ pub trait Context<'tcx>: HoldTyCtxt<'tcx> {
             if arg == DUMMY_INPUT_VAR {
                 let var = self.add_input_stmt(input_ty);
                 call.args[idx] = var;
-                if !utils::is_ty_impl_copy(input_ty, tcx) {
-                    self.remove_var_from_available(var);
-                }
+                self.remove_var_from_available(var);
             }
         }
         let var = self.mk_var(output_ty, false);
@@ -280,7 +278,7 @@ impl<'tcx> Context<'tcx> for ContextBase<'tcx> {
     }
 
     fn mk_var(&mut self, ty: Ty<'tcx>, is_input: bool) -> Var {
-        let next_var = Var(self.var_ty.len(), is_input);
+        let next_var = Var(self.var_ty.len() + 1, is_input);
         self.var_ty.insert(next_var, ty);
         self.available.insert(next_var);
         self.update_provider_cache(next_var, ty, true);

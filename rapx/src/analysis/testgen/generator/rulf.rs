@@ -1,4 +1,4 @@
-use crate::analysis::core::api_dep;
+use crate::analysis::core::api_dep::{self, DepNode};
 use crate::analysis::testgen::api_dep::graph::TyWrapper;
 use crate::analysis::testgen::api_dep::DepEdge;
 use crate::analysis::testgen::context::DUMMY_INPUT_VAR;
@@ -90,16 +90,32 @@ impl Rulf {
                 cx.add_call_stmt(call);
                 visited.insert(start_api.clone());
                 queue.push_back((start_api, vec![def_id], 1));
-                type_to_api_calls
-                    .entry(fn_sig.output())
-                    .or_insert_with(Vec::new)
-                    .push(vec![def_id]);
-                if let Some(transforms) = graph.transform_map().get(&fn_sig.output()) {
-                    for (transformed_ty, kind) in transforms {
-                        type_to_api_calls
-                            .entry(*transformed_ty)
-                            .or_insert_with(Vec::new)
-                            .push(vec![def_id]);
+                let output_ty = fn_sig.output();
+                let mut transform_queue = VecDeque::new();
+                if let Some(ty_idx) =
+                    graph.get_node_index_by_node(DepNode::Ty(TyWrapper::from(output_ty)))
+                {
+                    transform_queue.push_back((ty_idx, TyWrapper::from(output_ty), 0));
+                }
+                while let Some((ty_idx, current_ty, depth)) = transform_queue.pop_front() {
+                    if depth >= 3 {
+                        continue;
+                    }
+                    type_to_api_calls
+                        .entry(current_ty.ty())
+                        .or_insert_with(Vec::new)
+                        .push(vec![def_id]);
+                    let transform_edges = graph
+                        .inner_graph()
+                        .edges_directed(ty_idx, Direction::Outgoing)
+                        .filter(|e| matches!(e.weight(), DepEdge::Transform(_)));
+                    for edge in transform_edges {
+                        if let api_dep::DepNode::Ty(target_ty) = &graph.inner_graph()[edge.target()]
+                        {
+                            if let DepEdge::Transform(kind) = edge.weight() {
+                                transform_queue.push_back((edge.target(), *target_ty, depth + 1));
+                            }
+                        }
                     }
                 }
             }
@@ -187,18 +203,43 @@ impl Rulf {
                                 let mut new_seq = current_seq.clone();
                                 new_seq.push(def_id);
                                 // update type_to_api_calls
-                                type_to_api_calls
-                                    .entry(fn_sig.output())
-                                    .or_insert_with(Vec::new)
-                                    .push(new_seq.clone());
-                                if let Some(transforms) =
-                                    graph.transform_map().get(&fn_sig.output())
+                                let output_ty = fn_sig.output();
+                                let mut transform_queue = VecDeque::new();
+                                if let Some(ty_idx) = graph
+                                    .get_node_index_by_node(DepNode::Ty(TyWrapper::from(output_ty)))
                                 {
-                                    for (transformed_ty, kind) in transforms {
-                                        type_to_api_calls
-                                            .entry(*transformed_ty)
-                                            .or_insert_with(Vec::new)
-                                            .push(new_seq.clone());
+                                    transform_queue.push_back((
+                                        ty_idx,
+                                        TyWrapper::from(output_ty),
+                                        0,
+                                    ));
+                                }
+                                while let Some((ty_idx, current_ty, depth)) =
+                                    transform_queue.pop_front()
+                                {
+                                    if depth >= 3 {
+                                        continue;
+                                    }
+                                    type_to_api_calls
+                                        .entry(current_ty.ty())
+                                        .or_insert_with(Vec::new)
+                                        .push(new_seq.clone());
+                                    let transform_edges = graph
+                                        .inner_graph()
+                                        .edges_directed(ty_idx, Direction::Outgoing)
+                                        .filter(|e| matches!(e.weight(), DepEdge::Transform(_)));
+                                    for edge in transform_edges {
+                                        if let api_dep::DepNode::Ty(target_ty) =
+                                            &graph.inner_graph()[edge.target()]
+                                        {
+                                            if let DepEdge::Transform(kind) = edge.weight() {
+                                                transform_queue.push_back((
+                                                    edge.target(),
+                                                    *target_ty,
+                                                    depth + 1,
+                                                ));
+                                            }
+                                        }
                                     }
                                 }
                                 visited.insert(consumer_api.clone());
@@ -372,16 +413,31 @@ impl Rulf {
             cx.add_call_stmt(call);
 
             // update type_to_api_calls
-            type_to_api_calls
-                .entry(fn_sig.output())
-                .or_insert_with(Vec::new)
-                .push(target_seq.clone());
-            if let Some(transforms) = graph.transform_map().get(&fn_sig.output()) {
-                for (transformed_ty, kind) in transforms {
-                    type_to_api_calls
-                        .entry(*transformed_ty)
-                        .or_insert_with(Vec::new)
-                        .push(target_seq.clone());
+            let output_ty = fn_sig.output();
+            let mut transform_queue = VecDeque::new();
+            if let Some(ty_idx) =
+                graph.get_node_index_by_node(DepNode::Ty(TyWrapper::from(output_ty)))
+            {
+                transform_queue.push_back((ty_idx, TyWrapper::from(output_ty), 0));
+            }
+            while let Some((ty_idx, current_ty, depth)) = transform_queue.pop_front() {
+                if depth >= 3 {
+                    continue;
+                }
+                type_to_api_calls
+                    .entry(current_ty.ty())
+                    .or_insert_with(Vec::new)
+                    .push(target_seq.clone());
+                let transform_edges = graph
+                    .inner_graph()
+                    .edges_directed(ty_idx, Direction::Outgoing)
+                    .filter(|e| matches!(e.weight(), DepEdge::Transform(_)));
+                for edge in transform_edges {
+                    if let api_dep::DepNode::Ty(target_ty) = &graph.inner_graph()[edge.target()] {
+                        if let DepEdge::Transform(kind) = edge.weight() {
+                            transform_queue.push_back((edge.target(), *target_ty, depth + 1));
+                        }
+                    }
                 }
             }
             true
