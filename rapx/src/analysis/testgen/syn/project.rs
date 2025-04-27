@@ -6,18 +6,18 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 
-pub struct FuzzProjectOption {
-    pub crate_name: String,
-    pub output_dir: Option<PathBuf>,
+pub struct RsProjectOption {
+    pub tested_crate_name: String,
+    pub project_path: PathBuf,
     pub verbose: bool,
 }
 
-impl FuzzProjectOption {
-    pub fn crate_name(&self) -> &String {
-        &self.crate_name
+impl RsProjectOption {
+    pub fn tested_crate_name(&self) -> &str {
+        &self.tested_crate_name
     }
-    pub fn output_dir(&self) -> &Option<PathBuf> {
-        &self.output_dir
+    pub fn project_path(&self) -> &Path {
+        &self.project_path.as_path()
     }
     pub fn verbose(&self) -> bool {
         self.verbose
@@ -25,61 +25,37 @@ impl FuzzProjectOption {
 }
 
 /// Generator for fuzz driver projects.
-pub struct FuzzProjectGenerator {
-    option: FuzzProjectOption,
-    generated_path: Option<PathBuf>,
+pub struct CargoProjectBuilder {
+    option: RsProjectOption,
 }
 
-impl FuzzProjectGenerator {
+pub struct RsProject {
+    option: RsProjectOption,
+}
+
+impl CargoProjectBuilder {
     /// 创建新的项目生成器
-    pub fn new(option: FuzzProjectOption) -> Self {
-        Self {
-            option,
-            generated_path: None,
-        }
+    pub fn new(option: RsProjectOption) -> Self {
+        Self { option }
     }
 
-    pub fn generate(&mut self, rs_str: &str) -> io::Result<PathBuf> {
-        // new crate name
-        let crate_name = format!("{}_fuzz_driver", self.option.crate_name());
-
-        let output_dir = match &self.option.output_dir() {
-            Some(dir) => dir.clone(),
-            None => {
-                let current_dir = std::env::current_dir()?;
-                let parent_dir = match current_dir.parent() {
-                    Some(parent) => parent.to_path_buf(),
-                    None => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::Other,
-                            "Failed to get parent directory",
-                        ));
-                    }
-                };
-                parent_dir
-            }
-        };
-
-        let crate_path = output_dir.join(&crate_name);
-
-        // check if the project already exists
-        if crate_path.exists() {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!(
-                    "crate '{}' already exists, please delete and retry!",
-                    crate_name
-                ),
-            ));
+    pub fn build(self, rs_str: &str) -> io::Result<RsProject> {
+        // remove project path if it exists
+        if self.option.project_path().exists() {
+            fs::remove_dir_all(self.option.project_path())?;
         }
 
+        let project_path = self.option.project_path();
+
         // create the new project
-        rap_info!("Creating new project: {}", crate_name);
+        rap_info!("Creating new project at {}", project_path.display());
+
         let mut command = Command::new("cargo");
         command
             .arg("new")
-            .arg(&crate_name)
-            .current_dir(&output_dir)
+            .arg(self.option.project_path())
+            .arg("--vcs")
+            .arg("none")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -95,19 +71,20 @@ impl FuzzProjectGenerator {
         }
 
         // write the Rust code to main.rs
-        let main_path = crate_path.join("src").join("main.rs");
+        let main_path = project_path.join("src").join("main.rs");
         let mut main_file = File::create(main_path)?;
         main_file.write_all(rs_str.as_bytes())?;
 
         // add dependencies to Cargo.toml
-        self.update_cargo_toml(&crate_path)?;
+        self.update_cargo_toml(&project_path)?;
 
-        self.generated_path = Some(crate_path.clone());
         rap_info!(
             "Successfully created fuzz driver project at: {}",
-            crate_path.display()
+            project_path.display()
         );
-        Ok(crate_path)
+        Ok(RsProject {
+            option: self.option,
+        })
     }
 
     fn update_cargo_toml(&self, project_path: &Path) -> io::Result<()> {
@@ -119,31 +96,24 @@ impl FuzzProjectGenerator {
         writeln!(
             file,
             "{} = {{ path = \"../{}\" }}",
-            self.option.crate_name(),
-            self.option.crate_name(),
+            self.option.tested_crate_name(),
+            self.option.tested_crate_name(),
         )?;
         Ok(())
     }
+}
 
+impl RsProject {
     pub fn run(&self) -> io::Result<()> {
-        let path = match &self.generated_path {
-            Some(path) => path,
-            None => {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "No project has been generated yet",
-                ));
-            }
-        };
-        rap_info!("Running fuzz driver project at: {}", path.display());
-        let crate_path = path.clone();
+        let project_path = self.option.project_path().to_owned();
+        rap_info!("Running fuzz driver project at: {}", project_path.display());
         let verbose = self.option.verbose();
 
         thread::spawn(move || {
             let mut command = Command::new("cargo");
             command
                 .arg("run")
-                .current_dir(&crate_path)
+                .current_dir(&project_path)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
 
@@ -151,10 +121,10 @@ impl FuzzProjectGenerator {
                 command.arg("--verbose");
                 rap_info!(
                     "Executing: cargo run --verbose (in {})",
-                    crate_path.display()
+                    project_path.display()
                 );
             } else {
-                rap_info!("Executing: cargo run (in {})", crate_path.display());
+                rap_info!("Executing: cargo run (in {})", project_path.display());
             }
 
             match command.spawn() {

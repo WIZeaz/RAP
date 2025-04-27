@@ -1,32 +1,33 @@
-use rustc_infer::infer::{self, InferCtxt, TyCtxtInferExt};
-use rustc_middle::ty::{self, Ty, TyCtxt};
+use super::lifetime::Rid;
+use rustc_infer::infer::{self, InferCtxt};
+use rustc_middle::ty::{self, Ty, TyCtxt, TypeFoldable};
 use rustc_span::DUMMY_SP;
 
-pub struct RegionExtractFolder<'tcx> {
+pub struct RidExtractFolder<'tcx> {
     tcx: TyCtxt<'tcx>,
-    regions: Vec<ty::Region<'tcx>>,
+    rids: Vec<Rid>,
 }
 
-impl<'tcx> RegionExtractFolder<'tcx> {
-    pub fn new(tcx: TyCtxt<'tcx>) -> RegionExtractFolder<'tcx> {
-        RegionExtractFolder {
+impl<'tcx> RidExtractFolder<'tcx> {
+    pub fn new(tcx: TyCtxt<'tcx>) -> RidExtractFolder<'tcx> {
+        RidExtractFolder {
             tcx,
-            regions: Vec::new(),
+            rids: Vec::new(),
         }
     }
-    pub fn regions(&self) -> &[ty::Region<'tcx>] {
-        &self.regions
+    pub fn rids(&self) -> &[Rid] {
+        &self.rids
     }
 }
 
-impl<'tcx> ty::TypeFolder<TyCtxt<'tcx>> for RegionExtractFolder<'tcx> {
+impl<'tcx> ty::TypeFolder<TyCtxt<'tcx>> for RidExtractFolder<'tcx> {
     fn cx(&self) -> TyCtxt<'tcx> {
         self.tcx
     }
     fn fold_region(&mut self, region: ty::Region<'tcx>) -> ty::Region<'tcx> {
         match region.kind() {
-            ty::RegionKind::ReVar(_) | ty::RegionKind::ReStatic => {
-                self.regions.push(region);
+            ty::RegionKind::ReVar(vid) => {
+                self.rids.push(vid.into());
             }
             _ => {
                 panic!("unexpected region kind: {:?}", region);
@@ -36,35 +37,10 @@ impl<'tcx> ty::TypeFolder<TyCtxt<'tcx>> for RegionExtractFolder<'tcx> {
     }
 }
 
-pub struct FreeVarFolder<'tcx> {
-    tcx: TyCtxt<'tcx>,
-    offset: usize,
-}
-
-impl<'tcx> FreeVarFolder<'tcx> {
-    pub fn new(tcx: TyCtxt<'tcx>, offset: usize) -> FreeVarFolder<'tcx> {
-        FreeVarFolder { tcx, offset }
-    }
-    pub fn current_offset(&self) -> usize {
-        self.offset
-    }
-}
-
-impl<'tcx> ty::TypeFolder<TyCtxt<'tcx>> for FreeVarFolder<'tcx> {
-    fn cx(&self) -> TyCtxt<'tcx> {
-        self.tcx
-    }
-    fn fold_region(&mut self, region: ty::Region<'tcx>) -> ty::Region<'tcx> {
-        match region.kind() {
-            ty::ReVar(_) | ty::ReStatic => region,
-            _ => {
-                let region =
-                    ty::Region::new_var(self.cx(), ty::RegionVid::from_u32(self.offset as u32));
-                self.offset += 1;
-                region
-            }
-        }
-    }
+pub fn extract_rids<'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'tcx>) -> Vec<Rid> {
+    let mut folder = RidExtractFolder::new(tcx);
+    ty.fold_with(&mut folder);
+    folder.rids
 }
 
 pub struct InfcxVarFolder<'tcx, 'a> {

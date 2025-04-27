@@ -52,6 +52,7 @@ pub enum StmtKind {
     Concat(Vec<Var>),              // a, b -> (a, b)
     Ref(Box<Var>, ty::Mutability), // a -> &(mut) b
     Deref(Box<Var>),               // &a -> a
+    Drop(Box<Var>),
 }
 
 impl StmtKind {
@@ -93,6 +94,33 @@ impl Stmt {
         Stmt {
             kind: StmtKind::Ref(Box::new(ref_place), mutability),
             place,
+        }
+    }
+
+    pub fn drop_(place: Var, dropped: Var) -> Stmt {
+        Stmt {
+            kind: StmtKind::Drop(Box::new(dropped)),
+            place,
+        }
+    }
+
+    pub fn api_call(&self) -> &ApiCall {
+        match self.kind() {
+            StmtKind::Call(call) => call,
+            _ => panic!("not a call"),
+        }
+    }
+
+    pub fn var_for_call_arg(&self, no: usize) -> Var {
+        match self.kind() {
+            StmtKind::Call(call) => {
+                if no == 0 {
+                    self.place()
+                } else {
+                    call.args()[no - 1]
+                }
+            }
+            _ => panic!("not a call"),
         }
     }
 }

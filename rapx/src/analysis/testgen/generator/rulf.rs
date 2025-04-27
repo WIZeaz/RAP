@@ -93,7 +93,7 @@ impl Rulf {
                 let output_ty = fn_sig.output();
                 let mut transform_queue = VecDeque::new();
                 if let Some(ty_idx) =
-                    graph.get_node_index_by_node(DepNode::Ty(TyWrapper::from(output_ty)))
+                    graph.get_index_by_node(DepNode::Ty(TyWrapper::from(output_ty)))
                 {
                     transform_queue.push_back((ty_idx, TyWrapper::from(output_ty), 0));
                 }
@@ -205,14 +205,10 @@ impl Rulf {
                                 // update type_to_api_calls
                                 let output_ty = fn_sig.output();
                                 let mut transform_queue = VecDeque::new();
-                                if let Some(ty_idx) = graph
-                                    .get_node_index_by_node(DepNode::Ty(TyWrapper::from(output_ty)))
+                                if let Some(ty_idx) =
+                                    graph.get_index_by_node(DepNode::Ty(TyWrapper::from(output_ty)))
                                 {
-                                    transform_queue.push_back((
-                                        ty_idx,
-                                        TyWrapper::from(output_ty),
-                                        0,
-                                    ));
+                                    transform_queue.push_back((ty_idx, TyWrapper::from(output_ty), 0));
                                 }
                                 while let Some((ty_idx, current_ty, depth)) =
                                     transform_queue.pop_front()
@@ -416,7 +412,7 @@ impl Rulf {
             let output_ty = fn_sig.output();
             let mut transform_queue = VecDeque::new();
             if let Some(ty_idx) =
-                graph.get_node_index_by_node(DepNode::Ty(TyWrapper::from(output_ty)))
+                graph.get_index_by_node(DepNode::Ty(TyWrapper::from(output_ty)))
             {
                 transform_queue.push_back((ty_idx, TyWrapper::from(output_ty), 0));
             }
@@ -601,7 +597,7 @@ impl Rulf {
                     }
                     available_types.insert(current_ty.ty());
                     if let Some(ty_idx) =
-                        graph.get_node_index_by_node(api_dep::DepNode::Ty(current_ty))
+                        graph.get_index_by_node(api_dep::DepNode::Ty(current_ty))
                     {
                         let transform_edges = graph
                             .inner_graph()
@@ -703,7 +699,7 @@ impl Rulf {
                             }
                             available_types.insert(current_ty.ty());
                             if let Some(ty_idx) =
-                                graph.get_node_index_by_node(api_dep::DepNode::Ty(current_ty))
+                                graph.get_index_by_node(api_dep::DepNode::Ty(current_ty))
                             {
                                 let transform_edges = graph
                                     .inner_graph()

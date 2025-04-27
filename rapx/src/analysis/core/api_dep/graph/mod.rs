@@ -1,5 +1,5 @@
-mod dep_edge;
-mod dep_node;
+pub mod dep_edge;
+pub mod dep_node;
 mod ty_wrapper;
 
 use crate::analysis::core::api_dep::visitor::FnVisitor;
@@ -8,6 +8,7 @@ pub use dep_edge::{DepEdge, TransformKind};
 pub use dep_node::{desc_str, DepNode};
 use petgraph::dot;
 use petgraph::graph::NodeIndex;
+use petgraph::Direction;
 use petgraph::Graph;
 use rustc_middle::ty::{self, Ty, TyCtxt};
 use std::collections::HashMap;
@@ -46,6 +47,20 @@ impl<'tcx> ApiDepGraph<'tcx> {
         }
     }
 
+    pub fn num_api(&self) -> usize {
+        self.graph
+            .node_indices()
+            .filter(|index| matches!(self.graph[*index], DepNode::Api(_)))
+            .count()
+    }
+
+    pub fn num_ty(&self) -> usize {
+        self.graph
+            .node_indices()
+            .filter(|index| matches!(self.graph[*index], DepNode::Ty(_)))
+            .count()
+    }
+
     fn tcx(&self) -> TyCtxt<'tcx> {
         self.tcx
     }
@@ -78,7 +93,7 @@ impl<'tcx> ApiDepGraph<'tcx> {
         depth: usize,
     ) -> Option<NodeIndex> {
         if depth > 0 {
-            let index = self.get_node_index_by_node(DepNode::Ty(current_ty));
+            let index = self.get_index_by_node(DepNode::Ty(current_ty));
             if index.is_some() {
                 return index;
             }
@@ -101,6 +116,10 @@ impl<'tcx> ApiDepGraph<'tcx> {
     }
 
     pub fn prune_redundant_nodes(&mut self) {}
+
+    pub fn is_ty_exist(&self, ty: Ty<'tcx>) -> bool {
+        self.node_indices.contains_key(&DepNode::Ty(ty.into()))
+    }
 
     pub fn pub_only(&self) -> bool {
         self.config.pub_only
@@ -146,7 +165,7 @@ impl<'tcx> ApiDepGraph<'tcx> {
         }
     }
 
-    pub fn get_node_index_by_node(&self, node: DepNode<'tcx>) -> Option<NodeIndex> {
+    pub fn get_index_by_node(&self, node: DepNode<'tcx>) -> Option<NodeIndex> {
         self.node_indices.get(&node).map(|index| *index)
     }
 
@@ -158,6 +177,34 @@ impl<'tcx> ApiDepGraph<'tcx> {
         if !self.graph.contains_edge(src, dst) {
             self.graph.add_edge(src, dst, edge);
         }
+    }
+
+    /// return all types that can be transformed into `ty`
+    pub fn provider_tys(&self, ty: Ty<'tcx>) -> Vec<Ty<'tcx>> {
+        let index = self
+            .get_index_by_node(DepNode::Ty(ty.into()))
+            .expect(&format!("{ty:?} should be existed in api graph"));
+        let mut tys = Vec::new();
+
+        for node_index in self.graph.neighbors_directed(index, Direction::Incoming) {
+            if let DepNode::Ty(ty) = self.graph[node_index] {
+                tys.push(ty.ty());
+            }
+        }
+        tys
+    }
+
+    /// return all transform kind for `ty` that we intersted in.
+    pub fn all_transform_for(&self, ty: Ty<'tcx>) -> Vec<TransformKind> {
+        let mut tfs = Vec::new();
+        if let Some(index) = self.get_index_by_node(DepNode::Ty(ty.into())) {
+            for edge in self.graph.edges_directed(index, Direction::Outgoing) {
+                if let DepEdge::Transform(kind) = edge.weight() {
+                    tfs.push(*kind);
+                }
+            }
+        }
+        tfs
     }
 
     pub fn dump_to_dot<P: AsRef<Path>>(&self, path: P, tcx: TyCtxt<'tcx>) {

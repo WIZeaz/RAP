@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use once_cell::sync::OnceCell;
 
 use rustc_middle::mir::Local;
@@ -12,6 +14,8 @@ use crate::utils::log::{
 };
 use annotate_snippets::{Level, Renderer, Snippet};
 
+use super::super::super::NO_STD;
+
 static DEFPATHS: OnceCell<DefPaths> = OnceCell::new();
 
 struct DefPaths {
@@ -23,11 +27,21 @@ struct DefPaths {
 
 impl DefPaths {
     pub fn new(tcx: &TyCtxt<'_>) -> Self {
-        Self {
-            ops_range: DefPath::new("std::ops::Range", tcx),
-            vec_len: DefPath::new("std::vec::Vec::len", tcx),
-            ops_index: DefPath::new("std::ops::Index::index", tcx),
-            ops_index_mut: DefPath::new("std::ops::IndexMut::index_mut", tcx),
+        let no_std = NO_STD.lock().unwrap();
+        if *no_std {
+            Self {
+                ops_range: DefPath::new("core::ops::Range", tcx),
+                vec_len: DefPath::new("alloc::vec::Vec::len", tcx),
+                ops_index: DefPath::new("core::ops::Index::index", tcx),
+                ops_index_mut: DefPath::new("core::ops::IndexMut::index_mut", tcx),
+            }
+        } else {
+            Self {
+                ops_range: DefPath::new("std::ops::Range", tcx),
+                vec_len: DefPath::new("std::vec::Vec::len", tcx),
+                ops_index: DefPath::new("std::ops::Index::index", tcx),
+                ops_index_mut: DefPath::new("std::ops::IndexMut::index_mut", tcx),
+            }
         }
     }
 }
@@ -105,12 +119,14 @@ fn find_upside_vec_len_node(graph: &Graph, node_idx: Local) -> Option<Local> {
         }
         DFSStatus::Continue
     };
+    let mut seen = HashSet::new();
     graph.dfs(
         node_idx,
         Direction::Upside,
         &mut node_operator,
         &mut Graph::equivalent_edge_validator,
         false,
+        &mut seen,
     );
     vec_len_node_idx
 }
@@ -133,12 +149,14 @@ fn find_downside_index_node(graph: &Graph, node_idx: Local) -> Vec<Local> {
         }
         DFSStatus::Continue
     };
+    let mut seen = HashSet::new();
     graph.dfs(
         node_idx,
         Direction::Downside,
         &mut node_operator,
         &mut Graph::always_true_edge_validator,
         true,
+        &mut seen,
     );
     index_node_idxs
 }
