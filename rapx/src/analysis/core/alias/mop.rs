@@ -16,6 +16,7 @@ use rustc_data_structures::fx::FxHashMap;
 use rustc_hir::def_id::DefId;
 use rustc_middle::ty::TyCtxt;
 use std::collections::HashSet;
+use std::fmt;
 
 pub const VISIT_LIMIT: usize = 1000;
 
@@ -77,6 +78,21 @@ impl MopAAFact {
 pub struct MopAAResult {
     arg_size: usize,
     alias_set: HashSet<MopAAFact>,
+}
+
+
+impl fmt::Display for MopAAResult {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "{{{}}}",
+            self.aliases()
+                .iter()
+                .map(|alias| format!("{}", alias.fact))
+                .collect::<Vec<String>>()
+                .join(",")
+        )
+    }
 }
 
 impl MopAAResult {
@@ -169,7 +185,7 @@ impl<'tcx> MopAlias<'tcx> {
             let fn_name = get_fn_name(self.tcx, *fn_id);
             fn_alias.sort_alias_index();
             if fn_alias.len() > 0 {
-                rap_info!("Alias found in {:?}: {:?}", fn_name, fn_alias);
+                rap_info!("Alias found in {:?}: {}", fn_name, fn_alias);
             }
         }
         self.handle_conor_cases();
