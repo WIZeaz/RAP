@@ -10,8 +10,7 @@ pub mod types;
 use rustc_hir::def_id::DefId;
 use rustc_middle::ty::TyCtxt;
 
-use crate::analysis::core::alias::mop::MopAlias;
-use crate::analysis::core::alias::FnMap;
+use crate::analysis::core::alias::mop::{FnMap, MopAlias};
 use crate::analysis::core::heap_item::{AdtOwner, TypeAnalysis};
 use crate::analysis::rcanary::rCanary;
 use graph::SafeDropGraph;

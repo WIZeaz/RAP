@@ -42,8 +42,6 @@ use rustc_session::search_paths::PathKind;
 use std::path::PathBuf;
 use std::{env, sync::Arc};
 
-use crate::analysis::core::range_analysis::RangeAnalysisStrategy;
-
 // Insert rustc arguments at the beginning of the argument list that RAP wants to be
 // set per default, for maximal validation power.
 pub static RAP_DEFAULT_ARGS: &[&str] = &["-Zalways-encode-mir", "-Zmir-opt-level=0"];

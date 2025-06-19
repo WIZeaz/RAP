@@ -24,8 +24,7 @@ use rustc_middle::ty::TyCtxt;
 use std::collections::{HashMap, HashSet};
 use visitor::{BodyVisitor, CheckResult};
 
-use super::core::alias::mop::MopAlias;
-use super::core::alias::FnMap;
+use super::core::alias::mop::{FnMap, MopAlias};
 
 macro_rules! cond_print {
     ($cond:expr, $($t:tt)*) => {if $cond {rap_warn!($($t)*)} else {rap_info!($($t)*)}};
