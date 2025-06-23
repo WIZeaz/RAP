@@ -208,8 +208,8 @@ fn get_mono_set<'tcx>(
                                 }
                             }
 
-                            reachable_set.add_from_iter(fresh_args.iter().map(|arg| {
-                                match arg.kind() {
+                            reachable_set.add_from_iter(fresh_args.iter().map(
+                                |arg| match arg.kind() {
                                     ty::GenericArgKind::Lifetime(region) => {
                                         infcx.resolve_vars_if_possible(region).into()
                                     }
@@ -219,8 +219,8 @@ fn get_mono_set<'tcx>(
                                     ty::GenericArgKind::Const(ct) => {
                                         infcx.resolve_vars_if_possible(ct).into()
                                     }
-                                }
-                            }));
+                                },
+                            ));
                         });
                         reachable_set
                     });

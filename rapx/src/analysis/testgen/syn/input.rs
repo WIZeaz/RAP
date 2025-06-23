@@ -1,8 +1,11 @@
+use crate::rap_debug;
 use rand::{rng, Rng};
 use rustc_abi::FIRST_VARIANT;
+use rustc_hir::def::Namespace;
 use rustc_middle::ty::cast::IntTy;
-use rustc_middle::ty::{self, Ty, TyCtxt, TyKind};
-
+use rustc_middle::ty::print::{PrettyPrinter, Printer};
+use rustc_middle::ty::{self, print, Ty, TyCtxt, TyKind};
+use rustc_span::def_id::DefId;
 pub trait InputGen {
     fn gen<'tcx>(&mut self, ty: Ty<'tcx>, tcx: TyCtxt<'tcx>) -> impl ToString;
 }
@@ -38,7 +41,7 @@ impl InputGen for SillyInputGen {
                 format!("({})", fields.join(", "))
             }
             TyKind::Adt(adt_def, generic_arg) => {
-                let name = tcx.def_path_str(adt_def.did());
+                let name = get_trimmed_path(adt_def.did(), tcx, Namespace::TypeNS);
                 if adt_def.is_struct() {
                     // generate input for each field
                     let mut fields = Vec::new();
@@ -53,7 +56,7 @@ impl InputGen for SillyInputGen {
                 if adt_def.is_enum() {
                     let mut fields = Vec::new();
                     // Always generate the first variant
-                    
+
                     let variant_def = adt_def.variant(FIRST_VARIANT);
                     let variant_name = variant_def.name.to_string();
                     for field in variant_def.fields.iter() {
@@ -77,4 +80,25 @@ impl InputGen for SillyInputGen {
             _ => panic!("Unsupported type: {:?}", ty),
         }
     }
+}
+
+fn get_trimmed_path<'tcx>(def_id: DefId, tcx: TyCtxt<'tcx>, namespace: Namespace) -> String {
+    let mut printer = print::FmtPrinter::new(tcx, namespace);
+    let result = printer.force_print_trimmed_def_path(def_id);
+    let mut ret: String;
+    match result {
+        Ok(val) => {
+            if val {
+            } else {
+                let _ = printer.print_def_path(def_id, &[]);
+            }
+            ret = printer.into_buffer();
+        }
+        Err(e) => {
+            rap_debug!("Error printing trimmed path: {:?}", e);
+            ret = tcx.def_path_str(def_id);
+        }
+    };
+    rap_debug!("trimmed_path: {}", ret);
+    ret
 }

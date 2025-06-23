@@ -21,7 +21,7 @@ use std::collections::VecDeque;
 /// return all DefId of all pub APIs
 pub fn get_all_pub_apis(tcx: TyCtxt<'_>) -> Vec<DefId> {
     let mut apis = Vec::new();
-    
+
     for local_def_id in tcx.hir_body_owners() {
         if matches!(tcx.hir_body_owner_kind(local_def_id), BodyOwnerKind::Fn)
             && is_api_public(local_def_id, tcx)

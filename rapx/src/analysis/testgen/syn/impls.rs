@@ -27,15 +27,12 @@ impl<I: InputGen> FuzzDriverSynImpl<I> {
                 // let generics = cx.tcx().generics_of(call.fn_did());
                 let tcx = cx.tcx();
 
-                let args = call
-                    .generic_args()
-                    .into_iter()
-                    .map(|arg| match arg.kind() {
-                        ty::GenericArgKind::Lifetime(_) => {
-                            ty::GenericArg::from(tcx.lifetimes.re_erased)
-                        }
-                        _ => *arg,
-                    });
+                let args = call.generic_args().into_iter().map(|arg| match arg.kind() {
+                    ty::GenericArgKind::Lifetime(_) => {
+                        ty::GenericArg::from(tcx.lifetimes.re_erased)
+                    }
+                    _ => *arg,
+                });
 
                 format!(
                     "{}({})",
