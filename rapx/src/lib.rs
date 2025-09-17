@@ -3,7 +3,6 @@
 
 #[macro_use]
 pub mod utils;
-
 pub mod analysis;
 pub mod def_id;
 pub mod preprocess;
@@ -16,6 +15,7 @@ extern crate rustc_errors;
 extern crate rustc_hir;
 extern crate rustc_hir_pretty;
 extern crate rustc_index;
+extern crate rustc_infer;
 extern crate rustc_interface;
 extern crate rustc_metadata;
 extern crate rustc_middle;
@@ -23,11 +23,15 @@ extern crate rustc_public;
 extern crate rustc_session;
 extern crate rustc_span;
 extern crate rustc_target;
+extern crate rustc_trait_selection;
+extern crate rustc_traits;
+extern crate rustc_type_ir;
 extern crate thin_vec;
+use crate::analysis::scan::ScanAnalysis;
 use analysis::{
     core::{
         alias_analysis::{default::AliasAnalyzer, AAResultMapWrapper, AliasAnalysis},
-        api_dependency::default::ApiDependencyAnalyzer,
+        api_dependency::ApiDependencyAnalyzer,
         callgraph::{default::CallGraphAnalyzer, CallGraphAnalysis, CallGraphDisplay},
         dataflow::{
             default::DataFlowAnalyzer, Arg2RetMapWrapper, DataFlowAnalysis, DataFlowGraphMapWrapper,
@@ -64,7 +68,7 @@ pub static RAP_DEFAULT_ARGS: &[&str] = &["-Zalways-encode-mir", "-Zmir-opt-level
 
 /// This is the data structure to handle rapx options as a rustc callback.
 
-#[derive(Debug, Copy, Clone, Hash)]
+#[derive(Debug, Clone, Hash)]
 pub struct RapCallback {
     alias: bool,
     api_dependency: bool,
@@ -82,6 +86,8 @@ pub struct RapCallback {
     unsafety_isolation: usize,
     verify: bool,
     verify_std: bool,
+    scan: bool,
+    test_crate: Option<String>,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -104,6 +110,8 @@ impl Default for RapCallback {
             unsafety_isolation: 0,
             verify: false,
             verify_std: false,
+            scan: false,
+            test_crate: None,
         }
     }
 }
@@ -123,6 +131,7 @@ impl Callbacks for RapCallback {
             };
         });
     }
+
     fn after_crate_root_parsing(
         &mut self,
         _compiler: &interface::Compiler,
@@ -133,16 +142,37 @@ impl Callbacks for RapCallback {
     }
     fn after_analysis<'tcx>(&mut self, _compiler: &Compiler, tcx: TyCtxt<'tcx>) -> Compilation {
         rap_trace!("Execute after_analysis() of compiler callbacks");
+
         rustc_public::rustc_internal::run(tcx, || {
-            start_analyzer(tcx, self);
+            def_id::init(tcx);
+            if self.is_building_test_crate() {
+                start_analyzer(tcx, self);
+            } else {
+                let package_name = std::env::var("CARGO_PKG_NAME")
+                    .expect("cannot capture env var `CARGO_PKG_NAME`");
+                rap_trace!("skip analyzing package `{}`", package_name);
+            }
         })
         .expect("Failed to run rustc_public.");
         rap_trace!("analysis done");
+
         Compilation::Continue
     }
 }
 
 impl RapCallback {
+    fn is_building_test_crate(&self) -> bool {
+        match &self.test_crate {
+            None => true,
+            Some(test_crate) => {
+                let test_crate: &str = test_crate;
+                let package_name = std::env::var("CARGO_PKG_NAME")
+                    .expect("cannot capture env var `CARGO_PKG_NAME`");
+                package_name == test_crate
+            }
+        }
+    }
+
     /// Enable alias analysis. The parameter is used to config the threshold of alias analysis.
     /// Currently, we mainly use it to control the depth of field-sensitive analysis.
     /// -alias0: set field depth limit to 10; do not distinguish different flows within a each
@@ -339,11 +369,22 @@ impl RapCallback {
     pub fn is_infer_enabled(&self) -> bool {
         self.infer
     }
+
+    pub fn enable_scan(&mut self) {
+        self.scan = true;
+    }
+
+    pub fn is_scan_enabled(&self) -> bool {
+        self.scan
+    }
+
+    pub fn set_test_crate(&mut self, crate_name: impl ToString) {
+        self.test_crate = Some(crate_name.to_string())
+    }
 }
 
 /// Start the analysis with the features enabled.
 pub fn start_analyzer(tcx: TyCtxt, callback: &RapCallback) {
-    def_id::init(tcx);
     if callback.is_alias_enabled() {
         let mut analyzer = AliasAnalyzer::new(tcx);
         analyzer.run();
@@ -352,7 +393,14 @@ pub fn start_analyzer(tcx: TyCtxt, callback: &RapCallback) {
     }
 
     if callback.is_api_dependency_enabled() {
-        let mut analyzer = ApiDependencyAnalyzer::new(tcx);
+        let mut analyzer = ApiDependencyAnalyzer::new(
+            tcx,
+            analysis::core::api_dependency::Config {
+                pub_only: true,
+                resolve_generic: true,
+                ignore_const_generic: true,
+            },
+        );
         analyzer.run();
     }
 
@@ -473,5 +521,9 @@ pub fn start_analyzer(tcx: TyCtxt, callback: &RapCallback) {
     if callback.is_infer_enabled() {
         let check_level = CheckLevel::Medium;
         SenryxCheck::new(tcx, 2).start(check_level, false);
+    }
+
+    if callback.is_scan_enabled() {
+        ScanAnalysis::new(tcx).run();
     }
 }

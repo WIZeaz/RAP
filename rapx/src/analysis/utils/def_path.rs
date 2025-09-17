@@ -8,8 +8,15 @@ use rustc_middle::ty::TyCtxt;
 use rustc_middle::ty::{FloatTy, IntTy, UintTy};
 use rustc_span::symbol::{Ident, Symbol};
 
+pub fn path_str_def_id<'tcx>(tcx: TyCtxt<'tcx>, path_str: &str) -> DefId {
+    let path: Vec<&str> = path_str.split("::").collect();
+    def_path_last_def_id(&tcx, &path)
+}
+
 pub fn def_path_last_def_id<'tcx>(tcx: &TyCtxt<'tcx>, path: &[&str]) -> DefId {
-    def_path_def_ids(tcx, path).last().unwrap()
+    def_path_def_ids(tcx, path)
+        .last()
+        .expect(&format!("can not resolve {:?}", path))
 }
 
 pub struct DefPath {

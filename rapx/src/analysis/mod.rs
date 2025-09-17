@@ -2,6 +2,7 @@ pub mod core;
 pub mod opt;
 pub mod rcanary;
 pub mod safedrop;
+pub mod scan;
 pub mod senryx;
 pub mod test;
 pub mod unsafety_isolation;

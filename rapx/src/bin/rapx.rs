@@ -4,6 +4,7 @@ extern crate rustc_driver;
 extern crate rustc_session;
 
 use rapx::{rap_info, rap_trace, utils::log::init_log, RapCallback, RAP_DEFAULT_ARGS};
+use regex::Regex;
 use rustc_session::config::ErrorOutputType;
 use rustc_session::EarlyDiagCtxt;
 use std::env;
@@ -24,7 +25,15 @@ fn main() {
     // Parse the arguments from env.
     let mut args = vec![];
     let mut compiler = RapCallback::default();
+    let re_test_crate = Regex::new(r"-test-crate=(\S*)").unwrap();
+
     for arg in env::args() {
+        if let Some((_full, [test_crate_name])) =
+            re_test_crate.captures(&arg).map(|caps| caps.extract())
+        {
+            compiler.set_test_crate(test_crate_name.to_owned());
+            continue;
+        }
         match arg.as_str() {
             "-alias" | "-alias0" | "-alias1" | "-alias2" => compiler.enable_alias(arg),
             "-adg" => compiler.enable_api_dependency(), // api dependency graph
@@ -43,6 +52,7 @@ fn main() {
             "-O" | "-opt" => compiler.enable_opt(1),
             "-opt=all" => compiler.enable_opt(2),
             "-opt=report" => compiler.enable_opt(0),
+            "-scan" => compiler.enable_scan(),
             "-ssa" => compiler.enable_ssa_transform(),
             "-audit" => compiler.enable_unsafety_isolation(1),
             "-doc" => compiler.enable_unsafety_isolation(2),
@@ -55,7 +65,7 @@ fn main() {
     }
     _ = init_log().inspect_err(|err| eprintln!("Failed to init log: {err}"));
     rap_info!("Start analysis with RAPx.");
-    rap_trace!("rap received arguments{:#?}", env::args());
+    rap_trace!("rap received arguments: {:#?}", env::args());
     rap_trace!("arguments to rustc: {:?}", &args);
 
     run_complier(&mut args, &mut compiler);

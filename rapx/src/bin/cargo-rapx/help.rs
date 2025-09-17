@@ -20,10 +20,12 @@ Analysis:
     -ownedheap      analyze if the type holds a piece of memory on heap
     -pathcond       extract path constraints
     -range          perform range analysis
+    -scan           print basic information of the crate, e.g., the number of APIs.
 
 General command: 
-    -help           show help information
-    -version        show the version of RAPx
+    -help                        show help information
+    -version                     show the version of RAPx
+    -test-crate=<package_name>   specify the tested package in the workspace
 
 NOTE: multiple detections can be processed in single run by 
 appending the options to the arguments. Like `cargo rapx -F -M`
