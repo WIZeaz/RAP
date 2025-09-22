@@ -33,23 +33,35 @@ pub fn get_visible_path_with_args<'tcx>(
 }
 
 pub fn get_visible_path<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> String {
-    // For local items, search through all modules to find re-exports
     if def_id.is_local() {
-        // Start from the crate root and search for re-exports
+        // find direct re-exported path
         let crate_def_id = rustc_hir::def_id::CRATE_DEF_ID.to_def_id();
         if let Some(reexport_name) = find_reexport_in_module(tcx, crate_def_id, def_id) {
             return reexport_name;
         }
 
-        // Also check parent modules recursively
-        let mut current_parent = tcx.opt_parent(def_id);
-        while let Some(parent) = current_parent {
-            if let Some(reexport_name) = find_reexport_in_module(tcx, parent, def_id) {
-                return reexport_name;
+        // If not found, check parent module's re-export and concatenate path
+        if let Some(parent) = tcx.opt_parent(def_id) {
+            if let Some(parent_reexport) = find_reexport_in_module(tcx, crate_def_id, parent) {
+                let item_name = tcx.item_name(def_id);
+                return format!("{}::{}", parent_reexport, item_name);
             }
-            current_parent = tcx.opt_parent(parent);
+
+            // Traverse up the module hierarchy to find a re-export
+            let mut current_parent = tcx.opt_parent(parent);
+            while let Some(ancestor) = current_parent {
+                if let Some(ancestor_reexport) =
+                    find_reexport_in_module(tcx, crate_def_id, ancestor)
+                {
+                    // Get the relative path from ancestor to def_id
+                    let relative_path = get_relative_path(tcx, ancestor, def_id);
+                    return format!("{}::{}", ancestor_reexport, relative_path);
+                }
+                current_parent = tcx.opt_parent(ancestor);
+            }
         }
     }
+
     let ret = tcx.def_path_str(def_id);
     rap_error!(
         "Could not find re-export for {:?}, falling back to def path: {}",
@@ -89,4 +101,22 @@ fn find_reexport_in_module<'tcx>(
         }
     }
     None
+}
+
+fn get_relative_path<'tcx>(tcx: TyCtxt<'tcx>, ancestor: DefId, target: DefId) -> String {
+    let mut path_components = Vec::new();
+    let mut current = target;
+
+    while current != ancestor {
+        let name = tcx.item_name(current).to_string();
+        path_components.push(name);
+        if let Some(parent) = tcx.opt_parent(current) {
+            current = parent;
+        } else {
+            break;
+        }
+    }
+
+    path_components.reverse();
+    path_components.join("::")
 }
