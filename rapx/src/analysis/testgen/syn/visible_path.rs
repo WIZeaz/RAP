@@ -1,67 +1,60 @@
-use crate::rap_error;
+use crate::{def_id, rap_error};
+use rustc_hir::def::DefKind;
 use rustc_hir::def_id::DefId;
-use rustc_middle::ty::{GenericArgsRef, TyCtxt};
+use rustc_middle::ty::{
+    AssocItemContainer, GenericArgKind, GenericArgsRef, GenericParamDefKind, TyCtxt, TyKind,
+};
 
 pub fn get_visible_path_with_args<'tcx>(
     tcx: TyCtxt<'tcx>,
     def_id: DefId,
     args: GenericArgsRef<'tcx>,
 ) -> String {
-    // Check if this is a method call (has a parent impl block)
-    let is_method = is_method_def(tcx, def_id);
-
-    let base_path = get_visible_path(tcx, def_id);
-    if !args.is_empty() {
-        if is_method {
-            // For methods, we need to separate impl generics from method generics
-            // rap_info!(
-            //     "Formatting method path for Path {:?} with args {:?}",
-            //     base_path,
-            //     args
-            // );
-            return format_method_path_with_args(tcx, def_id, args, base_path);
-        } else {
-            // For regular functions/types, treat all args as function generics
-            // Use iterator chain to avoid intermediate Vec allocation
+    // Distinguish by DefKind: free functions vs associated functions
+    match tcx.def_kind(def_id) {
+        DefKind::AssocFn => {
+            // Associated function/method
+            let base_path = get_assoc_visible_path(tcx, def_id);
+            if args.is_empty() {
+                return base_path;
+            }
+            return format_assoc_path_with_args(tcx, def_id, args, base_path);
+        }
+        DefKind::Fn => {
+            // Regular function
+            let base_path = get_fn_visible_path(tcx, def_id);
+            if args.is_empty() {
+                return base_path;
+            }
             let type_args: Vec<_> = args
                 .iter()
-                .filter_map(|arg| {
-                    match arg.kind() {
-                        rustc_middle::ty::GenericArgKind::Type(ty) => Some(ty.to_string()),
-                        rustc_middle::ty::GenericArgKind::Const(ct) => Some(ct.to_string()),
-                        // Omit lifetimes
-                        rustc_middle::ty::GenericArgKind::Lifetime(_) => None,
-                    }
+                .filter_map(|arg| match arg.kind() {
+                    GenericArgKind::Type(ty) => Some(ty.to_string()),
+                    GenericArgKind::Const(ct) => Some(ct.to_string()),
+                    GenericArgKind::Lifetime(_) => None,
                 })
                 .collect();
-
-            if !type_args.is_empty() {
-                // Pre-calculate capacity to avoid reallocations
-                let capacity = base_path.len()
-                    + 5
-                    + type_args.iter().map(|s| s.len()).sum::<usize>()
-                    + (type_args.len() - 1) * 2;
-                let mut result = String::with_capacity(capacity);
-                result.push_str(&base_path);
-                result.push_str("::<");
-                for (i, arg) in type_args.iter().enumerate() {
-                    if i > 0 {
-                        result.push_str(", ");
-                    }
-                    result.push_str(arg);
-                }
-                result.push('>');
-                return result;
+            if type_args.is_empty() {
+                base_path
+            } else {
+                format!("{}::<{}>", base_path, type_args.join(", "))
             }
         }
+        _ => {
+            let def_path = tcx.def_path_str(def_id);
+            rap_error!(
+                "At get_visible_with_args: DefId {:?} is neither a function nor an associated function. Falling back to def path: {}",
+                def_id,
+                def_path
+            );
+            def_path
+        }
     }
-
-    base_path
 }
 
-pub fn get_visible_path<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> String {
+pub fn get_fn_visible_path<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> String {
     if def_id.is_local() {
-        // find direct re-exported path
+        // Find direct re-exported path
         let crate_def_id = rustc_hir::def_id::CRATE_DEF_ID.to_def_id();
         //rap_info!("The {:?} of crate_def_id is {:?}", def_id, crate_def_id);
         if let Some(reexport_name) = find_reexport_in_module(tcx, crate_def_id, def_id) {
@@ -71,8 +64,17 @@ pub fn get_visible_path<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> String {
         // If not found, check parent module's re-export and concatenate path
         if let Some(parent) = tcx.opt_parent(def_id) {
             if let Some(parent_reexport) = find_reexport_in_module(tcx, crate_def_id, parent) {
-                let item_name = tcx.item_name(def_id);
-                return format!("{}::{}", parent_reexport, item_name);
+                if let Some(item_name) = tcx.opt_item_name(def_id) {
+                    return format!("{}::{}", parent_reexport, item_name);
+                } else {
+                    let def_path = tcx.def_path_str(def_id);
+                    rap_error!(
+                        "At get_fn_visible_1: DefId {:?} has no item name, falling back to def path: {}",
+                        def_id,
+                        def_path
+                    );
+                    return def_path;
+                }
             }
 
             // Traverse up the module hierarchy to find a re-export
@@ -89,7 +91,11 @@ pub fn get_visible_path<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> String {
             }
         }
     } else {
-        rap_error!("DefId {:?} is not local. Falling back to def path.", def_id);
+        rap_error!(
+            "At get_fn_visible_2: DefId {:?} is not local. Falling back to def path: {}",
+            def_id,
+            tcx.def_path_str(def_id)
+        );
     }
     let ret = tcx.def_path_str(def_id);
     // rap_error!(
@@ -147,149 +153,240 @@ fn get_relative_path<'tcx>(tcx: TyCtxt<'tcx>, ancestor: DefId, target: DefId) ->
     path_components.join("::")
 }
 
-/// Check if a DefId represents a method in an impl block
-fn is_method_def<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> bool {
-    if let Some(parent) = tcx.opt_parent(def_id) {
-        // Check if parent is an impl block
-        matches!(tcx.def_kind(parent), rustc_hir::def::DefKind::Impl { .. })
-    } else {
-        false
+/// Convert Ty to string, prioritizing re-export names for local ADTs
+fn ty_to_string_with_visible_path<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    ty: rustc_middle::ty::Ty<'tcx>,
+) -> String {
+    match ty.kind() {
+        TyKind::Adt(adt_def, substs) => {
+            let base = get_fn_visible_path(tcx, adt_def.did()); // Reuse function path finding logic
+                                                                // Collect type/const arguments, ignoring lifetimes
+            let mut parts: Vec<String> = Vec::new();
+            for arg in substs.iter() {
+                match arg.kind() {
+                    GenericArgKind::Type(t) => parts.push(ty_to_string_with_visible_path(tcx, t)),
+                    GenericArgKind::Const(c) => parts.push(c.to_string()),
+                    GenericArgKind::Lifetime(_) => {}
+                }
+            }
+            if parts.is_empty() {
+                base
+            } else {
+                format!("{}::<{}>", base, parts.join(", "))
+            }
+        }
+        _ => {
+            rap_info!("{:?} appear , TyKind:{:?}", ty, ty.kind());
+            ty.to_string()
+        }
     }
 }
 
-/// Format method path with proper separation of impl generics and method generics
-fn format_method_path_with_args<'tcx>(
+/// Count type/const parameters (ignoring lifetimes)
+fn count_type_const_params<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> usize {
+    let generics = tcx.generics_of(def_id);
+    generics
+        .own_params
+        .iter()
+        .filter(|p| {
+            matches!(
+                p.kind,
+                GenericParamDefKind::Type { .. } | GenericParamDefKind::Const { .. }
+            )
+        })
+        .count()
+}
+
+fn get_assoc_visible_path<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> String {
+    let assoc = tcx.associated_item(def_id);
+    let assoc_name = tcx
+        .opt_item_name(def_id)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            rap_error!(
+                "At get_assoc_visible_path_1: Associated item DefId {:?} has no name, falling back to def path: {}",
+                def_id,
+                tcx.def_path_str(def_id)
+            );
+            "unknown_method".to_string()
+        });
+
+    match assoc.container {
+        AssocItemContainer::Trait => {
+            let trait_def_id = match assoc.trait_container(tcx) {
+                Some(did) => did,
+                None => {
+                    rap_error!(
+                        "At get_assoc_visible_path_2: AssocItemContainer::Trait but no trait container for DefId {:?}, falling back to def path: {}",
+                        def_id,
+                        tcx.def_path_str(def_id)
+                    );
+                    return tcx.def_path_str(def_id);
+                }
+            };
+            let trait_path = get_fn_visible_path(tcx, trait_def_id);
+            format!("{}::{}", trait_path, assoc_name)
+        }
+
+        AssocItemContainer::Impl => {
+            let impl_def_id = match assoc.impl_container(tcx) {
+                Some(did) => did,
+                None => {
+                    rap_error!(
+                        "At get_assoc_visible_path_3: AssocItemContainer::Impl but no impl container for DefId {:?}, falling back to def path: {}",
+                        def_id,
+                        tcx.def_path_str(def_id)
+                    );
+                    return tcx.def_path_str(def_id);
+                }
+            };
+
+            let self_ty = tcx.type_of(impl_def_id).instantiate_identity();
+            let self_ty_str = ty_to_string_with_visible_path(tcx, self_ty);
+
+            //  Self::method format
+            format!("{}::{}", self_ty_str, assoc_name)
+        }
+    }
+}
+
+fn format_assoc_path_with_args<'tcx>(
     tcx: TyCtxt<'tcx>,
-    method_def_id: DefId,
+    assoc_def_id: DefId,
     args: GenericArgsRef<'tcx>,
     base_path: String,
 ) -> String {
-    // rap_info!(
-    //     "Formatting method path: base_path={}, args={:?}",
-    //     base_path,
-    //     args
-    // );
+    let assoc = tcx.associated_item(assoc_def_id);
 
-    // Get the impl block def_id
-    let impl_def_id = tcx
-        .opt_parent(method_def_id)
-        .expect("Method should have parent impl");
-
-    // Get generics count for impl
-    let impl_generics = tcx.generics_of(impl_def_id);
-    let impl_params_count = impl_generics.count();
-
-    // Pre-calculate count to avoid Vec reallocation
-    let type_count = args
+    // 收集类型/常量参数（忽略生命周期）
+    let type_args: Vec<String> = args
         .iter()
-        .filter(|arg| {
-            matches!(
-                arg.kind(),
-                rustc_middle::ty::GenericArgKind::Type(_)
-                    | rustc_middle::ty::GenericArgKind::Const(_)
-            )
+        .filter_map(|arg| match arg.kind() {
+            GenericArgKind::Type(ty) => Some(ty_to_string_with_visible_path(tcx, ty)),
+            GenericArgKind::Const(ct) => Some(ct.to_string()),
+            GenericArgKind::Lifetime(_) => None,
         })
-        .count();
+        .collect();
 
-    if type_count == 0 {
+    if type_args.is_empty() {
         return base_path;
     }
 
-    let mut type_args = Vec::with_capacity(type_count);
-    for arg in args.iter() {
-        match arg.kind() {
-            rustc_middle::ty::GenericArgKind::Type(ty) => type_args.push(ty.to_string()),
-            rustc_middle::ty::GenericArgKind::Const(ct) => type_args.push(ct.to_string()),
-            rustc_middle::ty::GenericArgKind::Lifetime(_) => continue,
+    let assoc_name = tcx
+        .opt_item_name(assoc_def_id)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            rap_error!(
+                "At format_assoc_1: Associated item DefId {:?} has no name, falling back to def path: {}",
+                assoc_def_id,
+                tcx.def_path_str(assoc_def_id)
+            );
+            "unknown_method".to_string()
+        });
+
+    match assoc.container {
+        // Trait 容器：<Self as Trait>::method::<MethodArgs>
+        AssocItemContainer::Trait => {
+            let trait_def_id = match assoc.trait_container(tcx) {
+                Some(did) => did,
+                None => {
+                    rap_error!(
+                        "At format_assoc_2: AssocItemContainer::Trait but no trait container for DefId {:?}, falling back to def path: {}",
+                        assoc_def_id,
+                        tcx.def_path_str(assoc_def_id)
+                    );
+                    return base_path;
+                }
+            };
+            let trait_path = get_fn_visible_path(tcx, trait_def_id);
+
+            // 第一个类型参数通常是 Self
+            let self_ty_str = type_args.get(0).cloned().unwrap_or_default();
+            if self_ty_str.is_empty() {
+                return base_path;
+            }
+
+            // 剩余参数作为方法泛型
+            let method_gen = if type_args.len() > 1 {
+                format!("::<{}>", type_args[1..].join(", "))
+            } else {
+                String::new()
+            };
+
+            format!(
+                "<{} as {}>::{}{}",
+                self_ty_str, trait_path, assoc_name, method_gen
+            )
+        }
+
+        // Impl 容器：统一使用 Self::method 格式（不区分 trait impl 和固有 impl）
+        AssocItemContainer::Impl => {
+            let impl_def_id = match assoc.impl_container(tcx) {
+                Some(did) => did,
+                None => return base_path,
+            };
+
+            // 获取 impl 的类型/常量参数数量
+            let impl_param_cnt = count_type_const_params(tcx, impl_def_id);
+
+            // 构造单态化的 Self 类型
+            let self_ty_str = if type_args.is_empty() {
+                // 如果没有类型参数，使用原始类型
+                let self_ty = tcx.type_of(impl_def_id).instantiate_identity();
+                ty_to_string_with_visible_path(tcx, self_ty)
+            } else {
+                // 使用单态化后的 Self 类型：从 args 的前几个参数构造 Self 类型
+                let self_ty = tcx.type_of(impl_def_id).instantiate_identity();
+                construct_monomorphized_self_type(tcx, self_ty, &type_args, impl_param_cnt)
+            };
+
+            // 统一处理：Self::method::<MethodArgs> 格式
+            // 方法泛型参数：跳过前 impl_param_cnt 个参数（属于 Self 类型）
+            let method_args = if type_args.len() > impl_param_cnt {
+                &type_args[impl_param_cnt..]
+            } else {
+                &[][..]
+            };
+
+            let method_gen = if method_args.is_empty() {
+                String::new()
+            } else {
+                format!("::<{}>", method_args.join(", "))
+            };
+
+            format!("{}::{}{}", self_ty_str, assoc_name, method_gen)
         }
     }
+}
 
-    // rap_info!(
-    //     "Type args: {:?}, impl_params_count: {}",
-    //     type_args,
-    //     impl_params_count
-    // );
+/// Construct monomorphized Self type string
+fn construct_monomorphized_self_type<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    self_ty: rustc_middle::ty::Ty<'tcx>,
+    type_args: &[String],
+    impl_param_cnt: usize,
+) -> String {
+    match self_ty.kind() {
+        TyKind::Adt(adt_def, _) => {
+            let base_name = get_fn_visible_path(tcx, adt_def.did());
 
-    // Check if base_path already contains generics (has ::<> pattern)
-    if base_path.contains("::<") {
-        //rap_info!("Base path already contains generics, need to replace them");
-        return replace_generics_in_path(base_path, &type_args, impl_params_count);
-    }
+            // Extract the first impl_param_cnt parameters as type parameters
+            let self_type_args = if type_args.len() >= impl_param_cnt && impl_param_cnt > 0 {
+                &type_args[..impl_param_cnt]
+            } else {
+                &[][..]
+            };
 
-    // Split type args between impl generics and method generics
-    let (impl_args, method_args) = if type_args.len() <= impl_params_count {
-        // All args belong to impl
-        (type_args, Vec::new())
-    } else {
-        // Split args between impl and method
-        let split_point = impl_params_count;
-        (
-            type_args[..split_point].to_vec(),
-            type_args[split_point..].to_vec(),
-        )
-    };
-
-    // rap_info!(
-    //     "Split args - impl: {:?}, method: {:?}",
-    //     impl_args,
-    //     method_args
-    // );
-
-    // Parse the base_path to construct proper method path
-    if let Some(method_name_start) = base_path.rfind("::") {
-        let (type_path, method_name) = base_path.split_at(method_name_start + 2);
-        let type_path = &type_path[..type_path.len() - 2]; // Remove the trailing "::"
-
-        // Calculate total capacity needed for the result string
-        let capacity = type_path.len() + method_name.len() + 4 + // base + "::" + method
-            if !impl_args.is_empty() { 3 + impl_args.iter().map(|s| s.len()).sum::<usize>() + (impl_args.len() - 1) * 2 } else { 0 } +
-            if !method_args.is_empty() { 3 + method_args.iter().map(|s| s.len()).sum::<usize>() + (method_args.len() - 1) * 2 } else { 0 };
-
-        let mut result = String::with_capacity(capacity);
-        result.push_str(type_path);
-
-        if !impl_args.is_empty() {
-            result.push_str("::<");
-            for (i, arg) in impl_args.iter().enumerate() {
-                if i > 0 {
-                    result.push_str(", ");
-                }
-                result.push_str(arg);
+            if self_type_args.is_empty() {
+                base_name
+            } else {
+                format!("{}::<{}>", base_name, self_type_args.join(", "))
             }
-            result.push('>');
         }
-
-        result.push_str("::");
-        result.push_str(method_name);
-
-        if !method_args.is_empty() {
-            result.push_str("::<");
-            for (i, arg) in method_args.iter().enumerate() {
-                if i > 0 {
-                    result.push_str(", ");
-                }
-                result.push_str(arg);
-            }
-            result.push('>');
-        }
-
-        //rap_info!("Generated method path: {}", result);
-        result
-    } else {
-        // Fallback: treat as regular function
-        let all_args: Vec<String> = args
-            .iter()
-            .filter_map(|arg| match arg.kind() {
-                rustc_middle::ty::GenericArgKind::Type(ty) => Some(format!("{}", ty)),
-                rustc_middle::ty::GenericArgKind::Const(ct) => Some(format!("{}", ct)),
-                rustc_middle::ty::GenericArgKind::Lifetime(_) => None,
-            })
-            .collect();
-
-        if !all_args.is_empty() {
-            format!("{}::<{}>", base_path, all_args.join(", "))
-        } else {
-            base_path
+        _ => {
+            // For non-ADT types, use string representation directly
+            self_ty.to_string()
         }
     }
 }
