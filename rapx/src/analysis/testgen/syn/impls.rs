@@ -1,6 +1,6 @@
 use super::super::context::{Context, Stmt, StmtKind, Var};
 use super::input::InputGen;
-use super::visible_path::{get_visible_path, get_visible_path_with_args};
+use super::visible_path::get_visible_path_with_args;
 use super::{SynOption, Synthesizer};
 use crate::analysis::testgen::context::UseKind;
 use crate::rap_debug;
