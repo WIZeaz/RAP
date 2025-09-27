@@ -1,4 +1,5 @@
-use crate::rap_error;
+use crate::rustc_middle::ty::print::PrintTraitRefExt;
+use crate::{def_id, rap_error};
 use rustc_hir::def::DefKind;
 use rustc_hir::def_id::DefId;
 use rustc_middle::ty::{
@@ -14,31 +15,12 @@ pub fn get_visible_path_with_args<'tcx>(
     match tcx.def_kind(def_id) {
         DefKind::AssocFn => {
             // Associated function/method
-            let base_path = get_assoc_visible_path(tcx, def_id);
-            if args.is_empty() {
-                return base_path;
-            }
-            return format_assoc_path_with_args(tcx, def_id, args, base_path);
+            return format_assoc_path_with_args(tcx, def_id, args);
         }
         DefKind::Fn => {
             // Regular function
             let base_path = get_fn_visible_path(tcx, def_id);
-            if args.is_empty() {
-                return base_path;
-            }
-            let type_args: Vec<_> = args
-                .iter()
-                .filter_map(|arg| match arg.kind() {
-                    GenericArgKind::Type(ty) => Some(ty.to_string()),
-                    GenericArgKind::Const(ct) => Some(ct.to_string()),
-                    GenericArgKind::Lifetime(_) => None,
-                })
-                .collect();
-            if type_args.is_empty() {
-                base_path
-            } else {
-                format!("{}::<{}>", base_path, type_args.join(", "))
-            }
+            return format_fn_visible_path_with_args(tcx, def_id, args, base_path);
         }
         _ => {
             let def_path = tcx.def_path_str(def_id);
@@ -91,11 +73,11 @@ pub fn get_fn_visible_path<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> String {
             }
         }
     } else {
-        rap_error!(
-            "At get_fn_visible_2: DefId {:?} is not local. Falling back to def path: {}",
-            def_id,
-            tcx.def_path_str(def_id)
-        );
+        // rap_error!(
+        //     "At get_fn_visible_2: DefId {:?} is not local. Falling back to def path: {}",
+        //     def_id,
+        //     tcx.def_path_str(def_id)
+        // );
     }
     let ret = tcx.def_path_str(def_id);
     // rap_error!(
@@ -105,6 +87,30 @@ pub fn get_fn_visible_path<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> String {
     // );
     // Fallback to regular path
     ret
+}
+
+fn format_fn_visible_path_with_args<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    def_id: DefId,
+    args: GenericArgsRef<'tcx>,
+    base_path: String,
+) -> String {
+    if args.is_empty() {
+        return base_path;
+    }
+    let type_args: Vec<_> = args
+        .iter()
+        .filter_map(|arg| match arg.kind() {
+            GenericArgKind::Type(ty) => Some(ty.to_string()),
+            GenericArgKind::Const(ct) => Some(ct.to_string()),
+            GenericArgKind::Lifetime(_) => None,
+        })
+        .collect();
+    if type_args.is_empty() {
+        base_path
+    } else {
+        format!("{}::<{}>", base_path, type_args.join(", "))
+    }
 }
 
 fn find_reexport_in_module<'tcx>(
@@ -177,7 +183,7 @@ fn ty_to_string_with_visible_path<'tcx>(
             }
         }
         _ => {
-            rap_info!("{:?} appear , TyKind:{:?}", ty, ty.kind());
+            //rap_info!("{:?} appear , TyKind:{:?}", ty, ty.kind());
             ty.to_string()
         }
     }
@@ -209,7 +215,7 @@ fn get_assoc_visible_path<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> String {
                 def_id,
                 tcx.def_path_str(def_id)
             );
-            "unknown_method".to_string()
+            tcx.def_path_str(def_id)
         });
 
     match assoc.container {
@@ -255,23 +261,17 @@ fn format_assoc_path_with_args<'tcx>(
     tcx: TyCtxt<'tcx>,
     assoc_def_id: DefId,
     args: GenericArgsRef<'tcx>,
-    base_path: String,
 ) -> String {
     let assoc = tcx.associated_item(assoc_def_id);
 
-    // 收集类型/常量参数（忽略生命周期）
     let type_args: Vec<String> = args
         .iter()
         .filter_map(|arg| match arg.kind() {
-            GenericArgKind::Type(ty) => Some(ty_to_string_with_visible_path(tcx, ty)),
+            GenericArgKind::Type(ty) => Some(ty.to_string()),
             GenericArgKind::Const(ct) => Some(ct.to_string()),
             GenericArgKind::Lifetime(_) => None,
         })
         .collect();
-
-    if type_args.is_empty() {
-        return base_path;
-    }
 
     let assoc_name = tcx
         .opt_item_name(assoc_def_id)
@@ -286,7 +286,7 @@ fn format_assoc_path_with_args<'tcx>(
         });
 
     match assoc.container {
-        // Trait 容器：<Self as Trait>::method::<MethodArgs>
+        // Trait: Use qualified path, for this situation, we think this method can be called directly without some types impl this trait
         AssocItemContainer::Trait => {
             let trait_def_id = match assoc.trait_container(tcx) {
                 Some(did) => did,
@@ -296,66 +296,86 @@ fn format_assoc_path_with_args<'tcx>(
                         assoc_def_id,
                         tcx.def_path_str(assoc_def_id)
                     );
-                    return base_path;
+                    panic!("Inconsistent state: AssocItemContainer::Trait but no trait container");
                 }
             };
             let trait_path = get_fn_visible_path(tcx, trait_def_id);
 
-            // 第一个类型参数通常是 Self
-            let self_ty_str = type_args.get(0).cloned().unwrap_or_default();
-            if self_ty_str.is_empty() {
-                return base_path;
-            }
-
-            // 剩余参数作为方法泛型
-            let method_gen = if type_args.len() > 1 {
-                format!("::<{}>", type_args[1..].join(", "))
+            let method_gen = if type_args.len() > 0 {
+                format!("::<{}>", type_args.join(", "))
             } else {
                 String::new()
             };
 
+            let self_ty = assoc.name(); // Now don't know name() returns what a symbol
             format!(
                 "<{} as {}>::{}{}",
-                self_ty_str, trait_path, assoc_name, method_gen
+                self_ty, trait_path, assoc_name, method_gen
             )
         }
 
-        // Impl 容器：统一使用 Self::method 格式（不区分 trait impl 和固有 impl）
+        // Impl: If Trait, Use qualified path; If methods, use type::method()
         AssocItemContainer::Impl => {
-            let impl_def_id = match assoc.impl_container(tcx) {
-                Some(did) => did,
-                None => return base_path,
-            };
+            let impl_def_id = assoc.impl_container(tcx).unwrap();
 
-            // 获取 impl 的类型/常量参数数量
-            let impl_param_cnt = count_type_const_params(tcx, impl_def_id);
+            if let Some(trait_ref) = tcx.impl_trait_ref(impl_def_id) {
+                let trait_ref = trait_ref.instantiate(tcx, args);
+                let trait_with_generics = trait_ref.print_trait_sugared().to_string();
+                let self_ty = trait_ref.self_ty();
+                //let trait_path = get_fn_visible_path(tcx, trait_ref.def_id);
+                //let self_ty_str = ty_to_string_with_visible_path(tcx, self_ty);
 
-            // 构造单态化的 Self 类型
-            let self_ty_str = if type_args.is_empty() {
-                // 如果没有类型参数，使用原始类型
-                let self_ty = tcx.type_of(impl_def_id).instantiate_identity();
-                ty_to_string_with_visible_path(tcx, self_ty)
+                let impl_generics = tcx.generics_of(impl_def_id);
+                let method_args = &args[impl_generics.count()..];
+                //rap_info!("trait_ref: {:?}, trait_with_generics: {:?}, self_ty: {:?}, trait_path: {}, self_ty_str: {}, impl_generics: {:?}, method_args: {:?}", trait_ref, trait_with_generics, self_ty, trait_path, self_ty_str, impl_generics, method_args);
+                let method_gen = if method_args.is_empty() {
+                    String::new()
+                } else {
+                    let method_type_args: Vec<String> = method_args
+                        .iter()
+                        .filter_map(|arg| match arg.kind() {
+                            GenericArgKind::Type(ty) => Some(ty.to_string()),
+                            GenericArgKind::Const(ct) => Some(ct.to_string()),
+                            GenericArgKind::Lifetime(_) => None,
+                        })
+                        .collect();
+                    if method_type_args.is_empty() {
+                        String::new()
+                    } else {
+                        format!("::<{}>", method_type_args.join(", "))
+                    }
+                };
+                return format!(
+                    "<{} as {}>::{}{}",
+                    self_ty, trait_with_generics, assoc_name, method_gen
+                );
             } else {
-                // 使用单态化后的 Self 类型：从 args 的前几个参数构造 Self 类型
-                let self_ty = tcx.type_of(impl_def_id).instantiate_identity();
-                construct_monomorphized_self_type(tcx, self_ty, &type_args, impl_param_cnt)
-            };
+                let impl_param_cnt = count_type_const_params(tcx, impl_def_id);
 
-            // 统一处理：Self::method::<MethodArgs> 格式
-            // 方法泛型参数：跳过前 impl_param_cnt 个参数（属于 Self 类型）
-            let method_args = if type_args.len() > impl_param_cnt {
-                &type_args[impl_param_cnt..]
-            } else {
-                &[][..]
-            };
+                let self_ty_str = if type_args.is_empty() {
+                    // use original Self type without generics
+                    let self_ty = tcx.type_of(impl_def_id).instantiate_identity();
+                    ty_to_string_with_visible_path(tcx, self_ty)
+                } else {
+                    // use monomorphized Self type: construct Self type from the first few args
+                    let self_ty = tcx.type_of(impl_def_id).instantiate_identity();
+                    construct_monomorphized_self_type(tcx, self_ty, &type_args, impl_param_cnt)
+                };
 
-            let method_gen = if method_args.is_empty() {
-                String::new()
-            } else {
-                format!("::<{}>", method_args.join(", "))
-            };
+                let method_args = if type_args.len() > impl_param_cnt {
+                    &type_args[impl_param_cnt..]
+                } else {
+                    &[][..]
+                };
 
-            format!("{}::{}{}", self_ty_str, assoc_name, method_gen)
+                let method_gen = if method_args.is_empty() {
+                    String::new()
+                } else {
+                    format!("::<{}>", method_args.join(", "))
+                };
+
+                return format!("{}::{}{}", self_ty_str, assoc_name, method_gen);
+            }
         }
     }
 }
@@ -389,88 +409,4 @@ fn construct_monomorphized_self_type<'tcx>(
             self_ty.to_string()
         }
     }
-}
-
-/// Replace generic placeholders in a path that already contains generics
-fn replace_generics_in_path(
-    path: String,
-    type_args: &[String],
-    impl_params_count: usize,
-) -> String {
-    //rap_info!("Replacing generics in path: {}", path);
-
-    // Split type args between impl generics and method generics
-    let (impl_args, method_args) = if type_args.len() <= impl_params_count {
-        (type_args, &[][..])
-    } else {
-        let split_point = impl_params_count;
-        (&type_args[..split_point], &type_args[split_point..])
-    };
-
-    // rap_info!(
-    //     "Split for replacement - impl: {:?}, method: {:?}",
-    //     impl_args,
-    //     method_args
-    // );
-
-    // Handle patterns like "S::<T>::foo" -> "S::<u128>::foo::<u16>"
-    let mut result = path;
-
-    // Step 1: Replace the first ::<...> (impl generics) with actual types
-    if !impl_args.is_empty() {
-        if let Some(start) = result.find("::<") {
-            if let Some(end_pos) = find_matching_angle_bracket(&result, start + 3) {
-                let replacement = format!("::<{}>", impl_args.join(", "));
-                result.replace_range(start..end_pos + 1, &replacement);
-                //rap_info!("After impl replacement: {}", result);
-            }
-        }
-    } else {
-        // If no impl args, remove existing impl generics placeholder
-        if let Some(start) = result.find("::<") {
-            if let Some(end_pos) = find_matching_angle_bracket(&result, start + 3) {
-                result.replace_range(start..end_pos + 1, "");
-                //rap_info!("After removing impl placeholder: {}", result);
-            }
-        }
-    }
-
-    // Step 2: Add method generics at the end if needed
-    if !method_args.is_empty() {
-        let additional_capacity =
-            3 + method_args.iter().map(|s| s.len()).sum::<usize>() + (method_args.len() - 1) * 2;
-        result.reserve(additional_capacity);
-        result.push_str("::<");
-        for (i, arg) in method_args.iter().enumerate() {
-            if i > 0 {
-                result.push_str(", ");
-            }
-            result.push_str(arg);
-        }
-        result.push('>');
-        //rap_info!("After adding method generics: {}", result);
-    }
-
-    //rap_info!("Final replaced generics result: {}", result);
-    result
-}
-
-/// Find the matching closing angle bracket for generics, handling nested brackets
-fn find_matching_angle_bracket(s: &str, start: usize) -> Option<usize> {
-    // Avoid allocating Vec<char>, use char_indices instead
-    let mut depth = 1;
-
-    for (i, ch) in s[start..].char_indices() {
-        match ch {
-            '<' => depth += 1,
-            '>' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(start + i);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
 }
