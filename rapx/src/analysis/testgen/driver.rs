@@ -1,3 +1,4 @@
+use super::path::get_path_resolver;
 use crate::analysis::core::alias_analysis::{AAResultMap, AliasAnalysis};
 use crate::analysis::core::api_dependency::ApiDependencyAnalysis;
 use crate::analysis::core::{alias_analysis, api_dependency};
@@ -168,6 +169,8 @@ pub fn driver_main(tcx: TyCtxt<'_>) -> Result<(), Box<dyn std::error::Error>> {
     let package_name = std::env::var("CARGO_PKG_NAME")?;
     let package_dir = std::env::var("CARGO_MANIFEST_DIR")?;
 
+    let resolver = get_path_resolver(tcx);
+
     while config.max_run == 0 || run_count < config.max_run {
         // 1. generate context
         let cx = ltgen.gen();
@@ -176,7 +179,7 @@ pub fn driver_main(tcx: TyCtxt<'_>) -> Result<(), Box<dyn std::error::Error>> {
         let option = SynOption {
             crate_name: local_crate_name.to_string(),
         };
-        let mut syn = FuzzDriverSynImpl::new(RandomGen::new(), option);
+        let mut syn = FuzzDriverSynImpl::new(RandomGen::new(), option, tcx, &resolver);
         let rs_str = syn.syn(cx.cx(), tcx);
 
         // 3. Build cargo project
@@ -255,8 +258,10 @@ pub fn check_and_evaluate(project: &PocProject, log: &mut impl Write) -> io::Res
         rap_info!("`cargo miri run` success, nothing interested happen");
     } else {
         rap_warn!("miri return {:?}", result.retcode);
-        if let Some(1) = result.retcode {
-            rap_warn!("this may indicate a UB bug detected");
+        match result.retcode {
+            Some(1) => rap_warn!("this may indicate a UB bug detected"),
+            None => rap_warn!("this may indicate the program is timeout"),
+            _ => {}
         }
     }
 
@@ -267,8 +272,10 @@ pub fn check_and_evaluate(project: &PocProject, log: &mut impl Write) -> io::Res
         rap_info!("`cargo run` with sanitizer success, nothing interested happen");
     } else {
         rap_warn!("`cargo run` with sanitizer return {:?}", result.retcode);
-        if let Some(1) = result.retcode {
-            rap_warn!("this may indicate a UB bug detected");
+        match result.retcode {
+            Some(1) => rap_warn!("this may indicate a UB bug detected"),
+            None => rap_warn!("this may indicate the program is timeout"),
+            _ => {}
         }
     }
 

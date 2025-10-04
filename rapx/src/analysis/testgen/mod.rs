@@ -1,6 +1,7 @@
 mod context;
 mod driver;
 mod generator;
+mod path;
 mod syn;
 mod utils;
 

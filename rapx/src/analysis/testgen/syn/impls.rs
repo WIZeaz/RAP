@@ -4,20 +4,33 @@ use super::visible_path::get_visible_path_with_args;
 use super::visible_path::ty_to_string_with_visible_path;
 use super::{SynOption, Synthesizer};
 use crate::analysis::testgen::context::UseKind;
+use crate::analysis::testgen::path::PathResolver;
 use crate::rap_debug;
 use rustc_middle::ty::{self, Ty, TyCtxt};
 
-pub struct FuzzDriverSynImpl<I: InputGen> {
+pub struct FuzzDriverSynImpl<'a, 'tcx, I: InputGen> {
     input_gen: I,
     option: SynOption,
+    tcx: TyCtxt<'tcx>,
+    resolver: &'a PathResolver<'tcx>,
 }
 
-impl<I: InputGen> FuzzDriverSynImpl<I> {
-    pub fn new(input_gen: I, option: SynOption) -> Self {
-        Self { input_gen, option }
+impl<'a, 'tcx, I: InputGen> FuzzDriverSynImpl<'a, 'tcx, I> {
+    pub fn new(
+        input_gen: I,
+        option: SynOption,
+        tcx: TyCtxt<'tcx>,
+        resolver: &'a PathResolver<'tcx>,
+    ) -> Self {
+        Self {
+            input_gen,
+            option,
+            tcx,
+            resolver,
+        }
     }
 
-    fn stmt_kind_str<'tcx>(&mut self, stmt: &Stmt<'tcx>, cx: &Context<'tcx>) -> String {
+    fn stmt_kind_str(&mut self, stmt: &Stmt<'tcx>, cx: &Context<'tcx>) -> String {
         match stmt.kind() {
             StmtKind::Call(call) => {
                 // let generics = cx.tcx().generics_of(call.fn_did());
@@ -32,7 +45,7 @@ impl<I: InputGen> FuzzDriverSynImpl<I> {
                 let args = tcx.mk_args_from_iter(args);
                 format!(
                     "{}({})",
-                    get_visible_path_with_args(tcx, call.fn_did(), args),
+                    self.resolver.path_str_with_args(call.fn_did(), args),
                     call.args
                         .iter()
                         .map(|arg| arg.to_string())
@@ -102,10 +115,6 @@ impl<I: InputGen> FuzzDriverSynImpl<I> {
         format!("{}", var)
     }
 
-    fn ty_str<'tcx>(&self, ty: Ty<'tcx>, tcx: TyCtxt<'tcx>) -> String {
-        ty_to_string_with_visible_path(tcx, ty)
-    }
-
     fn need_explicit_type_annotation(&self, stmt: &Stmt<'_>) -> bool {
         match stmt.kind() {
             StmtKind::Ref(_, _) => true,
@@ -113,14 +122,14 @@ impl<I: InputGen> FuzzDriverSynImpl<I> {
         }
     }
 
-    fn place_str<'tcx>(&self, stmt: &Stmt<'tcx>, cx: &Context<'tcx>) -> String {
+    fn place_str(&self, stmt: &Stmt<'tcx>, cx: &Context<'tcx>) -> String {
         let var = stmt.place;
         if self.need_explicit_type_annotation(stmt) {
             format!(
                 "{}{}: {}",
                 cx.var_mutability(var).prefix_str(),
                 self.var_str(var),
-                self.ty_str(cx.type_of(var), cx.tcx())
+                self.resolver.ty_str(cx.type_of(var))
             )
         } else {
             format!(
@@ -131,7 +140,7 @@ impl<I: InputGen> FuzzDriverSynImpl<I> {
         }
     }
 
-    fn stmt_str<'tcx>(&mut self, stmt: Stmt<'tcx>, cx: &Context<'tcx>) -> String {
+    fn stmt_str(&mut self, stmt: Stmt<'tcx>, cx: &Context<'tcx>) -> String {
         let var = stmt.place;
         let var_ty = cx.type_of(var);
         let stmt_str = self.stmt_kind_str(&stmt, cx);
@@ -146,7 +155,7 @@ impl<I: InputGen> FuzzDriverSynImpl<I> {
         format!("use {}::*;", self.option.crate_name)
     }
 
-    fn main_str<'tcx>(&mut self, cx: &Context<'tcx>) -> String {
+    fn main_str(&mut self, cx: &Context<'tcx>) -> String {
         let mut ret = String::new();
         ret.push_str("fn main() {\n");
         let indent = "    ";
@@ -160,7 +169,7 @@ impl<I: InputGen> FuzzDriverSynImpl<I> {
     }
 }
 
-impl<'tcx, I: InputGen> Synthesizer<'tcx> for FuzzDriverSynImpl<I> {
+impl<'a, 'tcx, I: InputGen> Synthesizer<'tcx> for FuzzDriverSynImpl<'a, 'tcx, I> {
     fn syn(&mut self, cx: &Context<'tcx>, tcx: TyCtxt<'tcx>) -> String {
         format!("{}\n{}", self.header_str(), self.main_str(cx))
     }

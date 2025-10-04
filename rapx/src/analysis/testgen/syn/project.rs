@@ -1,3 +1,5 @@
+use wait_timeout::ChildExt;
+
 use crate::rap_info;
 use std::fs::{self, File};
 use std::io::{self, Write};
@@ -173,19 +175,43 @@ impl PocProject {
             .stderr(Stdio::piped());
 
         let timer = std::time::Instant::now();
-        let output = command.output()?;
-        let elapsed = timer.elapsed();
-        Ok(CmdRecord {
-            reproduce: format!(
-                "cd {} && {} cargo {}",
-                project_path.display(),
-                env_vars_str(env_vars),
-                args.join(" ")
-            ),
-            elapsed,
-            retcode: output.status.code(),
-            stdout: output.stdout,
-            stderr: output.stderr,
-        })
+        let mut child = command.spawn()?;
+        // 10s timeout
+
+        match child.wait_timeout(Duration::from_secs(10))? {
+            Some(_) => {
+                let output = child.wait_with_output()?;
+                let elapsed = timer.elapsed();
+                Ok(CmdRecord {
+                    reproduce: format!(
+                        "cd {} && {} cargo {}",
+                        project_path.display(),
+                        env_vars_str(env_vars),
+                        args.join(" ")
+                    ),
+                    elapsed,
+                    retcode: output.status.code(),
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                })
+            }
+            // the child is timeout, we need to kill the child
+            None => {
+                child.kill()?;
+                let elapsed = timer.elapsed();
+                Ok(CmdRecord {
+                    reproduce: format!(
+                        "cd {} && {} cargo {}",
+                        project_path.display(),
+                        env_vars_str(env_vars),
+                        args.join(" ")
+                    ),
+                    elapsed,
+                    retcode: None,
+                    stdout: vec![],
+                    stderr: vec![],
+                })
+            }
+        }
     }
 }
