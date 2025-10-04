@@ -445,9 +445,8 @@ fn solve_unbound_type_generics<'tcx>(
 
             let mut p = MonoSet::new();
 
-            for impl_did in tcx
-                .all_impls(trait_def_id)
-                .chain(tcx.inherent_impls(trait_def_id).iter().map(|did| *did))
+            for impl_did in tcx.all_impls(trait_def_id)
+            // .chain(tcx.inherent_impls(trait_def_id).iter().map(|did| *did))
             {
                 // format: <arg0 as Trait<arg1, arg2>>
                 let impl_trait_ref = tcx.impl_trait_ref(impl_did).unwrap().skip_binder();

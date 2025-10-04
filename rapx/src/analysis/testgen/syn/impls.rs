@@ -102,8 +102,8 @@ impl<I: InputGen> FuzzDriverSynImpl<I> {
         format!("{}", var)
     }
 
-    fn ty_str<'tcx>(&self, ty: Ty<'tcx>) -> String {
-        format!("{}", ty)
+    fn ty_str<'tcx>(&self, ty: Ty<'tcx>, tcx: TyCtxt<'tcx>) -> String {
+        ty_to_string_with_visible_path(tcx, ty)
     }
 
     fn need_explicit_type_annotation(&self, stmt: &Stmt<'_>) -> bool {
@@ -120,7 +120,7 @@ impl<I: InputGen> FuzzDriverSynImpl<I> {
                 "{}{}: {}",
                 cx.var_mutability(var).prefix_str(),
                 self.var_str(var),
-                ty_to_string_with_visible_path(cx.tcx(), cx.type_of(var))
+                self.ty_str(cx.type_of(var), cx.tcx())
             )
         } else {
             format!(

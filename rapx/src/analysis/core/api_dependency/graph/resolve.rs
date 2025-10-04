@@ -29,6 +29,8 @@ use std::io::Write;
 use std::path::Path;
 use std::time;
 
+const MAX_TY_COMPLX: usize = 5;
+
 fn add_return_type_if_reachable<'tcx>(
     fn_did: DefId,
     args: &[ty::GenericArg<'tcx>],
@@ -205,8 +207,7 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
 
     pub fn search_reachable_apis(&mut self) -> HashMap<DefId, HashSet<Mono<'tcx>>> {
         let tcx = self.tcx;
-        let max_ty_complexity = 6;
-        let mut type_candidates = TypeCandidates::new(self.tcx, max_ty_complexity);
+        let mut type_candidates = TypeCandidates::new(self.tcx, MAX_TY_COMPLX);
 
         type_candidates.add_prelude_tys();
 
@@ -263,7 +264,7 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
                     let fn_sig = utils::fn_sig_with_generic_args(*fn_did, &mono.value, tcx);
                     let output_ty = fn_sig.output();
                     if generic_map.entry(*fn_did).or_default().insert(mono) {
-                        if !output_ty.is_unit() && ty_complexity(output_ty) <= max_ty_complexity {
+                        if !output_ty.is_unit() && ty_complexity(output_ty) <= MAX_TY_COMPLX {
                             current_tys.insert(output_ty);
                         }
                     }
