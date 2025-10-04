@@ -181,13 +181,6 @@ impl<'tcx> MonoSet<'tcx> {
         self
     }
 
-    fn filter_by_trait_bound(mut self, fn_did: DefId, tcx: TyCtxt<'tcx>) -> Self {
-        let early_fn_sig = tcx.fn_sig(fn_did);
-        self.monos
-            .retain(|args| is_args_fit_trait_bound(fn_did, &args.value, tcx));
-        self
-    }
-
     pub fn random_sample<R: Rng>(&mut self, rng: &mut R) {
         if self.monos.len() <= MAX_STEP_SET_SIZE {
             return;
@@ -526,8 +519,17 @@ pub fn resolve_mono_apis<'tcx>(
     // 2. get mono set from available types
     let ret = get_mono_set(fn_did, &available_ty, tcx).instantiate_unbound(tcx);
 
-    // 3. check trait bound
-    let ret = ret.filter_by_trait_bound(fn_did, tcx);
+    // 3. check trait bound & ty is stable
+    let ret = ret.filter(|mono| {
+        is_args_fit_trait_bound(fn_did, &mono.value, tcx)
+            && mono.value.iter().all(|arg| {
+                if let Some(ty) = arg.as_type() {
+                    !utils::is_ty_unstable(ty, tcx)
+                } else {
+                    true
+                }
+            })
+    });
 
     rap_debug!(
         "[resolve_mono_apis] fn_did: {:?}, size of mono: {:?}",

@@ -104,9 +104,7 @@ impl<'tcx> PathResolver<'tcx> {
             args.push(match arg.kind() {
                 ty::GenericArgKind::Lifetime(re) => re.to_string(),
                 ty::GenericArgKind::Type(ty) => self.ty_str(ty),
-                ty::GenericArgKind::Const(const_) => {
-                    const_.try_to_target_usize(self.tcx).unwrap().to_string()
-                }
+                ty::GenericArgKind::Const(const_) => format!("{}", const_),
             });
         }
         if !args.is_empty() {

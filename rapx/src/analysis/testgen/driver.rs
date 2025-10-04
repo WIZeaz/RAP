@@ -266,18 +266,18 @@ pub fn check_and_evaluate(project: &PocProject, log: &mut impl Write) -> io::Res
     }
 
     // run `cargo run`, with sanitizer flag (currenly only ASAN)
-    let result = project.run_cargo_cmd(&["run"], asan_env_vars())?;
-    writeln!(log, "{}", result.brief())?;
-    if result.success() {
-        rap_info!("`cargo run` with sanitizer success, nothing interested happen");
-    } else {
-        rap_warn!("`cargo run` with sanitizer return {:?}", result.retcode);
-        match result.retcode {
-            Some(1) => rap_warn!("this may indicate a UB bug detected"),
-            None => rap_warn!("this may indicate the program is timeout"),
-            _ => {}
-        }
-    }
+    // let result = project.run_cargo_cmd(&["run"], asan_env_vars())?;
+    // writeln!(log, "{}", result.brief())?;
+    // if result.success() {
+    //     rap_info!("`cargo run` with sanitizer success, nothing interested happen");
+    // } else {
+    //     rap_warn!("`cargo run` with sanitizer return {:?}", result.retcode);
+    //     match result.retcode {
+    //         Some(1) => rap_warn!("this may indicate a UB bug detected"),
+    //         None => rap_warn!("this may indicate the program is timeout"),
+    //         _ => {}
+    //     }
+    // }
 
     Ok(())
 }
