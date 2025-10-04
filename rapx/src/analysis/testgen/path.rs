@@ -1,11 +1,9 @@
-use std::collections::HashMap;
-
 use itertools::Itertools;
 use rustc_hir::def::DefKind;
-use rustc_hir::def_id::{DefId, LocalDefId, LOCAL_CRATE};
-use rustc_hir::GenericArgs;
-use rustc_middle::ty::{self, GenericArgsRef, Ty, TyCtxt, TyKind};
+use rustc_hir::def_id::{DefId, LOCAL_CRATE};
+use rustc_middle::ty::{self, Ty, TyCtxt, TyKind};
 use rustc_span::Ident;
+use std::collections::HashMap;
 
 pub struct PathResolver<'tcx> {
     tcx: TyCtxt<'tcx>,

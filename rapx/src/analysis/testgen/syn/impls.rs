@@ -1,12 +1,10 @@
 use super::super::context::{Context, Stmt, StmtKind, Var};
 use super::input::InputGen;
-use super::visible_path::get_visible_path_with_args;
-use super::visible_path::ty_to_string_with_visible_path;
 use super::{SynOption, Synthesizer};
 use crate::analysis::testgen::context::UseKind;
 use crate::analysis::testgen::path::PathResolver;
 use crate::rap_debug;
-use rustc_middle::ty::{self, Ty, TyCtxt};
+use rustc_middle::ty::{self, TyCtxt};
 
 pub struct FuzzDriverSynImpl<'a, 'tcx, I: InputGen> {
     input_gen: I,
