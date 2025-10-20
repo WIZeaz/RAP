@@ -301,3 +301,19 @@ fn test_interprocedual_range_analysis() {
         );
     }
 }
+
+#[test]
+fn test_callgraph_dynamic_dispatch() {
+    let output = running_tests_with_arg("callgraph/dynamic", "-callgraph");
+
+    let expected_calls = vec!["-> <Dog as Animal>::speak", "-> <Cat as Animal>::speak"];
+
+    for expected in expected_calls {
+        assert!(
+            output.contains(expected),
+            "Missing dynamic call '{}'\nFull output:\n{}",
+            expected,
+            output
+        );
+    }
+}
