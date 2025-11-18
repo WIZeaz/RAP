@@ -397,7 +397,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
                             if id == drop()
                                 || id == drop_in_place()
                                 || id == manually_drop()
-                                || id == dealloc()
+                                || dealloc_opt().map(|f| f == id).unwrap_or(false)
                             {
                                 cur_bb.drops.push(terminator.clone());
                             }
