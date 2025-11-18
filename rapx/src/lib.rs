@@ -1,5 +1,6 @@
 #![feature(rustc_private)]
 #![feature(box_patterns)]
+#![feature(macro_metavar_expr_concat)]
 
 pub mod analysis;
 pub mod def_id;
