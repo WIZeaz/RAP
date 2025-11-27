@@ -39,7 +39,7 @@ impl<'tcx> UnsafetyIsolationCheck<'tcx> {
         }
         // println!("single {:?}",self.uigs.len());
         // println!("single {:?}",self.single.len());
-        render_dot_graphs(dot_strs);
+        // render_dot_graphs(dot_strs);
         // println!("{:?}", dot_strs);
     }
 
