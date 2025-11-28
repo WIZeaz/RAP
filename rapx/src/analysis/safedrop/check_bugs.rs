@@ -58,9 +58,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
             return false;
         }
         //if is a dangling pointer check, only check the pointer type varible.
-        if self.values[node].is_dangling() == false
-            && (dangling && self.values[node].is_ptr() || !dangling)
-        {
+        if self.values[node].is_dropped() && (dangling && self.values[node].is_ptr() || !dangling) {
             return true;
         }
         record.insert(node);
@@ -95,7 +93,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
 
     pub fn df_check(&mut self, drop: usize, span: Span, flag_cleanup: bool) -> bool {
         let root = self.values[drop].local;
-        if self.values[drop].is_dangling() {
+        if !self.values[drop].is_dropped() {
             return false;
         }
         if flag_cleanup {
@@ -112,26 +110,23 @@ impl<'tcx> SafeDropGraph<'tcx> {
         return true;
     }
 
-    pub fn dp_check(&mut self, current_block: &BlockNode<'tcx>) {
-        match current_block.is_cleanup {
-            true => {
-                for i in 0..self.arg_size {
-                    if self.values[i + 1].is_ptr() && self.is_dangling(i + 1) {
-                        self.bug_records.dp_bugs_unwind.insert(self.span);
-                        rap_warn!("DP bug for local {:?}", i + 1);
-                    }
+    pub fn dp_check(&mut self, flag_cleanup: bool) {
+        if flag_cleanup {
+            for i in 0..self.arg_size {
+                if self.values[i + 1].is_ptr() && self.is_dangling(i + 1) {
+                    self.bug_records.dp_bugs_unwind.insert(self.span);
+                    rap_debug!("DP bug for {:?}", self.values[i + 1]);
                 }
             }
-            false => {
-                if self.values[0].may_drop && self.is_dangling(0) {
-                    self.bug_records.dp_bugs.insert(self.span);
-                    rap_warn!("DP bug for local {:?}", 0);
-                } else {
-                    for i in 0..self.arg_size {
-                        if self.values[i + 1].is_ptr() && self.is_dangling(i + 1) {
-                            self.bug_records.dp_bugs.insert(self.span);
-                            rap_warn!("DP bug for local {:?}", i + 1);
-                        }
+        } else {
+            if self.values[0].may_drop && self.is_dangling(0) {
+                self.bug_records.dp_bugs.insert(self.span);
+                rap_debug!("DP bug for {:?}", self.values[0]);
+            } else {
+                for i in 0..self.arg_size {
+                    if self.values[i + 1].is_ptr() && self.is_dangling(i + 1) {
+                        self.bug_records.dp_bugs.insert(self.span);
+                        rap_debug!("DP bug for {:?}", self.values[i + 1]);
                     }
                 }
             }

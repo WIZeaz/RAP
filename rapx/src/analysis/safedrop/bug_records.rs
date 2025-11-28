@@ -34,6 +34,7 @@ impl BugRecords {
 
     pub fn is_bug_free(&self) -> bool {
         self.df_bugs.is_empty()
+            && self.df_bugs_unwind.is_empty()
             && self.uaf_bugs.is_empty()
             && self.dp_bugs.is_empty()
             && self.dp_bugs_unwind.is_empty()
@@ -58,18 +59,32 @@ impl BugRecords {
                     );
                 }
             }
+            let message = Level::Warning
+                .title("Double free detected.")
+                .snippet(snippet);
+            let renderer = Renderer::styled();
+            println!("{}", renderer.render(message));
+        }
+        if !self.df_bugs_unwind.is_empty() {
+            rap_warn!("Double free detected in function {:}", fn_name);
+            let code_source = span_to_source_code(span);
+            let filename = span_to_filename(span);
+            let mut snippet = Snippet::source(&code_source)
+                .line_start(span_to_line_number(span))
+                .origin(&filename)
+                .fold(false);
             for i in self.df_bugs_unwind.iter() {
                 //todo: remove this condition
                 if are_spans_in_same_file(span, *i.1) {
                     snippet = snippet.annotation(
                         Level::Warning
                             .span(relative_pos_range(span, *i.1))
-                            .label("Double free in unwinding paths detected."),
+                            .label("Double free detected during unwinding."),
                     );
                 }
             }
             let message = Level::Warning
-                .title("Double free detected.")
+                .title("Double free detected during unwinding.")
                 .snippet(snippet);
             let renderer = Renderer::styled();
             println!("{}", renderer.render(message));

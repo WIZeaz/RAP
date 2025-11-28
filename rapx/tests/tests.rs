@@ -35,6 +35,15 @@ fn test_df_min() {
 }
 
 #[test]
+fn test_df_unwinding() {
+    let output = running_tests_with_arg("uaf/df_unwinding", "-F");
+    assert_eq!(
+        output.contains("Double free detected"),
+        true
+    );
+}
+
+#[test]
 fn test_dp_lengthy() {
     let output = running_tests_with_arg("uaf/dp_lengthy", "-F");
     assert_eq!(
@@ -100,19 +109,13 @@ fn test_uaf_swithint() {
 #[test]
 fn test_false_case1() {
     let output = running_tests_with_arg("uaf/false_case1", "-F");
-    assert_eq!(
-        output.contains("Double free detected"),
-        false 
-    );
+    assert_eq!(output.contains("Double free detected"), false);
 }
 
 #[test]
 fn test_false_case2() {
     let output = running_tests_with_arg("uaf/false_case2", "-F");
-    assert_eq!(
-        output.contains("Use after free detected"),
-        false
-    );
+    assert_eq!(output.contains("Use after free detected"), false);
 }
 
 #[test]

@@ -241,7 +241,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
                     0 => {
                         // check the bugs.
                         if Self::should_check(self.def_id) {
-                            self.dp_check(&cur_block);
+                            self.dp_check(cur_block.is_cleanup);
                         }
                         return;
                     }
@@ -306,7 +306,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
             match cur_block.next.len() {
                 0 => {
                     if Self::should_check(self.def_id) {
-                        self.dp_check(&cur_block);
+                        self.dp_check(cur_block.is_cleanup);
                     }
                     return;
                 }
