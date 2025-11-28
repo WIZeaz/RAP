@@ -121,11 +121,11 @@ impl ValueNode {
         }
     }
 
-    pub fn dead(&mut self) {
+    pub fn drop(&mut self) {
         self.birth = -1;
     }
 
-    pub fn is_alive(&self) -> bool {
+    pub fn is_dangling(&self) -> bool {
         self.birth > -1
     }
 
@@ -166,7 +166,7 @@ pub struct SafeDropGraph<'tcx> {
     // a threhold to avoid path explosion.
     pub visit_times: usize,
     pub alias_set: Vec<usize>,
-    pub dead_record: Vec<bool>,
+    pub drop_record: Vec<bool>,
     // analysis of heap item
     pub adt_owner: OHAResultMap,
     pub child_scc: FxHashMap<
@@ -193,7 +193,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
         let arg_size = body.arg_count;
         let mut values = Vec::<ValueNode>::new();
         let mut alias = Vec::<usize>::new();
-        let mut dead = Vec::<bool>::new();
+        let mut drop_record_vec = Vec::<bool>::new();
         let ty_env = TypingEnv::post_analysis(tcx, def_id);
         for (local, local_decl) in locals.iter_enumerated() {
             let need_drop = local_decl.ty.needs_drop(tcx, ty_env); // the type is drop
@@ -206,7 +206,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
             );
             node.kind = kind(local_decl.ty);
             alias.push(alias.len());
-            dead.push(false);
+            drop_record_vec.push(false);
             values.push(node);
         }
 
@@ -292,7 +292,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
                                 lvl0.field_id = 0;
                                 values[lv_local].fields.insert(0, lvl0.index);
                                 alias.push(alias.len());
-                                dead.push(false);
+                                drop_record_vec.push(false);
                                 values.push(lvl0);
                             }
                             match x {
@@ -484,7 +484,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
             bug_records: BugRecords::new(),
             visit_times: 0,
             alias_set: alias,
-            dead_record: dead,
+            drop_record: drop_record_vec,
             adt_owner,
             child_scc: FxHashMap::default(),
             disc_map,

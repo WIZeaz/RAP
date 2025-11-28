@@ -7,6 +7,7 @@ use rustc_span::symbol::Symbol;
 use rustc_span::Span;
 
 use crate::rap_warn;
+use crate::rap_debug;
 
 impl<'tcx> SafeDropGraph<'tcx> {
     pub fn report_bugs(&self) {
@@ -39,7 +40,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
             && (!self.values[aliaset_idx].is_ptr()
                 || self.values[aliaset_idx].local != local
                 || is_func_call)
-            && self.exist_dead(aliaset_idx, &mut record, false)
+            && self.already_dropped(aliaset_idx, &mut record, false)
             && !self.bug_records.uaf_bugs.contains(&span)
         {
             self.bug_records.uaf_bugs.insert(span.clone());
@@ -47,7 +48,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
         }
     }
 
-    pub fn exist_dead(
+    pub fn already_dropped(
         &mut self,
         node: usize,
         record: &mut FxHashSet<usize>,
@@ -57,24 +58,30 @@ impl<'tcx> SafeDropGraph<'tcx> {
             return false;
         }
         //if is a dangling pointer check, only check the pointer type varible.
-        if self.values[node].is_alive() == false
+        if self.values[node].is_dangling() == false
             && (dangling && self.values[node].is_ptr() || !dangling)
         {
             return true;
         }
         record.insert(node);
         if self.union_has_alias(node) {
+            // for i in self.values[node].alias.clone().into_iter() {
+            //     if i != node && record.contains(&i) == false && self.already_dropped(i, record, dangling)
+            //     {
+            //         return true;
+            //     }
+            // }
             for i in 0..self.alias_set.len() {
                 if i != node && !self.union_is_same(i, node) {
                     continue;
                 }
-                if record.contains(&i) == false && self.exist_dead(i, record, dangling) {
+                if record.contains(&i) == false && self.already_dropped(i, record, dangling) {
                     return true;
                 }
             }
         }
         for i in self.values[node].fields.clone().into_iter() {
-            if record.contains(&i.1) == false && self.exist_dead(i.1, record, dangling) {
+            if record.contains(&i.1) == false && self.already_dropped(i.1, record, dangling) {
                 return true;
             }
         }
@@ -83,18 +90,26 @@ impl<'tcx> SafeDropGraph<'tcx> {
 
     pub fn is_dangling(&mut self, local: usize) -> bool {
         let mut record = FxHashSet::default();
-        return self.exist_dead(local, &mut record, local != 0);
+        return self.already_dropped(local, &mut record, local != 0);
     }
 
-    pub fn df_check(&mut self, drop: usize, span: Span) -> bool {
+    pub fn df_check(&mut self, drop: usize, span: Span, flag_cleanup: bool) -> bool {
         let root = self.values[drop].local;
-        if self.values[drop].is_alive() == false
-            && self.bug_records.df_bugs.contains_key(&root) == false
-        {
-            self.bug_records.df_bugs.insert(root, span.clone());
-            rap_warn!("DF bug for {:?}", drop);
+        if self.values[drop].is_dangling() {
+            return false;
         }
-        return self.values[drop].is_alive() == false;
+        if flag_cleanup {
+            if !self.bug_records.df_bugs_unwind.contains_key(&root) {
+                self.bug_records.df_bugs_unwind.insert(root, span.clone());
+                rap_debug!("DF bug for {:?} during unwinding", drop);
+            }
+        } else {
+            if !self.bug_records.df_bugs.contains_key(&root) {
+                self.bug_records.df_bugs.insert(root, span.clone());
+                rap_debug!("DF bug for {:?}", drop);
+            }
+        }
+        return true;
     }
 
     pub fn dp_check(&mut self, current_block: &BlockNode<'tcx>) {
@@ -123,19 +138,30 @@ impl<'tcx> SafeDropGraph<'tcx> {
         }
     }
 
-    pub fn dead_node(&mut self, drop: usize, birth: usize, info: &SourceInfo, alias: bool) {
+    /*
+     * Mark the node as dropped.
+     * flag_cleanup: used to distinguish if a bug occurs in the unwinding path.
+     */
+    pub fn drop_node(
+        &mut self,
+        drop: usize,
+        birth: usize,
+        info: &SourceInfo,
+        flag_inprocess: bool,
+        flag_cleanup: bool,
+    ) {
         //Rc drop
         if self.values[drop].is_corner_case() {
             return;
         }
         //check if there is a double free bug.
-        if !alias && self.df_check(drop, info.span) {
+        if !flag_inprocess && self.df_check(drop, info.span, flag_cleanup) {
             return;
         }
-        if self.dead_record[drop] {
+        if self.drop_record[drop] {
             return;
         } else {
-            self.dead_record[drop] = true;
+            self.drop_record[drop] = true;
         }
         //drop their alias
         if self.alias_set[drop] != drop {
@@ -143,28 +169,28 @@ impl<'tcx> SafeDropGraph<'tcx> {
             //     if self.values[i].is_ref() {
             //         continue;
             //     }
-            //     self.dead_node(i, birth, info, true);
+            //     self.drop_node(i, birth, info, true);
             // }
             for i in 0..self.values.len() {
                 if !self.union_is_same(drop, i) || i == drop || self.values[i].is_ref() {
                     continue;
                 }
-                self.dead_node(i, birth, info, true);
+                self.drop_node(i, birth, info, true, flag_cleanup);
             }
         }
         //drop the fields of the root node.
         //alias flag is used to avoid the fields of the alias are dropped repeatly.
-        if alias == false {
-            for i in self.values[drop].fields.clone().into_iter() {
-                if self.values[drop].is_tuple() == true && self.values[i.1].need_drop == false {
+        if !flag_inprocess {
+            for (_, field_idx) in self.values[drop].fields.clone() {
+                if self.values[drop].is_tuple() && !self.values[field_idx].need_drop {
                     continue;
                 }
-                self.dead_node(i.1, birth, info, false);
+                self.drop_node(field_idx, birth, info, false, flag_cleanup);
             }
         }
         //SCC.
         if self.values[drop].birth < birth as isize && self.values[drop].may_drop {
-            self.values[drop].dead();
+            self.values[drop].drop();
         }
     }
 

@@ -16,6 +16,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
     // analyze the drop statement and update the liveness for nodes.
     pub fn drop_check(&mut self, bb_index: usize, tcx: TyCtxt<'tcx>) {
         let cur_block = self.blocks[bb_index].clone();
+        let is_cleanup = cur_block.is_cleanup;
         for drop in cur_block.drops {
             match drop.kind {
                 TerminatorKind::Drop {
@@ -30,9 +31,9 @@ impl<'tcx> SafeDropGraph<'tcx> {
                         continue;
                     }
                     let birth = self.scc_indices[bb_index];
-                    let drop_local = self.projection(tcx, false, place.clone());
+                    let local = self.projection(tcx, false, place.clone());
                     let info = drop.source_info.clone();
-                    self.dead_node(drop_local, birth, &info, false);
+                    self.drop_node(local, birth, &info, false, is_cleanup);
                 }
                 TerminatorKind::Call {
                     func: _, ref args, ..
@@ -47,9 +48,9 @@ impl<'tcx> SafeDropGraph<'tcx> {
                                 return;
                             }
                         };
-                        let drop_local = self.projection(tcx, false, place.clone());
+                        let local = self.projection(tcx, false, place.clone());
                         let info = drop.source_info.clone();
-                        self.dead_node(drop_local, birth, &info, false);
+                        self.drop_node(local, birth, &info, false, is_cleanup);
                     }
                 }
                 _ => {}
@@ -83,13 +84,13 @@ impl<'tcx> SafeDropGraph<'tcx> {
         let backup_values = self.values.clone(); // duplicate the status when visiting different paths;
         let backup_constant = self.constant.clone();
         let backup_alias_set = self.alias_set.clone();
-        let backup_dead = self.dead_record.clone();
+        let backup_drop_record = self.drop_record.clone();
         self.check(bb_index, tcx, fn_map);
         /* restore after visit */
         self.values = backup_values;
         self.constant = backup_constant;
         self.alias_set = backup_alias_set;
-        self.dead_record = backup_dead;
+        self.drop_record = backup_drop_record;
     }
 
     pub fn split_check_with_cond(
@@ -104,7 +105,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
         let backup_values = self.values.clone(); // duplicate the status when visiting different paths;
         let backup_constant = self.constant.clone();
         let backup_alias_set = self.alias_set.clone();
-        let backup_dead = self.dead_record.clone();
+        let backup_drop_record = self.drop_record.clone();
         /* add control-sensitive indicator to the path status */
         self.constant.insert(path_discr_id, path_discr_val);
         self.check(bb_index, tcx, fn_map);
@@ -112,7 +113,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
         self.values = backup_values;
         self.constant = backup_constant;
         self.alias_set = backup_alias_set;
-        self.dead_record = backup_dead;
+        self.drop_record = backup_drop_record;
     }
 
     // the core function of the safedrop.

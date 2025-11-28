@@ -58,6 +58,16 @@ impl BugRecords {
                     );
                 }
             }
+            for i in self.df_bugs_unwind.iter() {
+                //todo: remove this condition
+                if are_spans_in_same_file(span, *i.1) {
+                    snippet = snippet.annotation(
+                        Level::Warning
+                            .span(relative_pos_range(span, *i.1))
+                            .label("Double free in unwinding paths detected."),
+                    );
+                }
+            }
             let message = Level::Warning
                 .title("Double free detected.")
                 .snippet(snippet);

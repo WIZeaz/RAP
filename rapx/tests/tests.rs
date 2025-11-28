@@ -98,10 +98,19 @@ fn test_uaf_swithint() {
 }
 
 #[test]
-fn test_uaf_swithint_diffbranch() {
-    let output = running_tests_with_arg("uaf/uaf_swithint_diffbranch", "-F");
+fn test_false_case1() {
+    let output = running_tests_with_arg("uaf/false_case1", "-F");
     assert_eq!(
-        output.contains("Use after free detected in function \"evil_test\""),
+        output.contains("Double free detected"),
+        false 
+    );
+}
+
+#[test]
+fn test_false_case2() {
+    let output = running_tests_with_arg("uaf/false_case2", "-F");
+    assert_eq!(
+        output.contains("Use after free detected"),
         false
     );
 }

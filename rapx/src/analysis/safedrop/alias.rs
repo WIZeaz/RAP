@@ -174,7 +174,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
                         node.field_id = field_idx;
                         self.values[proj_id].fields.insert(field_idx, node.index);
                         self.alias_set.push(self.alias_set.len());
-                        self.dead_record.push(false);
+                        self.drop_record.push(false);
                         self.values.push(node);
                     }
                     proj_id = *self.values[proj_id].fields.get(&field_idx).unwrap();
@@ -223,7 +223,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
                 node.field_id = field.0;
                 self.values[lv].fields.insert(field.0, node.index);
                 self.alias_set.push(self.alias_set.len());
-                self.dead_record.push(false);
+                self.drop_record.push(false);
                 self.values.push(node);
             }
             let lv_field = *(self.values[lv].fields.get(&field.0).unwrap());
@@ -251,7 +251,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
                 node.field_id = *index;
                 self.values[lv].fields.insert(*index, node.index);
                 self.alias_set.push(self.alias_set.len());
-                self.dead_record.push(false);
+                self.drop_record.push(false);
                 self.values.push(node);
             }
             lv = *self.values[lv].fields.get(&index).unwrap();
@@ -272,7 +272,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
                 node.field_id = *index;
                 self.values[rv].fields.insert(*index, node.index);
                 self.alias_set.push(self.values.len());
-                self.dead_record.push(false);
+                self.drop_record.push(false);
                 self.values.push(node);
             }
             rv = *self.values[rv].fields.get(&index).unwrap();
