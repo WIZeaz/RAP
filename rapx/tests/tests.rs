@@ -37,10 +37,7 @@ fn test_df_min() {
 #[test]
 fn test_df_unwinding() {
     let output = running_tests_with_arg("uaf/df_unwinding", "-F");
-    assert_eq!(
-        output.contains("Double free detected"),
-        true
-    );
+    assert_eq!(output.contains("Double free detected"), true);
 }
 
 #[test]

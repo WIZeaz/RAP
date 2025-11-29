@@ -336,19 +336,41 @@ impl<'tcx> SafeDropGraph<'tcx> {
                     ref targets,
                 } = cur_block.switch_stmts[0].clone().kind
                 {
+                    rap_debug!("{:?}", cur_block.switch_stmts[0]);
+                    rap_debug!("{:?}", self.constant);
                     match discr {
                         Copy(p) | Move(p) => {
                             let place = self.projection(tcx, false, *p);
-                            if let Some(father) = self.disc_map.get(&self.values[place].local) {
-                                if let Some(constant) = self.constant.get(father) {
-                                    if *constant != usize::MAX {
-                                        single_target = true;
-                                        sw_val = *constant;
+                            let local_decls = &tcx.optimized_mir(self.def_id).local_decls;
+                            let place_ty = (*p).ty(local_decls, tcx);
+                            rap_debug!("place {:?}", place);
+                            match place_ty.ty.kind() {
+                                TyKind::Bool => {
+                                    rap_debug!("SwitchInt via Bool");
+                                    if let Some(constant) = self.constant.get(&place) {
+                                        if *constant != usize::MAX {
+                                            single_target = true;
+                                            sw_val = *constant;
+                                        }
                                     }
-                                }
-                                if self.values[place].local == place {
-                                    path_discr_id = *father;
+                                    path_discr_id = place;
                                     sw_targets = Some(targets.clone());
+                                }
+                                _ => {
+                                    if let Some(father) =
+                                        self.disc_map.get(&self.values[place].local)
+                                    {
+                                        if let Some(constant) = self.constant.get(father) {
+                                            if *constant != usize::MAX {
+                                                single_target = true;
+                                                sw_val = *constant;
+                                            }
+                                        }
+                                        if self.values[place].local == place {
+                                            path_discr_id = *father;
+                                            sw_targets = Some(targets.clone());
+                                        }
+                                    }
                                 }
                             }
                         }

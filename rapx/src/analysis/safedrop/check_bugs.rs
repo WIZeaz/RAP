@@ -99,7 +99,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
         if flag_cleanup {
             if !self.bug_records.df_bugs_unwind.contains_key(&root) {
                 self.bug_records.df_bugs_unwind.insert(root, span.clone());
-                rap_debug!("DF bug for {:?} during unwinding", drop);
+                rap_info!("DF bug for {:?} during unwinding", drop);
             }
         } else {
             if !self.bug_records.df_bugs.contains_key(&root) {
