@@ -14,8 +14,8 @@ pub const VISIT_LIMIT: usize = 1000;
 
 impl<'tcx> SafeDropGraph<'tcx> {
     // analyze the drop statement and update the liveness for nodes.
-    pub fn drop_check(&mut self, bb_index: usize, tcx: TyCtxt<'tcx>) {
-        let cur_block = self.blocks[bb_index].clone();
+    pub fn drop_check(&mut self, bb_idx: usize, tcx: TyCtxt<'tcx>) {
+        let cur_block = self.blocks[bb_idx].clone();
         let is_cleanup = cur_block.is_cleanup;
         for drop in cur_block.drops {
             match drop.kind {
@@ -30,16 +30,16 @@ impl<'tcx> SafeDropGraph<'tcx> {
                     if !self.drop_heap_item_check(place, tcx) {
                         continue;
                     }
-                    let birth = self.scc_indices[bb_index];
+                    let birth = self.scc_indices[bb_idx];
                     let local = self.projection(tcx, false, place.clone());
                     let info = drop.source_info.clone();
-                    self.drop_node(local, birth, &info, false, is_cleanup);
+                    self.drop_node(local, birth, &info, false, bb_idx, is_cleanup);
                 }
                 TerminatorKind::Call {
                     func: _, ref args, ..
                 } => {
                     if args.len() > 0 {
-                        let birth = self.scc_indices[bb_index];
+                        let birth = self.scc_indices[bb_idx];
                         let place = match args[0].node {
                             Operand::Copy(place) => place,
                             Operand::Move(place) => place,
@@ -50,7 +50,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
                         };
                         let local = self.projection(tcx, false, place.clone());
                         let info = drop.source_info.clone();
-                        self.drop_node(local, birth, &info, false, is_cleanup);
+                        self.drop_node(local, birth, &info, false, bb_idx, is_cleanup);
                     }
                 }
                 _ => {}
@@ -79,13 +79,13 @@ impl<'tcx> SafeDropGraph<'tcx> {
         }
     }
 
-    pub fn split_check(&mut self, bb_index: usize, tcx: TyCtxt<'tcx>, fn_map: &MopAAResultMap) {
+    pub fn split_check(&mut self, bb_idx: usize, tcx: TyCtxt<'tcx>, fn_map: &MopAAResultMap) {
         /* duplicate the status before visiting a path; */
         let backup_values = self.values.clone(); // duplicate the status when visiting different paths;
         let backup_constant = self.constant.clone();
         let backup_alias_set = self.alias_set.clone();
         let backup_drop_record = self.drop_record.clone();
-        self.check(bb_index, tcx, fn_map);
+        self.check(bb_idx, tcx, fn_map);
         /* restore after visit */
         self.values = backup_values;
         self.constant = backup_constant;
@@ -95,7 +95,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
 
     pub fn split_check_with_cond(
         &mut self,
-        bb_index: usize,
+        bb_idx: usize,
         path_discr_id: usize,
         path_discr_val: usize,
         tcx: TyCtxt<'tcx>,
@@ -108,7 +108,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
         let backup_drop_record = self.drop_record.clone();
         /* add control-sensitive indicator to the path status */
         self.constant.insert(path_discr_id, path_discr_val);
-        self.check(bb_index, tcx, fn_map);
+        self.check(bb_idx, tcx, fn_map);
         /* restore after visit */
         self.values = backup_values;
         self.constant = backup_constant;
@@ -117,29 +117,29 @@ impl<'tcx> SafeDropGraph<'tcx> {
     }
 
     // the core function of the safedrop.
-    pub fn check(&mut self, bb_index: usize, tcx: TyCtxt<'tcx>, fn_map: &MopAAResultMap) {
+    pub fn check(&mut self, bb_idx: usize, tcx: TyCtxt<'tcx>, fn_map: &MopAAResultMap) {
         self.visit_times += 1;
         if self.visit_times > VISIT_LIMIT {
             return;
         }
-        let cur_block = self.blocks[self.scc_indices[bb_index]].clone();
-        self.alias_bb(self.scc_indices[bb_index], tcx);
-        self.alias_bbcall(self.scc_indices[bb_index], tcx, fn_map);
-        self.drop_check(self.scc_indices[bb_index], tcx);
+        let cur_block = self.blocks[self.scc_indices[bb_idx]].clone();
+        self.alias_bb(self.scc_indices[bb_idx], tcx);
+        self.alias_bbcall(self.scc_indices[bb_idx], tcx, fn_map);
+        self.drop_check(self.scc_indices[bb_idx], tcx);
 
-        if self.child_scc.get(&self.scc_indices[bb_index]).is_some() {
-            let init_index = self.scc_indices[bb_index];
+        if self.child_scc.get(&self.scc_indices[bb_idx]).is_some() {
+            let init_idx = self.scc_indices[bb_idx];
             let (init_block, cur_targets, scc_block_set) =
-                self.child_scc.get(&init_index).unwrap().clone();
+                self.child_scc.get(&init_idx).unwrap().clone();
 
-            for enum_index in cur_targets.all_targets() {
+            for enum_idx in cur_targets.all_targets() {
                 let backup_values = self.values.clone();
                 let backup_constant = self.constant.clone();
 
-                let mut block_node = if bb_index == init_index {
+                let mut block_node = if bb_idx == init_idx {
                     init_block.clone()
                 } else {
-                    self.blocks[bb_index].clone()
+                    self.blocks[bb_idx].clone()
                 };
 
                 if !block_node.switch_stmts.is_empty() {
@@ -150,18 +150,18 @@ impl<'tcx> SafeDropGraph<'tcx> {
                     };
                     if cur_targets == targets {
                         block_node.next = FxHashSet::default();
-                        block_node.next.insert(enum_index.index());
+                        block_node.next.insert(enum_idx.index());
                     }
                 }
 
                 let mut work_list = Vec::new();
                 let mut work_set = FxHashSet::<usize>::default();
-                work_list.push(bb_index);
-                work_set.insert(bb_index);
+                work_list.push(bb_idx);
+                work_set.insert(bb_idx);
                 while !work_list.is_empty() {
                     let current_node = work_list.pop().unwrap();
                     block_node.scc_sub_blocks.push(current_node);
-                    let real_node = if current_node != init_index {
+                    let real_node = if current_node != init_idx {
                         self.blocks[current_node].clone()
                     } else {
                         init_block.clone()
@@ -179,7 +179,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
                         };
 
                         if cur_targets == *targets {
-                            block_node.next.insert(enum_index.index());
+                            block_node.next.insert(enum_idx.index());
                         } else {
                             for next in &real_node.next {
                                 block_node.next.insert(*next);
@@ -202,12 +202,10 @@ impl<'tcx> SafeDropGraph<'tcx> {
                         };
 
                         if cur_targets == *targets {
-                            let next_index = enum_index.index();
-                            if scc_block_set.contains(&next_index)
-                                && !work_set.contains(&next_index)
-                            {
-                                work_set.insert(next_index);
-                                work_list.push(next_index);
+                            let next_idx = enum_idx.index();
+                            if scc_block_set.contains(&next_idx) && !work_set.contains(&next_idx) {
+                                work_set.insert(next_idx);
+                                work_list.push(next_idx);
                             }
                         } else {
                             for next in &real_node.next {
@@ -223,7 +221,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
                 /* remove next nodes which are already in the current SCC */
                 let mut to_remove = Vec::new();
                 for i in block_node.next.iter() {
-                    if self.scc_indices[*i] == init_index {
+                    if self.scc_indices[*i] == init_idx {
                         to_remove.push(*i);
                     }
                 }
@@ -278,8 +276,8 @@ impl<'tcx> SafeDropGraph<'tcx> {
                         &mut vec![],
                         &mut order,
                         &mut HashMap::new(),
-                        bb_index,
-                        bb_index,
+                        bb_idx,
+                        bb_idx,
                         &mut HashSet::new(),
                     );
                 }
@@ -415,10 +413,10 @@ impl<'tcx> SafeDropGraph<'tcx> {
                         if self.visit_times > VISIT_LIMIT {
                             continue;
                         }
-                        let next_index = iter.1.as_usize();
+                        let next_idx = iter.1.as_usize();
                         let path_discr_val = iter.0 as usize;
                         self.split_check_with_cond(
-                            next_index,
+                            next_idx,
                             path_discr_id,
                             path_discr_val,
                             tcx,
@@ -426,10 +424,10 @@ impl<'tcx> SafeDropGraph<'tcx> {
                         );
                     }
                     let all_targets = targets.all_targets();
-                    let next_index = all_targets[all_targets.len() - 1].as_usize();
+                    let next_idx = all_targets[all_targets.len() - 1].as_usize();
                     let path_discr_val = usize::MAX; // to indicate the default path;
                     self.split_check_with_cond(
-                        next_index,
+                        next_idx,
                         path_discr_id,
                         path_discr_val,
                         tcx,
@@ -440,8 +438,8 @@ impl<'tcx> SafeDropGraph<'tcx> {
                         if self.visit_times > VISIT_LIMIT {
                             continue;
                         }
-                        let next_index = i;
-                        self.split_check(next_index, tcx, fn_map);
+                        let next_idx = i;
+                        self.split_check(next_idx, tcx, fn_map);
                     }
                 }
             }

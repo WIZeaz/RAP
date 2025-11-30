@@ -13,9 +13,15 @@ use crate::utils::log::{
     relative_pos_range, span_to_filename, span_to_line_number, span_to_source_code,
 };
 
+pub type TyBug = (
+    usize, // first_drop_bb:
+    usize, // first_drop_id
+    usize, // trigger id
+    Span,
+);
 pub struct BugRecords {
-    pub df_bugs: FxHashMap<usize, Span>,
-    pub df_bugs_unwind: FxHashMap<usize, Span>,
+    pub df_bugs: FxHashMap<usize, TyBug>,
+    pub df_bugs_unwind: FxHashMap<usize, TyBug>,
     pub uaf_bugs: FxHashSet<Span>,
     pub dp_bugs: FxHashSet<Span>,
     pub dp_bugs_unwind: FxHashSet<Span>,
@@ -49,12 +55,17 @@ impl BugRecords {
                 .line_start(span_to_line_number(span))
                 .origin(&filename)
                 .fold(false);
-            for i in self.df_bugs.iter() {
-                //todo: remove this condition
-                if are_spans_in_same_file(span, *i.1) {
+            for (_i, bug) in self.df_bugs.iter() {
+                if are_spans_in_same_file(span, bug.3) {
+                    /*
+                    let label = format!(
+                        "Double free detected: first drop at BB{:?} via {:?}; trigger via {:?}.",
+                        bug.0, bug.1, bug.2,
+                    );
+                    */
                     snippet = snippet.annotation(
                         Level::Warning
-                            .span(relative_pos_range(span, *i.1))
+                            .span(relative_pos_range(span, bug.3))
                             .label("Double free detected."),
                     );
                 }
@@ -73,12 +84,12 @@ impl BugRecords {
                 .line_start(span_to_line_number(span))
                 .origin(&filename)
                 .fold(false);
-            for i in self.df_bugs_unwind.iter() {
+            for (_i, bug) in self.df_bugs_unwind.iter() {
                 //todo: remove this condition
-                if are_spans_in_same_file(span, *i.1) {
+                if are_spans_in_same_file(span, bug.3) {
                     snippet = snippet.annotation(
                         Level::Warning
-                            .span(relative_pos_range(span, *i.1))
+                            .span(relative_pos_range(span, bug.3))
                             .label("Double free detected during unwinding."),
                     );
                 }

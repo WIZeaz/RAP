@@ -63,12 +63,6 @@ impl<'tcx> SafeDropGraph<'tcx> {
         }
         record.insert(node);
         if self.union_has_alias(node) {
-            // for i in self.values[node].alias.clone().into_iter() {
-            //     if i != node && record.contains(&i) == false && self.already_dropped(i, record, dangling)
-            //     {
-            //         return true;
-            //     }
-            // }
             for i in 0..self.alias_set.len() {
                 if i != node && !self.union_is_same(i, node) {
                     continue;
@@ -91,20 +85,26 @@ impl<'tcx> SafeDropGraph<'tcx> {
         return self.already_dropped(local, &mut record, local != 0);
     }
 
-    pub fn df_check(&mut self, drop: usize, span: Span, flag_cleanup: bool) -> bool {
-        let root = self.values[drop].local;
-        if !self.values[drop].is_dropped() {
+    pub fn df_check(&mut self, idx: usize, span: Span, flag_cleanup: bool) -> bool {
+        let root = self.values[idx].local;
+        if !self.values[idx].is_dropped() {
             return false;
         }
+        let bug = (
+            self.drop_record[idx].1,
+            self.drop_record[idx].2,
+            idx,
+            span.clone(),
+        );
         if flag_cleanup {
             if !self.bug_records.df_bugs_unwind.contains_key(&root) {
-                self.bug_records.df_bugs_unwind.insert(root, span.clone());
-                rap_info!("DF bug for {:?} during unwinding", drop);
+                self.bug_records.df_bugs_unwind.insert(idx, bug);
+                rap_info!("DF bug for {:?}, {:?} during unwinding", idx, root);
             }
         } else {
             if !self.bug_records.df_bugs.contains_key(&root) {
-                self.bug_records.df_bugs.insert(root, span.clone());
-                rap_debug!("DF bug for {:?}", drop);
+                self.bug_records.df_bugs.insert(idx, bug);
+                rap_debug!("DF bug for {:?}, {:?}", idx, root);
             }
         }
         return true;
@@ -139,53 +139,49 @@ impl<'tcx> SafeDropGraph<'tcx> {
      */
     pub fn drop_node(
         &mut self,
-        drop: usize,
+        idx: usize,
         birth: usize,
         info: &SourceInfo,
         flag_inprocess: bool,
+        bb_idx: usize,
         flag_cleanup: bool,
     ) {
         //Rc drop
-        if self.values[drop].is_corner_case() {
+        if self.values[idx].is_corner_case() {
             return;
         }
         //check if there is a double free bug.
-        if !flag_inprocess && self.df_check(drop, info.span, flag_cleanup) {
+        if !flag_inprocess && self.df_check(idx, info.span, flag_cleanup) {
             return;
         }
-        if self.drop_record[drop] {
+        let (flag_dropped, _, _) = self.drop_record[idx];
+        if flag_dropped {
             return;
         } else {
-            self.drop_record[drop] = true;
+            self.drop_record[idx] = (true, bb_idx, idx);
         }
         //drop their alias
-        if self.alias_set[drop] != drop {
-            // for i in self.values[drop].alias.clone().into_iter() {
-            //     if self.values[i].is_ref() {
-            //         continue;
-            //     }
-            //     self.drop_node(i, birth, info, true);
-            // }
+        if self.alias_set[idx] != idx {
             for i in 0..self.values.len() {
-                if !self.union_is_same(drop, i) || i == drop || self.values[i].is_ref() {
+                if !self.union_is_same(idx, i) || i == idx || self.values[i].is_ref() {
                     continue;
                 }
-                self.drop_node(i, birth, info, true, flag_cleanup);
+                self.drop_node(i, birth, info, true, bb_idx, flag_cleanup);
             }
         }
         //drop the fields of the root node.
         //alias flag is used to avoid the fields of the alias are dropped repeatly.
         if !flag_inprocess {
-            for (_, field_idx) in self.values[drop].fields.clone() {
-                if self.values[drop].is_tuple() && !self.values[field_idx].need_drop {
+            for (_, field_idx) in self.values[idx].fields.clone() {
+                if self.values[idx].is_tuple() && !self.values[field_idx].need_drop {
                     continue;
                 }
-                self.drop_node(field_idx, birth, info, false, flag_cleanup);
+                self.drop_node(field_idx, birth, info, false, bb_idx, flag_cleanup);
             }
         }
         //SCC.
-        if self.values[drop].birth < birth as isize && self.values[drop].may_drop {
-            self.values[drop].drop();
+        if self.values[idx].birth < birth as isize && self.values[idx].may_drop {
+            self.values[idx].drop();
         }
     }
 
