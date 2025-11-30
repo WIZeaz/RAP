@@ -13,12 +13,14 @@ use crate::utils::log::{
     relative_pos_range, span_to_filename, span_to_line_number, span_to_source_code,
 };
 
-pub type TyBug = (
-    usize, // first_drop_bb:
-    usize, // first_drop_id
-    usize, // trigger id
-    Span,
-);
+pub struct TyBug {
+    pub drop_bb: usize,
+    pub drop_id: usize,
+    pub trigger_bb: usize,
+    pub trigger_id: usize,
+    pub span: Span,
+}
+
 pub struct BugRecords {
     pub df_bugs: FxHashMap<usize, TyBug>,
     pub df_bugs_unwind: FxHashMap<usize, TyBug>,
@@ -47,58 +49,66 @@ impl BugRecords {
     }
 
     pub fn df_bugs_output(&self, fn_name: Symbol, span: Span) {
+        let code_source = span_to_source_code(span);
+        let filename = span_to_filename(span);
+        let renderer = Renderer::styled();
         if !self.df_bugs.is_empty() {
             rap_warn!("Double free detected in function {:}", fn_name);
-            let code_source = span_to_source_code(span);
-            let filename = span_to_filename(span);
-            let mut snippet = Snippet::source(&code_source)
-                .line_start(span_to_line_number(span))
-                .origin(&filename)
-                .fold(false);
             for (_i, bug) in self.df_bugs.iter() {
-                if are_spans_in_same_file(span, bug.3) {
-                    /*
-                    let label = format!(
-                        "Double free detected: first drop at BB{:?} via {:?}; trigger via {:?}.",
-                        bug.0, bug.1, bug.2,
+                if are_spans_in_same_file(span, bug.span) {
+                    let detail = format!(
+                        "Double free detected -> Drop:BB{}:{}, Trigger:BB{}:{}, Location:{}:{}",
+                        bug.drop_bb,
+                        bug.drop_id,
+                        bug.trigger_bb,
+                        bug.trigger_id,
+                        span_to_filename(bug.span),
+                        span_to_line_number(bug.span),
                     );
-                    */
+                    let mut snippet = Snippet::source(&code_source)
+                        .line_start(span_to_line_number(span))
+                        .origin(&filename)
+                        .fold(false);
                     snippet = snippet.annotation(
                         Level::Warning
-                            .span(relative_pos_range(span, bug.3))
-                            .label("Double free detected."),
+                            .span(relative_pos_range(span, bug.span))
+                            .label(&detail),
                     );
+                    let message = Level::Warning
+                        .title("Double free detected.")
+                        .snippet(snippet);
+                    println!("{}", renderer.render(message));
                 }
             }
-            let message = Level::Warning
-                .title("Double free detected.")
-                .snippet(snippet);
-            let renderer = Renderer::styled();
-            println!("{}", renderer.render(message));
         }
         if !self.df_bugs_unwind.is_empty() {
             rap_warn!("Double free detected in function {:}", fn_name);
-            let code_source = span_to_source_code(span);
-            let filename = span_to_filename(span);
-            let mut snippet = Snippet::source(&code_source)
-                .line_start(span_to_line_number(span))
-                .origin(&filename)
-                .fold(false);
             for (_i, bug) in self.df_bugs_unwind.iter() {
-                //todo: remove this condition
-                if are_spans_in_same_file(span, bug.3) {
+                if are_spans_in_same_file(span, bug.span) {
+                    let detail = format!(
+                        "Double free detected -> Drop:BB{}:{}, Trigger:BB{}:{}, Location:{}:{}",
+                        bug.drop_bb,
+                        bug.drop_id,
+                        bug.trigger_bb,
+                        bug.trigger_id,
+                        span_to_filename(bug.span),
+                        span_to_line_number(bug.span),
+                    );
+                    let mut snippet = Snippet::source(&code_source)
+                        .line_start(span_to_line_number(span))
+                        .origin(&filename)
+                        .fold(false);
                     snippet = snippet.annotation(
                         Level::Warning
-                            .span(relative_pos_range(span, bug.3))
-                            .label("Double free detected during unwinding."),
+                            .span(relative_pos_range(span, bug.span))
+                            .label(&detail),
                     );
+                    let message = Level::Warning
+                        .title("Double free detected during unwinding.")
+                        .snippet(snippet);
+                    println!("{}", renderer.render(message));
                 }
             }
-            let message = Level::Warning
-                .title("Double free detected during unwinding.")
-                .snippet(snippet);
-            let renderer = Renderer::styled();
-            println!("{}", renderer.render(message));
         }
     }
 

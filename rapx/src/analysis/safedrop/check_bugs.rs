@@ -1,13 +1,11 @@
-use super::graph::*;
+use super::{bug_records::TyBug, graph::*};
 use crate::analysis::utils::fn_info::{convert_alias_to_sets, generate_mir_cfg_dot};
 use crate::utils::source::*;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_middle::mir::SourceInfo;
-use rustc_span::symbol::Symbol;
-use rustc_span::Span;
+use rustc_span::{Span, symbol::Symbol};
 
-use crate::rap_warn;
-use crate::rap_debug;
+use crate::{rap_debug, rap_info, rap_warn};
 
 impl<'tcx> SafeDropGraph<'tcx> {
     pub fn report_bugs(&self) {
@@ -85,17 +83,19 @@ impl<'tcx> SafeDropGraph<'tcx> {
         return self.already_dropped(local, &mut record, local != 0);
     }
 
-    pub fn df_check(&mut self, idx: usize, span: Span, flag_cleanup: bool) -> bool {
+    pub fn df_check(&mut self, bb_idx: usize, idx: usize, span: Span, flag_cleanup: bool) -> bool {
         let root = self.values[idx].local;
         if !self.values[idx].is_dropped() {
             return false;
         }
-        let bug = (
-            self.drop_record[idx].1,
-            self.drop_record[idx].2,
-            idx,
-            span.clone(),
-        );
+        let bug = TyBug {
+            drop_bb: self.drop_record[idx].1,
+            drop_id: self.drop_record[idx].2,
+            trigger_bb: bb_idx,
+            trigger_id: idx,
+            span: span.clone(),
+        };
+
         if flag_cleanup {
             if !self.bug_records.df_bugs_unwind.contains_key(&root) {
                 self.bug_records.df_bugs_unwind.insert(idx, bug);
@@ -151,7 +151,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
             return;
         }
         //check if there is a double free bug.
-        if !flag_inprocess && self.df_check(idx, info.span, flag_cleanup) {
+        if !flag_inprocess && self.df_check(bb_idx, idx, self.span, flag_cleanup) {
             return;
         }
         let (flag_dropped, _, _) = self.drop_record[idx];
