@@ -81,7 +81,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
                             }
                             Operand::Move(ref p) => {
                                 let rv = self.projection(tcx, true, p.clone());
-                                self.uaf_check(bb_index,rv, call.source_info.span,  true);
+                                self.uaf_check(bb_index, rv, call.source_info.span, true);
                                 merge_vec.push(rv);
                                 if self.values[rv].may_drop {
                                     may_drop_flag += 1;

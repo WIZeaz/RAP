@@ -38,61 +38,67 @@ impl<'tcx> SafeDropGraph<'tcx> {
     }
 
     pub fn uaf_check(&mut self, bb_idx: usize, idx: usize, span: Span, is_func_call: bool) {
+        let local = self.values[idx].local;
         if !self.values[idx].may_drop {
             return;
         }
         let mut record = FxHashSet::default();
-        if !self.already_dropped(idx, &mut record, false) {
+        /*
+         * Check 
+         * 1) if the birth of the value > -1;
+         * 2) there is a drop_record entry.
+         * */
+        if !self.already_dropped(idx, &mut record, false) || !self.drop_record[idx].0 {
             return;
         }
-        if self.values[idx].is_ptr()
-            //&& self.values[idx].local == local
-            && !is_func_call
-        {
+        if self.values[idx].is_ptr() && !is_func_call {
             return;
         }
         let bug = TyBug {
             drop_bb: self.drop_record[idx].1,
             drop_id: self.drop_record[idx].2,
             trigger_bb: bb_idx,
-            trigger_id: self.values[idx].local,
+            trigger_id: local,
             span: span.clone(),
         };
-        if self.bug_records.uaf_bugs.contains(&bug) {
+        rap_debug!("Find use-after-free bug {:?}; add to records", bug);
+        if self.bug_records.uaf_bugs.contains_key(&local) {
             return;
         }
-        self.bug_records.uaf_bugs.insert(bug);
-        rap_debug!(
-            "Find use-after-free bug {:?}; add to records",
-            self.values[idx]
-        );
+        self.bug_records.uaf_bugs.insert(local, bug);
+        rap_debug!("Find use-after-free bug {:?}; add to records", local);
     }
 
     pub fn already_dropped(
         &mut self,
-        node: usize,
+        idx: usize,
         record: &mut FxHashSet<usize>,
         dangling: bool,
     ) -> bool {
-        if node >= self.values.len() {
+        if idx >= self.values.len() {
             return false;
         }
         //if is a dangling pointer check, only check the pointer type varible.
-        if self.values[node].is_dropped() && (dangling && self.values[node].is_ptr() || !dangling) {
+        if self.values[idx].is_dropped() && (dangling && self.values[idx].is_ptr() || !dangling) {
             return true;
         }
-        record.insert(node);
-        if self.union_has_alias(node) {
+        record.insert(idx);
+        if self.union_has_alias(idx) {
             for i in 0..self.alias_set.len() {
-                if i != node && !self.union_is_same(i, node) {
+                if i != idx && !self.union_is_same(i, idx) {
                     continue;
                 }
                 if record.contains(&i) == false && self.already_dropped(i, record, dangling) {
-                    return true;
+                    let local = self.values[i].local;
+                    if self.drop_record[local].0 {
+                        rap_debug!("already_dropped: idx={}, i={}, {:?}", idx, local, self.drop_record[local]);
+                        self.drop_record[idx] = self.drop_record[local];
+                        return true;
+                    }
                 }
             }
         }
-        for i in self.values[node].fields.clone().into_iter() {
+        for i in self.values[idx].fields.clone().into_iter() {
             if record.contains(&i.1) == false && self.already_dropped(i.1, record, dangling) {
                 return true;
             }
@@ -106,7 +112,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
     }
 
     pub fn df_check(&mut self, bb_idx: usize, idx: usize, span: Span, flag_cleanup: bool) -> bool {
-        let root = self.values[idx].local;
+        let local = self.values[idx].local;
         if !self.values[idx].is_dropped() {
             return false;
         }
@@ -114,23 +120,22 @@ impl<'tcx> SafeDropGraph<'tcx> {
             drop_bb: self.drop_record[idx].1,
             drop_id: self.drop_record[idx].2,
             trigger_bb: bb_idx,
-            trigger_id: self.values[idx].local,
+            trigger_id: local,
             span: span.clone(),
         };
 
         if flag_cleanup {
-            if !self.bug_records.df_bugs_unwind.contains_key(&root) {
-                self.bug_records.df_bugs_unwind.insert(idx, bug);
+            if !self.bug_records.df_bugs_unwind.contains_key(&local) {
+                self.bug_records.df_bugs_unwind.insert(local, bug);
                 rap_debug!(
-                    "Find DF bug {:?}:{:?} during unwinding; add to records.",
-                    idx,
-                    root
+                    "Find double free bug {} during unwinding; add to records.",
+                    local
                 );
             }
         } else {
-            if !self.bug_records.df_bugs.contains_key(&root) {
-                self.bug_records.df_bugs.insert(idx, bug);
-                rap_debug!("Find DF bug {:?}:{:?}; add to records.", idx, root);
+            if !self.bug_records.df_bugs.contains_key(&local) {
+                self.bug_records.df_bugs.insert(local, bug);
+                rap_debug!("Find double free bug {}; add to records.", local);
             }
         }
         return true;
@@ -138,19 +143,19 @@ impl<'tcx> SafeDropGraph<'tcx> {
 
     pub fn dp_check(&mut self, flag_cleanup: bool) {
         if flag_cleanup {
-            for i in 0..self.arg_size {
-                if self.values[i + 1].is_ptr() && self.is_dangling(i + 1) {
+            for arg_idx in 1..self.arg_size + 1 {
+                if self.values[arg_idx].is_ptr() && self.is_dangling(arg_idx) {
                     let bug = TyBug {
-                        drop_bb: self.drop_record[i + 1].1,
-                        drop_id: self.drop_record[i + 1].2,
+                        drop_bb: self.drop_record[arg_idx].1,
+                        drop_id: self.drop_record[arg_idx].2,
                         trigger_bb: usize::MAX,
-                        trigger_id: i,
+                        trigger_id: arg_idx,
                         span: self.span.clone(),
                     };
-                    self.bug_records.dp_bugs_unwind.insert(bug);
+                    self.bug_records.dp_bugs_unwind.insert(arg_idx, bug);
                     rap_debug!(
-                        "Find dangling pointer {:?} during unwinding; add to record.",
-                        self.values[i + 1]
+                        "Find dangling pointer {} during unwinding; add to record.",
+                        arg_idx
                     );
                 }
             }
@@ -163,23 +168,20 @@ impl<'tcx> SafeDropGraph<'tcx> {
                     trigger_id: 0,
                     span: self.span.clone(),
                 };
-                self.bug_records.dp_bugs.insert(bug);
-                rap_debug!("Find dangling pointer {:?}; add to record.", self.values[0]);
+                self.bug_records.dp_bugs.insert(0, bug);
+                rap_debug!("Find dangling pointer 0; add to record.");
             } else {
-                for i in 0..self.arg_size {
-                    if self.values[i + 1].is_ptr() && self.is_dangling(i + 1) {
+                for arg_idx in 0..self.arg_size + 1 {
+                    if self.values[arg_idx].is_ptr() && self.is_dangling(arg_idx) {
                         let bug = TyBug {
-                            drop_bb: self.drop_record[i + 1].1,
-                            drop_id: self.drop_record[i + 1].2,
+                            drop_bb: self.drop_record[arg_idx].1,
+                            drop_id: self.drop_record[arg_idx].2,
                             trigger_bb: usize::MAX,
-                            trigger_id: i,
+                            trigger_id: arg_idx,
                             span: self.span.clone(),
                         };
-                        self.bug_records.dp_bugs.insert(bug);
-                        rap_debug!(
-                            "Find dangling pointer {:?}; add to record.",
-                            self.values[i + 1]
-                        );
+                        self.bug_records.dp_bugs.insert(arg_idx, bug);
+                        rap_debug!("Find dangling pointer {}; add to record.", arg_idx);
                     }
                 }
             }

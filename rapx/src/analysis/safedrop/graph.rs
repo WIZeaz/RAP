@@ -63,7 +63,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
         let arg_size = body.arg_count;
         let mut values = Vec::<ValueNode>::new();
         let mut alias = Vec::<usize>::new();
-        let mut drop_record_vec = Vec::<(bool, usize, usize)>::new();
+        let mut drop_record = Vec::<(bool, usize, usize)>::new();
         let ty_env = TypingEnv::post_analysis(tcx, def_id);
         for (local, local_decl) in locals.iter_enumerated() {
             let need_drop = local_decl.ty.needs_drop(tcx, ty_env); // the type is drop
@@ -76,7 +76,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
             );
             node.kind = kind(local_decl.ty);
             alias.push(alias.len());
-            drop_record_vec.push((false, usize::MAX, usize::MAX));
+            drop_record.push((false, usize::MAX, usize::MAX));
             values.push(node);
         }
 
@@ -162,7 +162,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
                                 lvl0.field_id = 0;
                                 values[lv_local].fields.insert(0, lvl0.index);
                                 alias.push(alias.len());
-                                drop_record_vec.push((false, usize::MAX, usize::MAX));
+                                drop_record.push((false, usize::MAX, usize::MAX));
                                 values.push(lvl0);
                             }
                             match x {
@@ -357,7 +357,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
             bug_records: BugRecords::new(),
             visit_times: 0,
             alias_set: alias,
-            drop_record: drop_record_vec,
+            drop_record,
             adt_owner,
             child_scc: FxHashMap::default(),
             disc_map,

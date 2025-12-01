@@ -1,4 +1,4 @@
-use rustc_data_structures::fx::{FxHashMap, FxHashSet};
+use rustc_data_structures::fx::FxHashMap;
 use rustc_span::Span;
 
 use crate::rap_warn;
@@ -12,8 +12,8 @@ use annotate_snippets::Snippet;
 use crate::utils::log::{
     relative_pos_range, span_to_filename, span_to_line_number, span_to_source_code,
 };
- 
-#[derive(Eq, Hash, PartialEq)]
+
+#[derive(Debug)]
 pub struct TyBug {
     pub drop_bb: usize,
     pub drop_id: usize,
@@ -22,12 +22,15 @@ pub struct TyBug {
     pub span: Span,
 }
 
+/*
+ * For each bug in the HashMap, the key is local of the value.
+ */
 pub struct BugRecords {
     pub df_bugs: FxHashMap<usize, TyBug>,
     pub df_bugs_unwind: FxHashMap<usize, TyBug>,
-    pub uaf_bugs: FxHashSet<TyBug>,
-    pub dp_bugs: FxHashSet<TyBug>,
-    pub dp_bugs_unwind: FxHashSet<TyBug>,
+    pub uaf_bugs: FxHashMap<usize, TyBug>,
+    pub dp_bugs: FxHashMap<usize, TyBug>,
+    pub dp_bugs_unwind: FxHashMap<usize, TyBug>,
 }
 
 impl BugRecords {
@@ -35,9 +38,9 @@ impl BugRecords {
         BugRecords {
             df_bugs: FxHashMap::default(),
             df_bugs_unwind: FxHashMap::default(),
-            uaf_bugs: FxHashSet::default(),
-            dp_bugs: FxHashSet::default(),
-            dp_bugs_unwind: FxHashSet::default(),
+            uaf_bugs: FxHashMap::default(),
+            dp_bugs: FxHashMap::default(),
+            dp_bugs_unwind: FxHashMap::default(),
         }
     }
 
@@ -119,7 +122,7 @@ impl BugRecords {
             rap_warn!("Use after free detected in function {:?}", fn_name);
             let code_source = span_to_source_code(span);
             let filename = span_to_filename(span);
-            for bug in self.uaf_bugs.iter() {
+            for (_local, bug) in self.uaf_bugs.iter() {
                 //todo: remove this condition
                 if are_spans_in_same_file(span, bug.span) {
                     let detail = format!(
@@ -155,8 +158,7 @@ impl BugRecords {
         let renderer = Renderer::styled();
         if !self.dp_bugs.is_empty() {
             rap_warn!("Dangling pointer detected in function {:?}", fn_name);
-            for bug in self.dp_bugs.iter() {
-                //todo: remove this condition
+            for (_local, bug) in self.dp_bugs.iter() {
                 if are_spans_in_same_file(span, bug.span) {
                     let detail = format!(
                         "Dangling pointer detected -> Drop:BB{}:{}, Vulnerable ptr:{}, Location:{}:{}",
@@ -187,7 +189,7 @@ impl BugRecords {
                 "Dangling pointer detected in function {:?} during unwinding.",
                 fn_name
             );
-            for bug in self.dp_bugs_unwind.iter() {
+            for (_local, bug) in self.dp_bugs_unwind.iter() {
                 if are_spans_in_same_file(span, bug.span) {
                     let detail = format!(
                         "Dangling pointer detected -> Drop:BB{}:{}, Vulnerable ptr:{}, Location:{}:{}",
