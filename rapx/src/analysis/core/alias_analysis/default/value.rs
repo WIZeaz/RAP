@@ -3,8 +3,8 @@ use rustc_data_structures::fx::FxHashMap;
 
 #[derive(Debug, Clone)]
 pub struct ValueNode {
-    pub index: usize, // node index
-    pub local: usize, // location?
+    pub index: usize, // node index; this could be the field of a value.
+    pub local: usize, // This is the real local; The range of index is generally larger than local.
     pub need_drop: bool,
     pub may_drop: bool,
     pub kind: TyKind,

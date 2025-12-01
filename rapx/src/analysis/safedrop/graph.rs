@@ -5,7 +5,7 @@ use crate::{
         core::ownedheap_analysis::OHAResultMap,
     },
     def_id::*,
-    rap_info,
+    rap_debug,
 };
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_middle::mir::{
@@ -341,8 +341,8 @@ impl<'tcx> SafeDropGraph<'tcx> {
             blocks.push(cur_bb);
         }
 
-        rap_info!("Values: {:?}", values);
-        rap_info!("Alias: {:?}", alias);
+        rap_debug!("Values: {:?}", values);
+        rap_debug!("Alias: {:?}", alias);
 
         SafeDropGraph {
             def_id,

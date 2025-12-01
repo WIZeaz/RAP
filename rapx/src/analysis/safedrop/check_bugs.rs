@@ -37,18 +37,35 @@ impl<'tcx> SafeDropGraph<'tcx> {
         rap_warn!("Alias: {:?}", convert_alias_to_sets(self.alias_set.clone()));
     }
 
-    pub fn uaf_check(&mut self, aliaset_idx: usize, span: Span, local: usize, is_func_call: bool) {
-        let mut record = FxHashSet::default();
-        if self.values[aliaset_idx].may_drop
-            && (!self.values[aliaset_idx].is_ptr()
-                || self.values[aliaset_idx].local != local
-                || is_func_call)
-            && self.already_dropped(aliaset_idx, &mut record, false)
-            && !self.bug_records.uaf_bugs.contains(&span)
-        {
-            self.bug_records.uaf_bugs.insert(span.clone());
-            rap_warn!("UAF bug for local {:?}", local);
+    pub fn uaf_check(&mut self, bb_idx: usize, idx: usize, span: Span, is_func_call: bool) {
+        if !self.values[idx].may_drop {
+            return;
         }
+        let mut record = FxHashSet::default();
+        if !self.already_dropped(idx, &mut record, false) {
+            return;
+        }
+        if self.values[idx].is_ptr()
+            //&& self.values[idx].local == local
+            && !is_func_call
+        {
+            return;
+        }
+        let bug = TyBug {
+            drop_bb: self.drop_record[idx].1,
+            drop_id: self.drop_record[idx].2,
+            trigger_bb: bb_idx,
+            trigger_id: self.values[idx].local,
+            span: span.clone(),
+        };
+        if self.bug_records.uaf_bugs.contains(&bug) {
+            return;
+        }
+        self.bug_records.uaf_bugs.insert(bug);
+        rap_debug!(
+            "Find use-after-free bug {:?}; add to records",
+            self.values[idx]
+        );
     }
 
     pub fn already_dropped(
@@ -97,19 +114,23 @@ impl<'tcx> SafeDropGraph<'tcx> {
             drop_bb: self.drop_record[idx].1,
             drop_id: self.drop_record[idx].2,
             trigger_bb: bb_idx,
-            trigger_id: idx,
+            trigger_id: self.values[idx].local,
             span: span.clone(),
         };
 
         if flag_cleanup {
             if !self.bug_records.df_bugs_unwind.contains_key(&root) {
                 self.bug_records.df_bugs_unwind.insert(idx, bug);
-                rap_info!("DF bug for {:?}, {:?} during unwinding", idx, root);
+                rap_debug!(
+                    "Find DF bug {:?}:{:?} during unwinding; add to records.",
+                    idx,
+                    root
+                );
             }
         } else {
             if !self.bug_records.df_bugs.contains_key(&root) {
                 self.bug_records.df_bugs.insert(idx, bug);
-                rap_debug!("DF bug for {:?}, {:?}", idx, root);
+                rap_debug!("Find DF bug {:?}:{:?}; add to records.", idx, root);
             }
         }
         return true;
@@ -119,19 +140,46 @@ impl<'tcx> SafeDropGraph<'tcx> {
         if flag_cleanup {
             for i in 0..self.arg_size {
                 if self.values[i + 1].is_ptr() && self.is_dangling(i + 1) {
-                    self.bug_records.dp_bugs_unwind.insert(self.span);
-                    rap_debug!("DP bug for {:?}", self.values[i + 1]);
+                    let bug = TyBug {
+                        drop_bb: self.drop_record[i + 1].1,
+                        drop_id: self.drop_record[i + 1].2,
+                        trigger_bb: usize::MAX,
+                        trigger_id: i,
+                        span: self.span.clone(),
+                    };
+                    self.bug_records.dp_bugs_unwind.insert(bug);
+                    rap_debug!(
+                        "Find dangling pointer {:?} during unwinding; add to record.",
+                        self.values[i + 1]
+                    );
                 }
             }
         } else {
             if self.values[0].may_drop && self.is_dangling(0) {
-                self.bug_records.dp_bugs.insert(self.span);
-                rap_debug!("DP bug for {:?}", self.values[0]);
+                let bug = TyBug {
+                    drop_bb: self.drop_record[0].1,
+                    drop_id: self.drop_record[0].2,
+                    trigger_bb: usize::MAX,
+                    trigger_id: 0,
+                    span: self.span.clone(),
+                };
+                self.bug_records.dp_bugs.insert(bug);
+                rap_debug!("Find dangling pointer {:?}; add to record.", self.values[0]);
             } else {
                 for i in 0..self.arg_size {
                     if self.values[i + 1].is_ptr() && self.is_dangling(i + 1) {
-                        self.bug_records.dp_bugs.insert(self.span);
-                        rap_debug!("DP bug for {:?}", self.values[i + 1]);
+                        let bug = TyBug {
+                            drop_bb: self.drop_record[i + 1].1,
+                            drop_id: self.drop_record[i + 1].2,
+                            trigger_bb: usize::MAX,
+                            trigger_id: i,
+                            span: self.span.clone(),
+                        };
+                        self.bug_records.dp_bugs.insert(bug);
+                        rap_debug!(
+                            "Find dangling pointer {:?}; add to record.",
+                            self.values[i + 1]
+                        );
                     }
                 }
             }
@@ -144,7 +192,8 @@ impl<'tcx> SafeDropGraph<'tcx> {
      */
     pub fn drop_node(
         &mut self,
-        idx: usize,
+        idx: usize,     // the value to be dropped
+        via_idx: usize, // the value is dropped via its alias: via_idx
         birth: usize,
         info: &SourceInfo,
         flag_inprocess: bool,
@@ -163,7 +212,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
         if flag_dropped {
             return;
         } else {
-            self.drop_record[idx] = (true, bb_idx, idx);
+            self.drop_record[idx] = (true, bb_idx, self.values[via_idx].local);
         }
         //drop their alias
         if self.alias_set[idx] != idx {
@@ -171,7 +220,15 @@ impl<'tcx> SafeDropGraph<'tcx> {
                 if !self.union_is_same(idx, i) || i == idx || self.values[i].is_ref() {
                     continue;
                 }
-                self.drop_node(i, birth, info, true, bb_idx, flag_cleanup);
+                self.drop_node(
+                    i,
+                    self.values[via_idx].local,
+                    birth,
+                    info,
+                    true,
+                    bb_idx,
+                    flag_cleanup,
+                );
             }
         }
         //drop the fields of the root node.
@@ -181,7 +238,15 @@ impl<'tcx> SafeDropGraph<'tcx> {
                 if self.values[idx].is_tuple() && !self.values[field_idx].need_drop {
                     continue;
                 }
-                self.drop_node(field_idx, birth, info, false, bb_idx, flag_cleanup);
+                self.drop_node(
+                    field_idx,
+                    self.values[via_idx].local,
+                    birth,
+                    info,
+                    false,
+                    bb_idx,
+                    flag_cleanup,
+                );
             }
         }
         //SCC.
