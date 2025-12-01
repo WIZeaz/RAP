@@ -2,7 +2,7 @@ use super::{
     generate_dot::{NodeType, UigUnit},
     UnsafetyIsolationCheck,
 };
-use crate::analysis::unsafety_isolation::draw_dot::render_dot_graphs;
+// use crate::analysis::unsafety_isolation::draw_dot::render_dot_graphs;
 use crate::analysis::utils::fn_info::*;
 use rustc_hir::def::DefKind;
 use rustc_hir::def_id::DefId;

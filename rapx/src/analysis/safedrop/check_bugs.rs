@@ -1,6 +1,11 @@
 use super::{bug_records::TyBug, graph::*};
-use crate::analysis::utils::fn_info::{convert_alias_to_sets, generate_mir_cfg_dot};
-use crate::utils::source::*;
+use crate::{
+    analysis::{
+        core::alias_analysis::default::value::*,
+        utils::fn_info::{convert_alias_to_sets, generate_mir_cfg_dot},
+    },
+    utils::source::*,
+};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_middle::mir::SourceInfo;
 use rustc_span::{Span, symbol::Symbol};

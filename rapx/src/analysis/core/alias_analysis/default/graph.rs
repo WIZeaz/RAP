@@ -1,136 +1,12 @@
-use crate::{
-    analysis::core::alias_analysis::default::{types::*, MopAAResult},
-    rap_debug,
-    utils::source::*,
-};
+use super::{MopAAResult, assign::*, block::*, types::*, value::*};
+use crate::{rap_debug, utils::source::*};
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_middle::{
-    mir::{
-        BasicBlock, Const, Operand, Place, Rvalue, StatementKind, Terminator, TerminatorKind,
-        UnwindAction,
-    },
+    mir::{BasicBlock, Const, Operand, Rvalue, StatementKind, TerminatorKind, UnwindAction},
     ty::{TyCtxt, TypingEnv},
 };
-use rustc_span::{def_id::DefId, Span};
-use std::{cell::RefCell, cmp::min, vec::Vec};
-
-#[derive(PartialEq, Debug, Copy, Clone)]
-pub enum AssignType {
-    Copy,
-    Move,
-    InitBox,
-    Variant,
-}
-
-//self-defined assignments structure.
-#[derive(Debug, Clone)]
-pub struct Assignment<'tcx> {
-    pub lv: Place<'tcx>,
-    pub rv: Place<'tcx>,
-    pub atype: AssignType,
-    pub span: Span,
-}
-
-impl<'tcx> Assignment<'tcx> {
-    pub fn new(
-        lv: Place<'tcx>,
-        rv: Place<'tcx>,
-        atype: AssignType,
-        span: Span,
-    ) -> Assignment<'tcx> {
-        Assignment {
-            lv,
-            rv,
-            atype,
-            span,
-        }
-    }
-}
-
-/*
- * Self-defined basicblock structure;
- * Used both for the original CFG and after SCC.
- */
-
-#[derive(Debug, Clone)]
-pub struct BlockNode<'tcx> {
-    pub index: usize,
-    pub next: FxHashSet<usize>,
-    pub assignments: Vec<Assignment<'tcx>>,
-    pub calls: Vec<Terminator<'tcx>>,
-    //store the index of the basic blocks as a SCC node.
-    pub scc_sub_blocks: Vec<usize>,
-    //store const values defined in this block, i.e., which id has what value;
-    pub const_value: Vec<(usize, usize)>,
-    //store switch stmts in current block for the path filtering in path-sensitive analysis.
-    pub switch_stmts: Vec<Terminator<'tcx>>,
-    pub modified_value: FxHashSet<usize>,
-    // (SwitchInt target, enum index) -> outside nodes.
-    pub scc_outer: RefCell<Option<FxHashMap<(usize, usize), Vec<usize>>>>,
-}
-
-impl<'tcx> BlockNode<'tcx> {
-    pub fn new(index: usize) -> BlockNode<'tcx> {
-        BlockNode {
-            index,
-            next: FxHashSet::<usize>::default(),
-            assignments: Vec::<Assignment<'tcx>>::new(),
-            calls: Vec::<Terminator<'tcx>>::new(),
-            scc_sub_blocks: Vec::<usize>::new(),
-            const_value: Vec::<(usize, usize)>::new(),
-            switch_stmts: Vec::<Terminator<'tcx>>::new(),
-            modified_value: FxHashSet::<usize>::default(),
-            scc_outer: RefCell::new(None),
-        }
-    }
-
-    pub fn add_next(&mut self, index: usize) {
-        self.next.insert(index);
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ValueNode {
-    pub index: usize, // node index
-    pub local: usize, // location?
-    pub need_drop: bool,
-    pub may_drop: bool,
-    pub kind: TyKind,
-    pub father: usize,
-    pub field_id: usize, // the field id of its father node.
-    pub fields: FxHashMap<usize, usize>,
-}
-
-impl ValueNode {
-    pub fn new(index: usize, local: usize, need_drop: bool, may_drop: bool) -> Self {
-        ValueNode {
-            index,
-            local,
-            need_drop,
-            father: local,
-            field_id: usize::MAX,
-            may_drop,
-            kind: TyKind::Adt,
-            fields: FxHashMap::default(),
-        }
-    }
-
-    pub fn is_tuple(&self) -> bool {
-        self.kind == TyKind::Tuple
-    }
-
-    pub fn is_ptr(&self) -> bool {
-        self.kind == TyKind::RawPtr || self.kind == TyKind::Ref
-    }
-
-    pub fn is_ref(&self) -> bool {
-        self.kind == TyKind::Ref
-    }
-
-    pub fn is_corner_case(&self) -> bool {
-        self.kind == TyKind::CornerCase
-    }
-}
+use rustc_span::{Span, def_id::DefId};
+use std::{cmp::min, vec::Vec};
 
 pub struct MopGraph<'tcx> {
     pub def_id: DefId,
@@ -198,7 +74,7 @@ impl<'tcx> MopGraph<'tcx> {
             scc_indices.push(i);
             let iter = BasicBlock::from(i);
             let terminator = basicblocks[iter].terminator.clone().unwrap();
-            let mut cur_bb = BlockNode::new(i);
+            let mut cur_bb = BlockNode::new(i, basicblocks[iter].is_cleanup);
 
             // handle general statements
             for stmt in &basicblocks[iter].statements {
