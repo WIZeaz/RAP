@@ -42,13 +42,12 @@ impl<'tcx> SafeDropGraph<'tcx> {
         if !self.values[idx].may_drop {
             return;
         }
-        let mut record = FxHashSet::default();
         /*
-         * Check 
+         * Check
          * 1) if the birth of the value > -1;
          * 2) there is a drop_record entry.
          * */
-        if !self.already_dropped(idx, &mut record, false) || !self.drop_record[idx].0 {
+        if !self.is_dangling(idx) || !self.drop_record[idx].0 {
             return;
         }
         if self.values[idx].is_ptr() && !is_func_call {
@@ -69,17 +68,17 @@ impl<'tcx> SafeDropGraph<'tcx> {
         rap_debug!("Find use-after-free bug {:?}; add to records", local);
     }
 
-    pub fn already_dropped(
-        &mut self,
-        idx: usize,
-        record: &mut FxHashSet<usize>,
-        dangling: bool,
-    ) -> bool {
+    pub fn is_dangling(&mut self, local: usize) -> bool {
+        let mut record = FxHashSet::default();
+        return self.is_dangling_inner(local, &mut record);
+    }
+
+    fn is_dangling_inner(&mut self, idx: usize, record: &mut FxHashSet<usize>) -> bool {
         if idx >= self.values.len() {
             return false;
         }
         //if is a dangling pointer check, only check the pointer type varible.
-        if self.values[idx].is_dropped() && (dangling && self.values[idx].is_ptr() || !dangling) {
+        if self.values[idx].is_dropped() && (idx != 0 || (idx == 0 && self.values[idx].is_ptr())) {
             return true;
         }
         record.insert(idx);
@@ -88,10 +87,15 @@ impl<'tcx> SafeDropGraph<'tcx> {
                 if i != idx && !self.union_is_same(i, idx) {
                     continue;
                 }
-                if record.contains(&i) == false && self.already_dropped(i, record, dangling) {
+                if record.contains(&i) == false && self.is_dangling_inner(i, record) {
                     let local = self.values[i].local;
                     if self.drop_record[local].0 {
-                        rap_debug!("already_dropped: idx={}, i={}, {:?}", idx, local, self.drop_record[local]);
+                        rap_debug!(
+                            "is_dangling_inner: idx={}, i={}, {:?}",
+                            idx,
+                            local,
+                            self.drop_record[local]
+                        );
                         self.drop_record[idx] = self.drop_record[local];
                         return true;
                     }
@@ -99,16 +103,11 @@ impl<'tcx> SafeDropGraph<'tcx> {
             }
         }
         for i in self.values[idx].fields.clone().into_iter() {
-            if record.contains(&i.1) == false && self.already_dropped(i.1, record, dangling) {
+            if record.contains(&i.1) == false && self.is_dangling_inner(i.1, record) {
                 return true;
             }
         }
         return false;
-    }
-
-    pub fn is_dangling(&mut self, local: usize) -> bool {
-        let mut record = FxHashSet::default();
-        return self.already_dropped(local, &mut record, local != 0);
     }
 
     pub fn df_check(&mut self, bb_idx: usize, idx: usize, span: Span, flag_cleanup: bool) -> bool {
