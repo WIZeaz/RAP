@@ -1,7 +1,7 @@
 use super::{bug_records::TyBug, graph::*};
 use crate::{
     analysis::{
-        core::alias_analysis::default::value::*,
+        core::alias_analysis::default::{types::TyKind, value::*},
         utils::fn_info::{convert_alias_to_sets, generate_mir_cfg_dot},
     },
     utils::source::*,
@@ -53,12 +53,19 @@ impl<'tcx> SafeDropGraph<'tcx> {
         if self.values[idx].is_ptr() && !is_func_call {
             return;
         }
+
+        let confidence = match self.values[idx].kind {
+            TyKind::CornerCase => 0,
+            _ => 99,
+        };
+
         let bug = TyBug {
             drop_bb: self.drop_record[idx].1,
             drop_id: self.drop_record[idx].2,
             trigger_bb: bb_idx,
             trigger_id: local,
             span: span.clone(),
+            confidence,
         };
         rap_debug!("Find use-after-free bug {:?}; add to records", bug);
         if self.bug_records.uaf_bugs.contains_key(&local) {
@@ -115,12 +122,17 @@ impl<'tcx> SafeDropGraph<'tcx> {
         if !self.values[idx].is_dropped() {
             return false;
         }
+        let confidence = match self.values[idx].kind {
+            TyKind::CornerCase => 0,
+            _ => 99,
+        };
         let bug = TyBug {
             drop_bb: self.drop_record[idx].1,
             drop_id: self.drop_record[idx].2,
             trigger_bb: bb_idx,
             trigger_id: local,
             span: span.clone(),
+            confidence,
         };
 
         if flag_cleanup {
@@ -144,12 +156,17 @@ impl<'tcx> SafeDropGraph<'tcx> {
         if flag_cleanup {
             for arg_idx in 1..self.arg_size + 1 {
                 if self.values[arg_idx].is_ptr() && self.is_dangling(arg_idx) {
+                    let confidence = match self.values[arg_idx].kind {
+                        TyKind::CornerCase => 0,
+                        _ => 99,
+                    };
                     let bug = TyBug {
                         drop_bb: self.drop_record[arg_idx].1,
                         drop_id: self.drop_record[arg_idx].2,
                         trigger_bb: usize::MAX,
                         trigger_id: arg_idx,
                         span: self.span.clone(),
+                        confidence,
                     };
                     self.bug_records.dp_bugs_unwind.insert(arg_idx, bug);
                     rap_debug!(
@@ -160,24 +177,34 @@ impl<'tcx> SafeDropGraph<'tcx> {
             }
         } else {
             if self.values[0].may_drop && self.is_dangling(0) {
+                let confidence = match self.values[0].kind {
+                    TyKind::CornerCase => 0,
+                    _ => 99,
+                };
                 let bug = TyBug {
                     drop_bb: self.drop_record[0].1,
                     drop_id: self.drop_record[0].2,
                     trigger_bb: usize::MAX,
                     trigger_id: 0,
                     span: self.span.clone(),
+                    confidence,
                 };
                 self.bug_records.dp_bugs.insert(0, bug);
                 rap_debug!("Find dangling pointer 0; add to record.");
             } else {
                 for arg_idx in 0..self.arg_size + 1 {
                     if self.values[arg_idx].is_ptr() && self.is_dangling(arg_idx) {
+                        let confidence = match self.values[arg_idx].kind {
+                            TyKind::CornerCase => 0,
+                            _ => 99,
+                        };
                         let bug = TyBug {
                             drop_bb: self.drop_record[arg_idx].1,
                             drop_id: self.drop_record[arg_idx].2,
                             trigger_bb: usize::MAX,
                             trigger_id: arg_idx,
                             span: self.span.clone(),
+                            confidence,
                         };
                         self.bug_records.dp_bugs.insert(arg_idx, bug);
                         rap_debug!("Find dangling pointer {}; add to record.", arg_idx);

@@ -20,6 +20,7 @@ pub struct TyBug {
     pub trigger_bb: usize,
     pub trigger_id: usize,
     pub span: Span,
+    pub confidence: usize,
 }
 
 /*
@@ -61,7 +62,11 @@ impl BugRecords {
             for (_i, bug) in self.df_bugs.iter() {
                 if are_spans_in_same_file(span, bug.span) {
                     let detail = format!(
-                        "Double free detected -> Drop:BB{}:{}, Trigger:BB{}:{}, Location:{}:{}",
+                        "Double free (confidence {}%):
+                         | Value dropped at mir BB{} via _{} 
+                         | Triggered at mir BB{} via _{}, 
+                         | Location in source code: {}:{}",
+                        bug.confidence,
                         bug.drop_bb,
                         bug.drop_id,
                         bug.trigger_bb,
@@ -90,7 +95,11 @@ impl BugRecords {
             for (_i, bug) in self.df_bugs_unwind.iter() {
                 if are_spans_in_same_file(span, bug.span) {
                     let detail = format!(
-                        "Double free detected -> Drop:BB{}:{}, Trigger:BB{}:{}, Location:{}:{}",
+                        "Double free (confidence {}%):
+                         | Value dropped at mir BB{} via _{} 
+                         | Triggered at mir BB{} via _{}, 
+                         | Location in source code: {}:{}",
+                        bug.confidence,
                         bug.drop_bb,
                         bug.drop_id,
                         bug.trigger_bb,
@@ -126,7 +135,11 @@ impl BugRecords {
                 //todo: remove this condition
                 if are_spans_in_same_file(span, bug.span) {
                     let detail = format!(
-                        "Use-after-free detected -> Drop:BB{}:{}, Trigger:BB{}:{}, Location:{}:{}",
+                        "Use-after-free (confidence {}%):
+                         | Value dropped at mir BB{} via _{} 
+                         | Triggered at mir BB{} via _{}, 
+                         | Location in source code: {}:{}",
+                        bug.confidence,
                         bug.drop_bb,
                         bug.drop_id,
                         bug.trigger_bb,
@@ -161,7 +174,11 @@ impl BugRecords {
             for (_local, bug) in self.dp_bugs.iter() {
                 if are_spans_in_same_file(span, bug.span) {
                     let detail = format!(
-                        "Dangling pointer detected -> Drop:BB{}:{}, Vulnerable ptr:{}, Location:{}:{}",
+                        "Dangling pointer (confidence {}%):
+                         | Value dropped at mir BB{} via _{} 
+                         | Triggered at mir via _{}, 
+                         | Location in source code: {}:{}",
+                        bug.confidence,
                         bug.drop_bb,
                         bug.drop_id,
                         bug.trigger_id,
@@ -192,7 +209,11 @@ impl BugRecords {
             for (_local, bug) in self.dp_bugs_unwind.iter() {
                 if are_spans_in_same_file(span, bug.span) {
                     let detail = format!(
-                        "Dangling pointer detected -> Drop:BB{}:{}, Vulnerable ptr:{}, Location:{}:{}",
+                        "Dangling pointer (confidence {}%):
+                         | Value dropped at mir BB{} via _{} 
+                         | Triggered at mir via _{}, 
+                         | Location in source code: {}:{}",
+                        bug.confidence,
                         bug.drop_bb,
                         bug.drop_id,
                         bug.trigger_id,

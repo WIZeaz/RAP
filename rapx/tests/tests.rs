@@ -106,15 +106,19 @@ fn test_uaf_swithint() {
 #[test]
 fn test_false_case1() {
     let output = running_tests_with_arg("uaf/false_case1", "-F");
-    assert_eq!(output.contains("Double free detected"), false);
+    assert_eq!(output.contains("detected"), false);
 }
 
 #[test]
 fn test_false_case2() {
     let output = running_tests_with_arg("uaf/false_case2", "-F");
-    assert_eq!(output.contains("Use after free detected"), false);
+    assert_eq!(output.contains("detected"), false);
 }
-
+#[test]
+fn test_false_case3() {
+    let output = running_tests_with_arg("uaf/false_case3", "-F");
+    assert_eq!(output.contains("detected"), false);
+}
 #[test]
 fn test_alias_not_alias_iter() {
     let output = running_tests_with_arg("alias/not_alias_iter", "-alias");
