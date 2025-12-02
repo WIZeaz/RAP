@@ -3,7 +3,6 @@ pub mod bug_records;
 pub mod check_bugs;
 pub mod corner_handle;
 pub mod graph;
-#[allow(clippy::module_inception)]
 pub mod safedrop;
 
 use rustc_hir::def_id::DefId;

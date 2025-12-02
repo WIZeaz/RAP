@@ -53,7 +53,7 @@ fn test_dp_lengthy() {
 fn test_uaf_drop() {
     let output = running_tests_with_arg("uaf/uaf_drop", "-F");
     assert_eq!(
-        output.contains("Use after free detected in function \"main\""),
+        output.contains("Use-after-free detected in function \"main\""),
         true
     );
 }
@@ -62,7 +62,7 @@ fn test_uaf_drop() {
 fn test_uaf_drop2() {
     let output = running_tests_with_arg("uaf/uaf_drop2", "-F");
     assert_eq!(
-        output.contains("Use after free detected in function \"main\""),
+        output.contains("Use-after-free detected in function \"main\""),
         true
     );
 }
@@ -71,7 +71,7 @@ fn test_uaf_drop2() {
 fn test_uaf_drop_in_place() {
     let output = running_tests_with_arg("uaf/uaf_drop_in_place", "-F");
     assert_eq!(
-        output.contains("Use after free detected in function \"main\""),
+        output.contains("Use-after-free detected in function \"main\""),
         true
     );
 }
@@ -80,7 +80,7 @@ fn test_uaf_drop_in_place() {
 fn test_uaf_lifetime() {
     let output = running_tests_with_arg("uaf/uaf_lifetime", "-F");
     assert_eq!(
-        output.contains("Use after free detected in function \"main\""),
+        output.contains("Use-after-free detected in function \"main\""),
         true
     );
 }
@@ -89,7 +89,7 @@ fn test_uaf_lifetime() {
 fn test_uaf_small() {
     let output = running_tests_with_arg("uaf/uaf_small", "-F");
     assert_eq!(
-        output.contains("Use after free detected in function \"main\""),
+        output.contains("Use-after-free detected in function \"main\""),
         true
     );
 }
@@ -98,7 +98,7 @@ fn test_uaf_small() {
 fn test_uaf_swithint() {
     let output = running_tests_with_arg("uaf/uaf_swithint", "-F");
     assert_eq!(
-        output.contains("Use after free detected in function \"evil_test\""),
+        output.contains("Use-after-free detected in function \"evil_test\""),
         true
     );
 }

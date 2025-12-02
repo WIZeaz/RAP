@@ -1,16 +1,13 @@
+use annotate_snippets::{Level, Renderer, Snippet};
 use rustc_data_structures::fx::FxHashMap;
-use rustc_span::Span;
+use rustc_span::{Span, symbol::Symbol};
 
-use crate::rap_warn;
-use crate::utils::log::are_spans_in_same_file;
-use rustc_span::symbol::Symbol;
-
-use annotate_snippets::Level;
-use annotate_snippets::Renderer;
-use annotate_snippets::Snippet;
-
-use crate::utils::log::{
-    relative_pos_range, span_to_filename, span_to_line_number, span_to_source_code,
+use crate::{
+    rap_warn,
+    utils::log::{
+        are_spans_in_same_file, relative_pos_range, span_to_filename, span_to_line_number,
+        span_to_source_code,
+    },
 };
 
 #[derive(Debug)]
@@ -62,17 +59,18 @@ impl BugRecords {
             for (_i, bug) in self.df_bugs.iter() {
                 if are_spans_in_same_file(span, bug.span) {
                     let detail = format!(
-                        "Double free (confidence {}%):
-                         | Value dropped at mir BB{} via _{} 
-                         | Triggered at mir BB{} via _{}, 
-                         | Location in source code: {}:{}",
+                        "\n Double free (confidence {}%): Location in file {} line {}.
+    | MIR detail: Value _{} and _{} are alias.
+    | MIR detail: _{} is dropped at BB{}; _{} is dropped at BB{}.",
                         bug.confidence,
-                        bug.drop_bb,
-                        bug.drop_id,
-                        bug.trigger_bb,
-                        bug.trigger_id,
                         span_to_filename(bug.span),
                         span_to_line_number(bug.span),
+                        bug.drop_id,
+                        bug.trigger_id,
+                        bug.drop_id,
+                        bug.drop_bb,
+                        bug.trigger_id,
+                        bug.trigger_bb,
                     );
                     let mut snippet = Snippet::source(&code_source)
                         .line_start(span_to_line_number(span))
@@ -95,17 +93,18 @@ impl BugRecords {
             for (_i, bug) in self.df_bugs_unwind.iter() {
                 if are_spans_in_same_file(span, bug.span) {
                     let detail = format!(
-                        "Double free (confidence {}%):
-                         | Value dropped at mir BB{} via _{} 
-                         | Triggered at mir BB{} via _{}, 
-                         | Location in source code: {}:{}",
+                        "\n Double free (confidence {}%): Location in file {} line {}.
+    | MIR detail: Value _{} and _{} are alias.
+    | MIR detail: _{} is dropped at BB{}; _{} is dropped at BB{}.",
                         bug.confidence,
-                        bug.drop_bb,
-                        bug.drop_id,
-                        bug.trigger_bb,
-                        bug.trigger_id,
                         span_to_filename(bug.span),
                         span_to_line_number(bug.span),
+                        bug.drop_id,
+                        bug.trigger_id,
+                        bug.drop_id,
+                        bug.drop_bb,
+                        bug.trigger_id,
+                        bug.trigger_bb,
                     );
                     let mut snippet = Snippet::source(&code_source)
                         .line_start(span_to_line_number(span))
@@ -128,24 +127,25 @@ impl BugRecords {
     pub fn uaf_bugs_output(&self, fn_name: Symbol, span: Span) {
         let renderer = Renderer::styled();
         if !self.uaf_bugs.is_empty() {
-            rap_warn!("Use after free detected in function {:?}", fn_name);
+            rap_warn!("Use-after-free detected in function {:?}", fn_name);
             let code_source = span_to_source_code(span);
             let filename = span_to_filename(span);
             for (_local, bug) in self.uaf_bugs.iter() {
                 //todo: remove this condition
                 if are_spans_in_same_file(span, bug.span) {
                     let detail = format!(
-                        "Use-after-free (confidence {}%):
-                         | Value dropped at mir BB{} via _{} 
-                         | Triggered at mir BB{} via _{}, 
-                         | Location in source code: {}:{}",
+                        "\n Use-after-free (confidence {}%): Location in file {} line {}.
+    | MIR detail: Value _{} and _{} are alias.
+    | MIR detail: _{} is dropped at BB{}; _{} is used at BB{}.",
                         bug.confidence,
-                        bug.drop_bb,
-                        bug.drop_id,
-                        bug.trigger_bb,
-                        bug.trigger_id,
                         span_to_filename(bug.span),
                         span_to_line_number(bug.span),
+                        bug.drop_id,
+                        bug.trigger_id,
+                        bug.drop_id,
+                        bug.drop_bb,
+                        bug.trigger_id,
+                        bug.trigger_bb,
                     );
                     let mut snippet = Snippet::source(&code_source)
                         .line_start(span_to_line_number(span))
@@ -174,16 +174,17 @@ impl BugRecords {
             for (_local, bug) in self.dp_bugs.iter() {
                 if are_spans_in_same_file(span, bug.span) {
                     let detail = format!(
-                        "Dangling pointer (confidence {}%):
-                         | Value dropped at mir BB{} via _{} 
-                         | Triggered at mir via _{}, 
-                         | Location in source code: {}:{}",
+                        "\n Dangling pointer (confidence {}%): Location in file {} line {}.
+    | MIR detail: Value _{} and _{} are alias.
+    | MIR detail: _{} is dropped at BB{}; _{} became dangling.",
                         bug.confidence,
-                        bug.drop_bb,
-                        bug.drop_id,
-                        bug.trigger_id,
                         span_to_filename(bug.span),
                         span_to_line_number(bug.span),
+                        bug.drop_id,
+                        bug.trigger_id,
+                        bug.drop_id,
+                        bug.drop_bb,
+                        bug.trigger_id,
                     );
                     let mut snippet = Snippet::source(&code_source)
                         .line_start(span_to_line_number(span))
@@ -209,16 +210,17 @@ impl BugRecords {
             for (_local, bug) in self.dp_bugs_unwind.iter() {
                 if are_spans_in_same_file(span, bug.span) {
                     let detail = format!(
-                        "Dangling pointer (confidence {}%):
-                         | Value dropped at mir BB{} via _{} 
-                         | Triggered at mir via _{}, 
-                         | Location in source code: {}:{}",
+                        "\n Dangling pointer (confidence {}%): Location in file {} line {}.
+    | MIR detail: Value _{} and _{} are alias.
+    | MIR detail: _{} is dropped at BB{}; _{} became dangling.",
                         bug.confidence,
-                        bug.drop_bb,
-                        bug.drop_id,
-                        bug.trigger_id,
                         span_to_filename(bug.span),
                         span_to_line_number(bug.span),
+                        bug.drop_id,
+                        bug.trigger_id,
+                        bug.drop_id,
+                        bug.drop_bb,
+                        bug.trigger_id,
                     );
                     let mut snippet = Snippet::source(&code_source)
                         .line_start(span_to_line_number(span))
