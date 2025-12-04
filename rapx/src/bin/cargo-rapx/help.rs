@@ -22,8 +22,10 @@ Analysis:
     -range          perform range analysis
 
 General command: 
-    -help:     show help information
-    -version:  show the version of RAPx
+    -help                        show help information
+    -version                     show the version of RAPx
+    -test-crate=<package_name>   specify the tested package in the workspace
+    -timeout=<seconds>           specify the timeout seconds in running rapx
 
 NOTE: multiple detections can be processed in single run by 
 appending the options to the arguments. Like `cargo rapx -F -M`

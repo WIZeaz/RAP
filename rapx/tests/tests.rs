@@ -1,3 +1,4 @@
+#![allow(clippy::bool_assert_comparison)]
 use std::path::Path;
 use std::process::Command;
 
@@ -181,6 +182,12 @@ fn test_leak_orphan() {
         output.contains("Memory Leak detected in function main"),
         true
     );
+}
+
+#[test]
+fn test_leak_orphan_timeout() {
+    let output = running_tests_with_arg("leak/leak_orphan", "-timeout=0");
+    assert!(output.contains("Process killed due to timeout"));
 }
 
 #[test]
