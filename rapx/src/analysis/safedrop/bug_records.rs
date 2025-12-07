@@ -1,6 +1,6 @@
 use annotate_snippets::{Level, Renderer, Snippet};
 use rustc_data_structures::fx::FxHashMap;
-use rustc_span::{Span, symbol::Symbol};
+use rustc_span::{symbol::Symbol, Span};
 
 use crate::{
     rap_warn,

@@ -1,5 +1,5 @@
 use crate::analysis::{core::alias_analysis::default::MopAAResultMap, safedrop::SafeDropGraph};
-use crate::{rap_debug, rap_error, rap_info};
+use crate::{rap_debug, rap_error};
 // use super::graph::*;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_middle::{

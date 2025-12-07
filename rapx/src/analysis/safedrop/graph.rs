@@ -12,7 +12,7 @@ use rustc_middle::mir::{
     BasicBlock, Body, Const, Operand, Rvalue, StatementKind, TerminatorKind, UnwindAction,
 };
 use rustc_middle::ty::{self, TyCtxt, TypingEnv};
-use rustc_span::{Span, def_id::DefId};
+use rustc_span::{def_id::DefId, Span};
 use std::{cmp::min, vec::Vec};
 
 pub struct SafeDropGraph<'tcx> {

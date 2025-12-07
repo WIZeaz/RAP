@@ -6,7 +6,7 @@ use rustc_middle::{
 use super::graph::*;
 use crate::{
     analysis::core::alias_analysis::default::{
-        MopAAFact, MopAAResultMap, assign::*, types::*, value::*,
+        assign::*, types::*, value::*, MopAAFact, MopAAResultMap,
     },
     rap_error,
 };

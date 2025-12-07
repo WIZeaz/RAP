@@ -1,4 +1,4 @@
-use super::{MopAAFact, MopAAResultMap, assign::*, graph::*, types::*, value::*};
+use super::{assign::*, graph::*, types::*, value::*, MopAAFact, MopAAResultMap};
 use crate::{def_id::*, rap_debug};
 use rustc_hir::def_id::DefId;
 use rustc_middle::{

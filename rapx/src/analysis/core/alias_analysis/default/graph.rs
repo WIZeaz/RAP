@@ -1,11 +1,11 @@
-use super::{MopAAResult, assign::*, block::*, types::*, value::*};
+use super::{assign::*, block::*, types::*, value::*, MopAAResult};
 use crate::{rap_debug, utils::source::*};
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_middle::{
     mir::{BasicBlock, Const, Operand, Rvalue, StatementKind, TerminatorKind, UnwindAction},
     ty::{TyCtxt, TypingEnv},
 };
-use rustc_span::{Span, def_id::DefId};
+use rustc_span::{def_id::DefId, Span};
 use std::{cmp::min, vec::Vec};
 
 pub struct MopGraph<'tcx> {

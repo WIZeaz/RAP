@@ -1,10 +1,10 @@
 use super::default::CallGraphInfo;
+use crate::rap_debug;
 use regex::Regex;
 use rustc_hir::def_id::DefId;
 use rustc_middle::mir;
 use rustc_middle::ty::{FnDef, Instance, InstanceKind, TyCtxt, TypingEnv};
 use std::collections::HashSet;
-use crate::rap_debug;
 
 pub struct CallGraphVisitor<'b, 'tcx> {
     tcx: TyCtxt<'tcx>,
