@@ -10,7 +10,7 @@ use rustc_data_structures::fx::FxHashSet;
 use rustc_middle::mir::SourceInfo;
 use rustc_span::{symbol::Symbol, Span};
 
-use crate::{rap_debug, rap_warn};
+use crate::{rap_debug};
 
 impl<'tcx> SafeDropGraph<'tcx> {
     pub fn report_bugs(&self) {
@@ -30,11 +30,12 @@ impl<'tcx> SafeDropGraph<'tcx> {
             Some(name) => name,
             None => Symbol::intern("no symbol available"),
         };
-        self.bug_records.df_bugs_output(fn_name, self.span);
-        self.bug_records.uaf_bugs_output(fn_name, self.span);
-        self.bug_records.dp_bug_output(fn_name, self.span);
-        let _ = generate_mir_cfg_dot(self.tcx, self.def_id);
-        rap_warn!("Alias: {:?}", convert_alias_to_sets(self.alias_set.clone()));
+        let body = self.tcx.optimized_mir(self.def_id);
+        self.bug_records.df_bugs_output(body, fn_name, self.span);
+        self.bug_records.uaf_bugs_output(body, fn_name, self.span);
+        self.bug_records.dp_bug_output(body, fn_name, self.span);
+        let _ = generate_mir_cfg_dot(self.tcx, self.def_id, &self.alias_set);
+        rap_debug!("Alias: {:?}", convert_alias_to_sets(self.alias_set.clone()));
     }
 
     pub fn uaf_check(&mut self, bb_idx: usize, idx: usize, span: Span, is_func_call: bool) {

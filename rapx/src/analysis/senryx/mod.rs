@@ -9,6 +9,7 @@ pub mod matcher;
 pub mod visitor;
 #[allow(unused)]
 pub mod visitor_check;
+pub mod symbolic_analysis;
 use dominated_graph::InterResultNode;
 use inter_record::InterAnalysisRecord;
 use rustc_data_structures::fx::FxHashMap;

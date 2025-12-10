@@ -2,7 +2,7 @@ use std::fs::{remove_file, File};
 use std::io::Write;
 use std::process::Command;
 
-use crate::rap_info;
+use crate::rap_debug;
 
 // please ensure 'graphviz' has been installed
 pub fn render_dot_graphs(dot_graphs: Vec<(String, String)>) {
@@ -27,10 +27,13 @@ pub fn render_dot_graphs(dot_graphs: Vec<(String, String)>) {
 }
 
 pub fn render_dot_string(name: String, dot_graph: String) {
-    // let file_name = format!("{}.dot", name);
-    let file_name = format!("/home/yuzhili/RAPx_bugs/dots/{}.dot", name);
-    rap_info!("Writing to {:?}", file_name);
-    println!("render graph {:?}", file_name);
+    Command::new("mkdir")
+        .args(["MIR_dot_graph"])
+        .output()
+        .expect("Failed to create directory");
+
+    let file_name = format!("{}.dot", name);
+    rap_debug!("render graph {:?}", file_name);
     let mut file = File::create(&file_name).expect("Unable to create file");
     file.write_all(dot_graph.as_bytes())
         .expect("Unable to write data");
