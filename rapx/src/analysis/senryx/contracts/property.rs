@@ -9,7 +9,7 @@ use rustc_hir::def_id::DefId;
 use rustc_middle::mir::BinOp;
 use rustc_middle::ty::Ty;
 use rustc_middle::ty::TyCtxt;
-use safety_parser::{syn::Expr};
+use safety_parser::syn::Expr;
 
 #[derive(Clone, Debug)]
 pub enum CisRangeItem {

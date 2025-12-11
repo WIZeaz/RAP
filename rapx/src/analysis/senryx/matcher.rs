@@ -1,5 +1,5 @@
 use crate::analysis::utils::fn_info::get_sp_tags_json;
-use crate::{rap_warn};
+use crate::rap_warn;
 use rustc_middle::mir::Const;
 use rustc_middle::mir::Operand;
 use std::collections::{HashMap, HashSet};

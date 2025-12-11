@@ -10,8 +10,8 @@ use crate::{
             contracts::property::{CisRangeItem, PropertyContract},
             symbolic_analysis::{AnaOperand, SymbolicDef, ValueDomain},
         },
-        utils::{fn_info::*, show_mir::display_mir},
         unsafety_isolation::draw_dot::render_dot_string,
+        utils::{fn_info::*, show_mir::display_mir},
     },
     rap_debug, rap_warn,
 };

@@ -10,7 +10,7 @@ use rustc_data_structures::fx::FxHashSet;
 use rustc_middle::mir::SourceInfo;
 use rustc_span::{symbol::Symbol, Span};
 
-use crate::{rap_debug};
+use crate::rap_debug;
 
 impl<'tcx> SafeDropGraph<'tcx> {
     pub fn report_bugs(&self) {

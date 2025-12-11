@@ -1,7 +1,7 @@
 use rustc_middle::mir::{BinOp, UnOp};
 use std::collections::HashMap;
 
-use z3::ast::{Ast, BV, Bool};
+use z3::ast::{Ast, Bool, BV};
 use z3::{Config, Context, SatResult, Solver};
 
 #[derive(Clone, Debug)]

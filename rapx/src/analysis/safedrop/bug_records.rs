@@ -1,11 +1,11 @@
-use annotate_snippets::{Level, Renderer, Snippet};
-use rustc_data_structures::fx::FxHashMap;
-use rustc_span::{symbol::Symbol, Span};
 use crate::rap_warn;
 use crate::utils::log::{
     are_spans_in_same_file, get_basic_block_span, get_variable_name, relative_pos_range,
     span_to_filename, span_to_line_number, span_to_source_code,
 };
+use annotate_snippets::{Level, Renderer, Snippet};
+use rustc_data_structures::fx::FxHashMap;
+use rustc_span::{symbol::Symbol, Span};
 
 use rustc_middle::mir::Body;
 

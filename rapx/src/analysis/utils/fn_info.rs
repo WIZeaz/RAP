@@ -1,13 +1,15 @@
 use crate::analysis::{
-    core::dataflow::{DataFlowAnalysis, default::DataFlowAnalyzer},
+    core::dataflow::{default::DataFlowAnalyzer, DataFlowAnalysis},
     senryx::{
         contracts::property::{self, PropertyContract},
         matcher::parse_unsafe_api,
     },
-    unsafety_isolation::{UnsafetyIsolationCheck, draw_dot::render_dot_string, generate_dot::NodeType},
+    unsafety_isolation::{
+        draw_dot::render_dot_string, generate_dot::NodeType, UnsafetyIsolationCheck,
+    },
 };
 use crate::def_id::*;
-use crate::{rap_debug, rap_warn, rap_info, rap_error};
+use crate::{rap_debug, rap_error, rap_info, rap_warn};
 use rustc_ast::ItemKind;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_hir::def::DefKind;
@@ -129,7 +131,8 @@ pub fn get_std_api_signature_json() -> serde_json::Value {
 
 pub fn get_sp_tags_and_args_json() -> serde_json::Value {
     let json_data: serde_json::Value =
-        serde_json::from_str(include_str!("../unsafety_isolation/data/std_sps_args.json")).expect("Unable to parse JSON");
+        serde_json::from_str(include_str!("../unsafety_isolation/data/std_sps_args.json"))
+            .expect("Unable to parse JSON");
     json_data
 }
 
