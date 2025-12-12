@@ -32,33 +32,11 @@ impl CargoProjectBuilder {
     pub fn build(self) -> io::Result<PocProject> {
         let project_path = self.option.project_path.as_path();
 
-        // remove project path if it exists
-        // if self.option.project_path.exists() {
-        //     fs::remove_dir_all(self.option.project_path)?;
-        // }
-
         // create the new project
         rap_info!("Creating new project at {}", project_path.display());
 
-        let mut command = Command::new("cargo");
-        command
-            .arg("new")
-            .arg(project_path)
-            .arg("--vcs")
-            .arg("none")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        let process = command.spawn()?;
-        let output = process.wait_with_output()?;
-
-        if !output.status.success() {
-            let error = String::from_utf8_lossy(&output.stderr);
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("Failed to create cargo project: {}", error),
-            ));
-        }
+        fs::create_dir_all(&project_path)?;
+        fs::create_dir_all(project_path.join("src"))?;
 
         // add dependencies to Cargo.toml
         self.update_cargo_toml(&project_path)?;
@@ -75,15 +53,33 @@ impl CargoProjectBuilder {
     fn update_cargo_toml(&self, project_path: &Path) -> io::Result<()> {
         let cargo_toml_path = project_path.join("Cargo.toml");
         let mut file = fs::OpenOptions::new()
+            .create(true)
             .write(true)
             .append(true)
             .open(cargo_toml_path)?;
+
         writeln!(
             file,
-            "{} = {{ path = \"{}\" }}",
+            "[package]\nname = \"{}\"\nedition = \"2024\"",
+            self.option.project_name
+        )?;
+
+        writeln!(file, "[dependencies]")?;
+        let features = ["alloc", "page-alloc-64g"]
+            .iter()
+            .map(|s| format!("\"{}\"", s))
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(
+            file,
+            "{} = {{ path = \"{}\" , features = [{}]}}",
             self.option.tested_crate_name,
             self.option.tested_crate_path.display(),
+            features,
         )?;
+
+        writeln!(file, "\n[workspace]")?;
+
         Ok(())
     }
 }
@@ -184,15 +180,22 @@ impl PocProject {
         timeout: usize,
     ) -> io::Result<CmdRecord> {
         let project_path = self.option.project_path.as_path();
-        // first run `cargo check` to ensure the code can be compiled
+
+        let stdout_file = File::create(self.option.project_path.join("stdout.log"))?;
+        let stderr_file = File::create(self.option.project_path.join("stderr.log"))?;
+
         let mut command = Command::new("cargo");
         command
             .current_dir(&project_path)
             .args(args)
             .env_remove("RUSTC_WRAPPER") // rapx set RUSTC_WRAPPER to rapx executable to hijack the compilation, however we just want to use official rustc here
             .envs(env_vars.to_owned())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            // it is critical to redirect stdout/stderr to files,
+            // otherwise the output buffer may be full and block the process
+            .stdout(Stdio::from(stdout_file))
+            .stderr(Stdio::from(stderr_file));
+
+        rap_debug!("Running command: {:?}", command);
 
         let timer = std::time::Instant::now();
         let mut child = command.spawn()?;

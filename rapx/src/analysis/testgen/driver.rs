@@ -122,6 +122,16 @@ fn asan_env_vars() -> &'static [(&'static str, &'static str)] {
     &[("RUSTFLAGS", "-Awarnings -Zsanitizer=address")]
 }
 
+fn arceos_app_vars() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("RUST_BACKTRACE", "1"),
+        (
+            "RUSTFLAGS",
+            "-A unsafe_op_in_unsafe_fn -Z sanitizer=address",
+        ),
+    ]
+}
+
 pub fn driver_main(tcx: TyCtxt<'_>) -> Result<(), Box<dyn std::error::Error>> {
     let config = LtGenConfig::load()?;
     let local_crate_name = tcx.crate_name(LOCAL_CRATE);
@@ -224,6 +234,8 @@ pub fn driver_main(tcx: TyCtxt<'_>) -> Result<(), Box<dyn std::error::Error>> {
         let delimeter = "=".repeat(40);
         writeln!(&mut report_file, "{}", delimeter)?;
 
+        rap_info!("ready to evaluate...");
+
         if let Err(err) = check_and_evaluate(&project, &mut report_file, &config, &poc_path) {
             rap_error!("evaluate project {} fail: {}", project_path.display(), err);
             writeln!(
@@ -266,15 +278,15 @@ fn check_and_evaluate(
     let project_path = &project.option().project_path;
 
     // run `cargo check`
-    let result = project.run_cargo_cmd(&["check"], &[], 0)?;
-    if !result.success() {
-        rap_error!("running `cargo check` fail: {:?}", result.retcode);
-        rap_error!("project {} compile fail", project_path.display());
-        writeln!(log, "{}", result.brief())?;
-        return Ok(());
-    } else {
-        rap_info!("`cargo check` success");
-    }
+    // let result = project.run_cargo_cmd(&["check", "--offline"], &[], 0)?;
+    // if !result.success() {
+    //     rap_error!("running `cargo check` fail: {:?}", result.retcode);
+    //     rap_error!("project {} compile fail", project_path.display());
+    //     writeln!(log, "{}", result.brief())?;
+    //     return Ok(());
+    // } else {
+    //     rap_info!("`cargo check` success");
+    // }
 
     // if this is dryrun, skip evaluataion
     if config.mode.is_dryrun() {
@@ -282,7 +294,21 @@ fn check_and_evaluate(
     }
 
     // run `cargo miri run`
-    let result = project.run_cargo_cmd(&["miri", "run"], miri_env_vars(), config.timeout)?;
+    // let result = project.run_cargo_cmd(&["miri", "run"], miri_env_vars(), config.timeout)?;
+    let result = project.run_cargo_cmd(
+        &[
+            "run",
+            "--offline",
+            "-Zunstable-options",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "--release",
+            "--features",
+            "axstd/log-level-info",
+        ],
+        arceos_app_vars(),
+        config.timeout,
+    )?;
     writeln!(log, "{}", result.brief())?;
     if result.success() {
         rap_info!("`cargo miri run` success, nothing interested happen");

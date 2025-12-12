@@ -151,13 +151,35 @@ impl<'a, 'tcx, I: InputGen> FuzzDriverSynImpl<'a, 'tcx, I> {
 
     fn header_str(&self) -> String {
         format!(
-            "#![feature(allocator_api)]\nuse {}::*;",
+            r##"
+#![no_std]
+#![no_main]
+#![feature(allocator_api)]
+extern crate {};
+use {}::*;
+use axstd::println;
+use axstd::boxed::Box;
+use axstd::string::String;
+use axstd::vec::Vec;
+
+unsafe extern "C"{{
+    fn __axplat_main(cpu_id: usize, args: usize);
+}}
+
+#[unsafe(export_name = "main")]
+fn blah() {{
+    unsafe {{
+        __axplat_main(0, 0);
+    }}
+}}"##,
+            self.option.crate_name,
             self.option.crate_name
         )
     }
 
     fn main_str(&mut self, cx: &Context<'tcx>) -> String {
         let mut ret = String::new();
+        ret.push_str("#[unsafe(export_name = \"__main_entry\")]\n");
         ret.push_str("fn main() {\n");
         let indent = "    ";
         for stmt in cx.stmts() {
