@@ -20,6 +20,9 @@ impl<'tcx> Analysis for ScanAnalysis<'tcx> {
     }
 
     fn run(&mut self) {
+        let sess = self.tcx.sess;
+        let config = &sess.psess.config;
+
         let crate_name = self.tcx.crate_name(LOCAL_CRATE);
         let crate_type = self.tcx.crate_types()[0];
         rap_info!("scan crate: {}", crate_name.as_str());

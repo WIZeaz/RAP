@@ -20,6 +20,7 @@ extern crate rustc_infer;
 extern crate rustc_interface;
 extern crate rustc_metadata;
 extern crate rustc_middle;
+extern crate rustc_parse;
 extern crate rustc_public;
 extern crate rustc_session;
 extern crate rustc_span;
@@ -28,6 +29,7 @@ extern crate rustc_trait_selection;
 extern crate rustc_traits;
 extern crate rustc_type_ir;
 extern crate thin_vec;
+
 use crate::analysis::scan::ScanAnalysis;
 use analysis::{
     Analysis,
@@ -95,6 +97,7 @@ pub struct RapCallback {
     verify: bool,
     verify_std: bool,
     scan: bool,
+    llm_audit: bool,
     test_crate: Option<String>,
 }
 
@@ -120,6 +123,7 @@ impl Default for RapCallback {
             verify: false,
             verify_std: false,
             scan: false,
+            llm_audit: false,
             test_crate: None,
         }
     }
@@ -301,6 +305,14 @@ impl RapCallback {
     /// Test if rcanary is enabled.
     pub fn is_rcanary_enabled(&self) -> bool {
         self.rcanary
+    }
+
+    pub fn enable_llm_audit(&mut self) {
+        self.llm_audit = true;
+    }
+
+    pub fn is_llm_audit_enabled(&self) -> bool {
+        self.llm_audit
     }
 
     /// Enable safedrop for use-after-free bug detection.
@@ -566,5 +578,9 @@ pub fn start_analyzer(tcx: TyCtxt, callback: &RapCallback) {
 
     if callback.is_scan_enabled() {
         ScanAnalysis::new(tcx).run();
+    }
+
+    if callback.is_llm_audit_enabled() {
+        analysis::llm_audit::LlmAuditAnalysis::new(tcx).run();
     }
 }
