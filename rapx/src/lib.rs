@@ -18,6 +18,7 @@ extern crate rustc_index;
 extern crate rustc_interface;
 extern crate rustc_metadata;
 extern crate rustc_middle;
+extern crate rustc_parse;
 extern crate rustc_public;
 extern crate rustc_session;
 extern crate rustc_span;
@@ -63,7 +64,7 @@ pub static RAP_DEFAULT_ARGS: &[&str] = &["-Zalways-encode-mir", "-Zmir-opt-level
 
 /// This is the data structure to handle rapx options as a rustc callback.
 
-#[derive(Debug, Copy, Clone, Hash)]
+#[derive(Debug, Clone, Hash)]
 pub struct RapCallback {
     alias: bool,
     api_dependency: bool,
@@ -80,6 +81,10 @@ pub struct RapCallback {
     show_mir: bool,
     unsafety_isolation: usize,
     verify: bool,
+    verify_std: bool,
+    scan: bool,
+    llm_audit: bool,
+    test_crate: Option<String>,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -101,6 +106,10 @@ impl Default for RapCallback {
             show_mir: false,
             unsafety_isolation: 0,
             verify: false,
+            verify_std: false,
+            scan: false,
+            llm_audit: false,
+            test_crate: None,
         }
     }
 }
@@ -128,18 +137,40 @@ impl Callbacks for RapCallback {
         preprocess::ssa_preprocess::create_ssa_struct(_krate);
         Compilation::Continue
     }
+
     fn after_analysis<'tcx>(&mut self, _compiler: &Compiler, tcx: TyCtxt<'tcx>) -> Compilation {
         rap_trace!("Execute after_analysis() of compiler callbacks");
+
         rustc_public::rustc_internal::run(tcx, || {
-            start_analyzer(tcx, *self);
+            def_id::init(tcx);
+            if self.is_building_test_crate() {
+                start_analyzer(tcx, self);
+            } else {
+                let package_name = std::env::var("CARGO_PKG_NAME")
+                    .expect("cannot capture env var `CARGO_PKG_NAME`");
+                rap_trace!("skip analyzing package `{}`", package_name);
+            }
         })
-        .expect("msg");
+        .expect("Failed to run rustc_public.");
         rap_trace!("analysis done");
+
         Compilation::Continue
     }
 }
 
 impl RapCallback {
+    fn is_building_test_crate(&self) -> bool {
+        match &self.test_crate {
+            None => true,
+            Some(test_crate) => {
+                let test_crate: &str = test_crate;
+                let package_name = std::env::var("CARGO_PKG_NAME")
+                    .expect("cannot capture env var `CARGO_PKG_NAME`");
+                package_name == test_crate
+            }
+        }
+    }
+
     /// Enable alias analysis. The parameter is used to config the threshold of alias analysis.
     /// Currently, we mainly use it to control the depth of field-sensitive analysis.
     /// -alias0: set field depth limit to 10; do not distinguish different flows within a each
@@ -176,7 +207,7 @@ impl RapCallback {
     }
 
     /// Test if API-dependency graph generation is enabled.
-    pub fn is_api_dependency_enabled(self) -> bool {
+    pub fn is_api_dependency_enabled(&self) -> bool {
         self.api_dependency
     }
 
@@ -196,7 +227,7 @@ impl RapCallback {
     }
 
     /// Test if owned-heap analysis is enabled.
-    pub fn is_ownedheap_enabled(self) -> bool {
+    pub fn is_ownedheap_enabled(&self) -> bool {
         self.ownedheap
     }
 
@@ -206,7 +237,7 @@ impl RapCallback {
     }
 
     /// Test if dataflow analysis is enabled.
-    pub fn is_dataflow_enabled(self) -> usize {
+    pub fn is_dataflow_enabled(&self) -> usize {
         self.dataflow
     }
 
@@ -216,7 +247,7 @@ impl RapCallback {
     }
 
     /// Test if range analysis is enabled.
-    pub fn is_range_analysis_enabled(self) -> bool {
+    pub fn is_range_analysis_enabled(&self) -> bool {
         self.range > 0
     }
 
@@ -226,7 +257,7 @@ impl RapCallback {
     }
 
     /// Check if test is enabled.
-    pub fn is_test_enabled(self) -> bool {
+    pub fn is_test_enabled(&self) -> bool {
         self.test
     }
 
@@ -236,7 +267,7 @@ impl RapCallback {
     }
 
     /// Test if ssa transformation is enabled.
-    pub fn is_ssa_transform_enabled(self) -> bool {
+    pub fn is_ssa_transform_enabled(&self) -> bool {
         self.ssa
     }
 
@@ -246,7 +277,7 @@ impl RapCallback {
     }
 
     /// Test if optimization analysis is enabled.
-    pub fn is_opt_enabled(self) -> usize {
+    pub fn is_opt_enabled(&self) -> usize {
         self.opt
     }
 
@@ -258,6 +289,14 @@ impl RapCallback {
     /// Test if rcanary is enabled.
     pub fn is_rcanary_enabled(&self) -> bool {
         self.rcanary
+    }
+
+    pub fn enable_llm_audit(&mut self) {
+        self.llm_audit = true;
+    }
+
+    pub fn is_llm_audit_enabled(&self) -> bool {
+        self.llm_audit
     }
 
     /// Enable safedrop for use-after-free bug detection.
@@ -331,7 +370,7 @@ impl RapCallback {
 }
 
 /// Start the analysis with the features enabled.
-pub fn start_analyzer(tcx: TyCtxt, callback: RapCallback) {
+pub fn start_analyzer(tcx: TyCtxt, callback: &RapCallback) {
     def_id::init(tcx);
     if callback.is_alias_enabled() {
         let mut analyzer = AliasAnalyzer::new(tcx);
@@ -458,5 +497,9 @@ pub fn start_analyzer(tcx: TyCtxt, callback: RapCallback) {
     if callback.is_infer_enabled() {
         let check_level = CheckLevel::Medium;
         SenryxCheck::new(tcx, 2).start(check_level, false);
+    }
+
+    if callback.is_llm_audit_enabled() {
+        analysis::llm_audit::LlmAuditAnalysis::new(tcx).run();
     }
 }

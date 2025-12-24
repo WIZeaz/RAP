@@ -1,4 +1,5 @@
 pub mod core;
+pub mod llm_audit;
 pub mod opt;
 pub mod rcanary;
 pub mod safedrop;

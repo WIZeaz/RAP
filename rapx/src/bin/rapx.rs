@@ -49,6 +49,7 @@ fn main() {
             "-upg" => compiler.enable_unsafety_isolation(3),
             "-ucons" => compiler.enable_unsafety_isolation(4),
             "-mir" => compiler.enable_show_mir(),
+            "-llm-audit" => compiler.enable_llm_audit(),
             // -timeout has been handled in cargo-rapx
             x if x.starts_with("-timeout=") => (),
             _ => args.push(arg),
