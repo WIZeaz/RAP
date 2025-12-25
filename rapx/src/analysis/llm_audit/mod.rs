@@ -4,10 +4,10 @@
 #[allow(unused)]
 mod llm;
 mod source;
-use crate::analysis::Analysis;
-use crate::analysis::core::callgraph::CallGraphAnalysis;
 use crate::analysis::core::callgraph::default::CallGraphAnalyzer;
+use crate::analysis::core::callgraph::CallGraphAnalysis;
 use crate::analysis::llm_audit::source::{ContextMap, FileContext};
+use crate::analysis::Analysis;
 use crate::{rap_debug, rap_error, rap_info};
 use anyhow::Result;
 use minijinja::render;
