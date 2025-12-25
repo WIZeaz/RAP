@@ -239,7 +239,10 @@ async fn audit_one_file(
     dryrun: bool,
 ) -> Result<()> {
     let content = fs::read_to_string(&file_path)?;
-    let prompt_template = fs::read_to_string("/app/RAPx-main/prompt.md")?;
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let prompt_path = manifest_dir.join("prompt.md");
+    let prompt_template = fs::read_to_string(&prompt_path)?;
+
     let relative_path = file_path.strip_prefix(audit_ctx.project_path.as_path())?;
     let report_file_name = relative_path
         .with_extension("md")
