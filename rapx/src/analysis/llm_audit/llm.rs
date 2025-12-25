@@ -61,7 +61,7 @@ impl Message {
         let role_str = content
             .get("role")
             .and_then(|r| r.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'role' field"))?;
+            .ok_or_else(|| anyhow::anyhow!("Missing 'role' field"))?;
 
         let role = match role_str {
             "system" => MessageRole::System,
@@ -74,7 +74,7 @@ impl Message {
         let content_str = content
             .get("content")
             .and_then(|c| c.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing or invalid 'content' field"))?
+            .ok_or_else(|| anyhow::anyhow!("Missing 'content' field"))?
             .to_string();
         Ok(Message {
             role,
@@ -117,6 +117,7 @@ impl Session {
                 "messages" : ctx.messages,
                 "temperature": self.config.temperature,
             }));
+
         let response = builder.send().await?;
         let response: serde_json::Value = response.json().await?;
 

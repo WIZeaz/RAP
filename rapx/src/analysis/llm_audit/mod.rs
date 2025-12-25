@@ -133,11 +133,14 @@ impl<'tcx> LlmAuditAnalysis<'tcx> {
         let project_path = fs::canonicalize(project_dir)?;
         let target_path = project_path.join(target_dirname);
 
+        rap_info!("Project path: {}", project_path.display());
+        rap_info!("Target path: {}", target_path.display());
+
         fs::create_dir_all(&target_path)?;
 
         let context_map = self.collect_context()?;
 
-        rap_info!("context_map: {:?}", context_map);
+        rap_debug!("context_map: {:?}", context_map);
 
         let session = llm::Session::new(llm);
 
@@ -149,7 +152,6 @@ impl<'tcx> LlmAuditAnalysis<'tcx> {
         )?);
 
         let source_map = self.tcx.sess.source_map();
-        rap_info!("Project path: {}", project_path.display());
 
         let mut handles = vec![];
 
@@ -251,6 +253,7 @@ async fn audit_one_file(
         .replace("/", "-");
 
     let report_path = audit_ctx.target_path.join(report_file_name);
+    rap_info!("Report Path: {}", report_path.display());
 
     let prompt = render!(
         &prompt_template,
