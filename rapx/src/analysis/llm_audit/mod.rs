@@ -8,11 +8,14 @@ use crate::analysis::Analysis;
 use crate::analysis::core::callgraph::CallGraphAnalysis;
 use crate::analysis::core::callgraph::default::CallGraphAnalyzer;
 use crate::analysis::llm_audit::source::{ContextMap, FileContext};
+use crate::{rap_debug, rap_error, rap_info};
 use anyhow::Result;
 use minijinja::render;
 use rustc_hir::def::DefKind;
 use rustc_middle::ty::TyCtxt;
+use rustc_span::FileName;
 use serde::Deserialize;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -26,6 +29,8 @@ pub struct Config {
     target_dirname: String,
     #[serde(default = "default_dryrun")]
     dryrun: bool,
+    #[serde(default = "default_num_context_file")]
+    num_context_file: usize,
 }
 
 fn default_target_dirname() -> String {
@@ -34,6 +39,10 @@ fn default_target_dirname() -> String {
 
 fn default_dryrun() -> bool {
     false
+}
+
+fn default_num_context_file() -> usize {
+    3
 }
 
 impl Config {
@@ -82,6 +91,13 @@ impl<'tcx> Analysis for LlmAuditAnalysis<'tcx> {
     fn reset(&mut self) {}
 }
 
+fn canonicalize_file_name(file_name: &FileName) -> Option<PathBuf> {
+    match file_name.clone().into_local_path() {
+        Some(pb) => pb.canonicalize().ok(),
+        _ => None,
+    }
+}
+
 impl<'tcx> LlmAuditAnalysis<'tcx> {
     pub fn new(tcx: TyCtxt<'tcx>) -> Self {
         LlmAuditAnalysis { tcx }
@@ -126,43 +142,48 @@ impl<'tcx> LlmAuditAnalysis<'tcx> {
             llm,
             target_dirname,
             dryrun,
+            num_context_file,
         } = config;
 
         let project_dir = std::env::var("CARGO_MANIFEST_DIR")?;
         let project_path = fs::canonicalize(project_dir)?;
         let target_path = project_path.join(target_dirname);
 
+        rap_info!("Project path: {}", project_path.display());
+        rap_info!("Target path: {}", target_path.display());
+
         fs::create_dir_all(&target_path)?;
 
         let context_map = self.collect_context()?;
 
-        rap_info!("context_map: {:?}", context_map);
+        rap_debug!("context_map: {:?}", context_map);
 
         let session = llm::Session::new(llm);
 
-        let audit_ctx = Arc::new(AuditContext::new(
-            project_path.clone(),
+        let project_path = fs::canonicalize(project_path)?;
+        let audit_ctx = Arc::new(AuditContext {
+            project_path: project_path.clone(),
             target_path,
             session,
             context_map,
-        )?);
+            num_context_file,
+        });
 
         let source_map = self.tcx.sess.source_map();
-        rap_info!("Project path: {}", project_path.display());
 
         let mut handles = vec![];
 
         for file in source_map.files().iter() {
-            let file_path = fs::canonicalize(Path::new(&file.name.prefer_local().to_string()))?;
-            if !file_path.starts_with(&project_path) {
-                continue;
+            if let Some(file_path) = canonicalize_file_name(&file.name) {
+                if !file_path.starts_with(&project_path) {
+                    continue;
+                }
+
+                rap_info!("source file: {}", file_path.display());
+                rap_info!("Analyzing source file: {}", file_path.display());
+                let handle = tokio::spawn(audit_one_file(audit_ctx.clone(), file_path, dryrun));
+                handles.push(handle);
             }
-
-            rap_info!("source file: {}", file_path.display());
-
-            rap_info!("Analyzing source file: {}", file_path.display());
-            let handle = tokio::spawn(audit_one_file(audit_ctx.clone(), file_path, dryrun));
-            handles.push(handle);
         }
 
         for handle in handles {
@@ -184,23 +205,7 @@ struct AuditContext {
     target_path: PathBuf, // directoty to store audit reports
     session: llm::Session,
     context_map: ContextMap,
-}
-
-impl AuditContext {
-    pub fn new(
-        project_path: PathBuf,
-        target_path: PathBuf,
-        session: llm::Session,
-        context_map: ContextMap,
-    ) -> Result<Self> {
-        let project_path = fs::canonicalize(project_path)?;
-        Ok(Self {
-            project_path,
-            target_path,
-            session,
-            context_map,
-        })
-    }
+    num_context_file: usize,
 }
 
 fn get_file_context(audit_ctx: Arc<AuditContext>, file_path: &Path) -> Result<String> {
@@ -211,11 +216,13 @@ fn get_file_context(audit_ctx: Arc<AuditContext>, file_path: &Path) -> Result<St
     let context_vec = audit_ctx.context_map.get(file_path).unwrap();
 
     let mut context_prompt = String::new();
-    // choose Top 3
 
-    let ctx_num = 3.min(context_vec.len());
-    for i in 0..ctx_num {
-        let context_file_path = context_vec[i].0.as_path();
+    let mut ctx_count = audit_ctx.num_context_file;
+    for (context_file_path, _) in context_vec {
+        // only add context file
+        if context_file_path.extension().unwrap_or(OsStr::new("notrs")) != "rs" {
+            continue;
+        }
         let path_text = match context_file_path.strip_prefix(&audit_ctx.project_path) {
             Ok(relative) => relative.display().to_string(),
             Err(_) => {
@@ -228,6 +235,11 @@ fn get_file_context(audit_ctx: Arc<AuditContext>, file_path: &Path) -> Result<St
             "- 文件路径: {}\n- 文件内容：\n\n```rust\n{}\n```\n\n",
             path_text, content
         ));
+
+        ctx_count -= 1;
+        if ctx_count <= 0 {
+            break;
+        }
     }
     Ok(context_prompt)
 }
@@ -250,6 +262,7 @@ async fn audit_one_file(
         .replace("/", "-");
 
     let report_path = audit_ctx.target_path.join(report_file_name);
+    rap_info!("Report Path: {}", report_path.display());
 
     let prompt = render!(
         &prompt_template,
