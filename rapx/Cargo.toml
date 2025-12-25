@@ -51,6 +51,7 @@ reqwest = { version = "0.12.28", features = ["json"] }
 anyhow = "1.0.100"
 tokio = "1.48.0"
 minijinja = "2.14.0"
+futures = "0.3.31"
 
 [features]
 backtraces = ["snafu/backtraces", "snafu/backtraces-impl-backtrace-crate"]
