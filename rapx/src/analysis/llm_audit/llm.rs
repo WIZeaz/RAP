@@ -1,10 +1,14 @@
 use anyhow::Result;
+use rand::{self, Rng};
+use reqwest::Request;
 use rustc_hir::attrs::ReprAttr::ReprInt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
 use std::path::Path;
 use toml;
+
+use crate::rap_warn;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -107,23 +111,38 @@ impl Session {
     }
 
     pub async fn call(&self, ctx: &MessageContext) -> Result<Response> {
-        let builder = self
-            .client
-            .post(&self.config.base_url)
-            .bearer_auth(&self.config.api_key)
-            .json(&json!(
-            {
-                "model" : self.config.model,
-                "messages" : ctx.messages,
-                "temperature": self.config.temperature,
-            }));
+        loop {
+            let response = self
+                .client
+                .post(&self.config.base_url)
+                .bearer_auth(&self.config.api_key)
+                .json(&json!(
+                {
+                    "model" : self.config.model,
+                    "messages" : ctx.messages,
+                    "temperature": self.config.temperature,
+                }))
+                .send()
+                .await?;
 
-        let response = builder.send().await?;
-        let response: serde_json::Value = response.json().await?;
-
-        Ok(Response {
-            raw: response.clone(),
-            message: Message::from_json(response["choices"][0]["message"].clone())?,
-        })
+            match response.error_for_status() {
+                Ok(response) => {
+                    let body: serde_json::Value = response.json().await?;
+                    return Ok(Response {
+                        raw: body.clone(),
+                        message: Message::from_json(body)?,
+                    });
+                }
+                Err(err) => {
+                    if let Some(code) = err.status() {
+                        rap_warn!("reach server error ({}), retry later", code);
+                    }
+                    let jitter_secs = rand::rng().random_range(0..30);
+                    let wait_time = std::time::Duration::from_secs(jitter_secs + 60);
+                    rap_warn!("retry after {}s", wait_time.as_secs());
+                    tokio::time::sleep(wait_time);
+                }
+            }
+        }
     }
 }
