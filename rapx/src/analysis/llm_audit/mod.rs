@@ -10,6 +10,7 @@ use crate::analysis::llm_audit::source::{ContextMap, FileContext};
 use crate::analysis::Analysis;
 use crate::{rap_debug, rap_error, rap_info};
 use anyhow::Result;
+use futures::{stream, StreamExt};
 use minijinja::render;
 use rustc_hir::def::DefKind;
 use rustc_middle::ty::TyCtxt;
@@ -171,7 +172,7 @@ impl<'tcx> LlmAuditAnalysis<'tcx> {
 
         let source_map = self.tcx.sess.source_map();
 
-        let mut handles = vec![];
+        let mut tasks = vec![];
 
         for file in source_map.files().iter() {
             if let Some(file_path) = canonicalize_file_name(&file.name) {
@@ -181,13 +182,17 @@ impl<'tcx> LlmAuditAnalysis<'tcx> {
 
                 rap_info!("source file: {}", file_path.display());
                 rap_info!("Analyzing source file: {}", file_path.display());
-                let handle = tokio::spawn(audit_one_file(audit_ctx.clone(), file_path, dryrun));
-                handles.push(handle);
+                tasks.push(audit_one_file(audit_ctx.clone(), file_path, dryrun));
             }
         }
 
-        for handle in handles {
-            match handle.await? {
+        let results: Vec<_> = futures::stream::iter(tasks)
+            .buffer_unordered(10)
+            .collect()
+            .await;
+
+        for result in results {
+            match result {
                 Err(e) => {
                     rap_error!("Error auditing file: {}", e);
                 }
