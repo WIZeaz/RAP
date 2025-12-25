@@ -1,5 +1,8 @@
 use super::LlmAuditAnalysis;
-use crate::{analysis::core::callgraph::CallGraph, rap_debug};
+use crate::{
+    analysis::{core::callgraph::CallGraph, llm_audit::canonicalize_file_name},
+    rap_debug,
+};
 use anyhow::Result;
 use rustc_middle::ty::{self, Ty, TyCtxt, TyKind, TypeSuperVisitable, TypeVisitable};
 use rustc_span::{def_id::DefId, FileName};
@@ -18,19 +21,14 @@ impl FileContext {
             inner: HashMap::default(),
         }
     }
-    // collect HashMap<FileName,usize> to Vec<FileName> by usize value
+    // collect HashMap<FileName, usize> to Vec<FileName> by usize value
     pub fn into_sorted_map(self) -> Result<ContextMap> {
         let mut map = HashMap::new();
         for (k, v) in self.inner {
             let abs_path = k.into_local_path().unwrap().canonicalize().unwrap();
             let mut vec: Vec<(PathBuf, usize)> = v
                 .into_iter()
-                .map(|(filename, cnt)| {
-                    (
-                        filename.into_local_path().unwrap().canonicalize().unwrap(),
-                        cnt,
-                    )
-                })
+                .filter_map(|(filename, cnt)| Some((canonicalize_file_name(&filename)?, cnt)))
                 .collect();
 
             vec.sort_by(|lhs, rhs| rhs.1.cmp(&lhs.1));
