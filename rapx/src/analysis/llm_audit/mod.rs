@@ -277,7 +277,7 @@ async fn audit_one_file(
     );
 
     let ctx = llm::MessageContext {
-        messages: vec![llm::Message::system(prompt.to_string())],
+        messages: vec![llm::Message::user(prompt.to_string())],
     };
 
     if dryrun {
