@@ -25,8 +25,7 @@
 </output-format>
 
 <example>
-# 安全审计报告
-审计文件：`src/lib.rs`
+- 审计文件：`src/lib.rs`
 
 # bug-1
 - **函数名**: `foo`
