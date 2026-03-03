@@ -3,29 +3,17 @@
 #![allow(dead_code)]
 
 use rustc_data_structures::graph::dominators::Dominators;
-use rustc_data_structures::graph::{dominators, Predecessors};
+use rustc_data_structures::graph::{Predecessors, dominators};
 use rustc_driver::args;
 use rustc_hir::def_id::DefId;
-use rustc_hir::def_id::{CrateNum, DefIndex, LocalDefId, CRATE_DEF_INDEX, LOCAL_CRATE};
+use rustc_hir::def_id::{CRATE_DEF_INDEX, CrateNum, DefIndex, LOCAL_CRATE, LocalDefId};
 use rustc_middle::mir::*;
 use rustc_middle::{
-    mir::{visit::Visitor, Body, Local, Location},
+    mir::{Body, Local, Location, visit::Visitor},
     ty::TyCtxt,
 };
 use rustc_span::symbol::Symbol;
 use std::collections::{HashMap, HashSet};
-
-// use std::path::PathBuf;
-// // use tracing::{debug, error, info, warn};
-// use rustc_target::abi::FieldIdx;
-// use std::borrow::Borrow;
-// use rustc_index::bit_set::BitSet;
-// use rustc_index::IndexSlice;
-// use rustc_middle::mir::visit::*;
-// use rustc_middle::mir::visit::*;
-// use rustc_middle::mir::*;
-// use rustc_index::IndexVec;
-// use super::Replacer::*;
 pub struct PhiPlaceholder;
 pub struct SSATransformer<'tcx> {
     pub tcx: TyCtxt<'tcx>,
@@ -39,11 +27,10 @@ pub struct SSATransformer<'tcx> {
     pub local_index: usize,
     pub local_defination_block: HashMap<Local, BasicBlock>,
     pub skipped: HashSet<usize>,
-    pub phi_index: HashMap<*const Statement<'tcx>, usize>,
-    pub phi_statements: HashMap<*const Statement<'tcx>, bool>,
-    pub essa_statements: HashMap<*const Statement<'tcx>, bool>,
+    pub phi_index: HashMap<Location, usize>,
     pub phi_def_id: DefId,
     pub essa_def_id: DefId,
+    pub ref_local_map: HashMap<Local, Local>,
     pub places_map: HashMap<Place<'tcx>, HashSet<Place<'tcx>>>,
     pub ssa_locals_map: HashMap<Place<'tcx>, HashSet<Place<'tcx>>>,
 }
@@ -99,19 +86,6 @@ impl<'tcx> SSATransformer<'tcx> {
             skipped.extend(arg_count + 1..len + 1);
             // skipped.insert(0); // Skip the return place
         }
-        // let phi_def_id = tcx.type_of(tcx.local_def_id_to_hir_id(def_id).owner.to_def_id());
-        // print!("phi_def_id: {:?}\n", def_id);
-        // let phi_defid = Self::find_phi_placeholder(tcx, "RAP-interval-demo");
-        // if let Some(def_id) = phi_defid {
-        //     print!("phi_def_id: {:?}\n", def_id);
-        // } else {
-        //     print!("phi_def_id not found\n");
-        // }
-        // let phi_ty = tcx.type_of(def_id).skip_binder();
-        // print!("phi_ty: {:?}\n", phi_ty);
-        // let crate_num: CrateNum = CrateNum::new(10); // LOCAL_CRATE 是当前 crate，或者用 CrateNum::new(0)
-        // let def_index: DefIndex = CRATE_DEF_INDEX; // 这通常是 0，也可以用 DefIndex::from_usize(123)
-        // let my_def_id = DefId { krate: crate_num, index: def_index };
 
         SSATransformer {
             tcx,
@@ -126,10 +100,9 @@ impl<'tcx> SSATransformer<'tcx> {
             local_defination_block: local_defination_block,
             skipped: skipped,
             phi_index: HashMap::default(),
-            phi_statements: HashMap::default(),
-            essa_statements: HashMap::default(),
             phi_def_id: ssa_def_id,
             essa_def_id: essa_def_id,
+            ref_local_map: HashMap::default(),
             places_map: HashMap::default(),
             ssa_locals_map: HashMap::default(),
         }
@@ -314,19 +287,50 @@ impl<'tcx> SSATransformer<'tcx> {
     }
 
     pub fn is_phi_statement(&self, statement: &Statement<'tcx>) -> bool {
-        let phi_stmt = statement as *const Statement<'tcx>;
-        if self.phi_statements.contains_key(&phi_stmt) {
-            return true;
-        } else {
-            return false;
+        if let StatementKind::Assign(box (_, rvalue)) = &statement.kind {
+            if let Rvalue::Aggregate(box aggregate_kind, _) = rvalue {
+                if let AggregateKind::Adt(def_id, ..) = aggregate_kind {
+                    return *def_id == self.phi_def_id;
+                }
+            }
         }
+        false
     }
+
     pub fn is_essa_statement(&self, statement: &Statement<'tcx>) -> bool {
-        let essa_stmt = statement as *const Statement<'tcx>;
-        if self.essa_statements.contains_key(&essa_stmt) {
-            return true;
-        } else {
-            return false;
+        if let StatementKind::Assign(box (_, rvalue)) = &statement.kind {
+            if let Rvalue::Aggregate(box aggregate_kind, _) = rvalue {
+                if let AggregateKind::Adt(def_id, ..) = aggregate_kind {
+                    return *def_id == self.essa_def_id;
+                }
+            }
         }
+        false
+    }
+    pub fn get_essa_source_block(&self, statement: &Statement<'tcx>) -> Option<BasicBlock> {
+        if !self.is_essa_statement(statement) {
+            return None;
+        }
+
+        if let StatementKind::Assign(box (_, Rvalue::Aggregate(_, operands))) = &statement.kind {
+            if let Some(last_op) = operands.into_iter().last() {
+                if let Operand::Constant(box ConstOperand { const_: c, .. }) = last_op {
+                    if let Some(val) = self.try_const_to_usize(c) {
+                        return Some(BasicBlock::from_usize(val as usize));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn try_const_to_usize(&self, c: &Const<'tcx>) -> Option<u64> {
+        if let Some(scalar_int) = c.try_to_scalar_int() {
+            let size = scalar_int.size();
+            if let Ok(bits) = scalar_int.try_to_bits(size) {
+                return Some(bits as u64);
+            }
+        }
+        None
     }
 }

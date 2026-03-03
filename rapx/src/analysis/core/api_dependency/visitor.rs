@@ -1,14 +1,14 @@
+use super::Config;
 use super::graph::ApiDependencyGraph;
 use super::graph::{DepEdge, DepNode};
 use super::is_def_id_public;
-use super::Config;
 use crate::analysis::core::api_dependency::mono;
 use crate::{rap_debug, rap_trace};
 use rustc_hir::LangItem;
 use rustc_hir::{
+    BodyId, BodyOwnerKind, FnDecl,
     def_id::{DefId, LocalDefId},
     intravisit::{FnKind, Visitor},
-    BodyId, BodyOwnerKind, FnDecl,
 };
 use rustc_middle::ty::{self, FnSig, ParamEnv, Ty, TyCtxt, TyKind};
 use rustc_span::Span;
@@ -71,7 +71,7 @@ pub fn has_const_generics(generics: &ty::Generics, tcx: TyCtxt<'_>) -> bool {
 
 fn is_drop_impl(tcx: TyCtxt<'_>, fn_did: DefId) -> bool {
     if let Some(impl_id) = tcx.trait_impl_of_assoc(fn_did) {
-        let trait_did = tcx.trait_id_of_impl(impl_id).unwrap();
+        let trait_did = tcx.impl_trait_id(impl_id);
         if tcx.is_lang_item(trait_did, LangItem::Drop) {
             return true;
         }

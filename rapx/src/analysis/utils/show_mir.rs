@@ -1,4 +1,4 @@
-use crate::rap_info;
+use crate::analysis::utils::fn_info::*;
 use colorful::{Color, Colorful};
 use rustc_hir::def_id::DefId;
 use rustc_middle::mir::{
@@ -75,7 +75,6 @@ impl<'tcx> Display for StatementKind<'tcx> {
             }
             StatementKind::FakeRead(..) => s += "FakeRead",
             StatementKind::SetDiscriminant { .. } => s += "SetDiscriminant",
-            StatementKind::Deinit(..) => s += "Deinit",
             StatementKind::StorageLive(..) => s += "StorageLive",
             StatementKind::StorageDead(..) => s += "StorageDead",
             StatementKind::Retag(..) => s += "Retag",
@@ -100,7 +99,6 @@ impl<'tcx> Display for Rvalue<'tcx> {
             Rvalue::Repeat(..) => s += "Repeat",
             Rvalue::Ref(..) => s += "Ref",
             Rvalue::ThreadLocalRef(..) => s += "ThreadLocalRef",
-            Rvalue::Len(..) => s += "Len",
             Rvalue::Cast(..) => s += "Cast",
             Rvalue::BinaryOp(..) => s += "BinaryOp",
             Rvalue::NullaryOp(..) => s += "NullaryOp",
@@ -215,6 +213,20 @@ impl<'tcx> ShowMir<'tcx> {
             let def_id = each_mir.to_def_id();
             let body = self.tcx.instance_mir(ty::InstanceKind::Item(def_id));
             display_mir(def_id, body);
+        }
+    }
+
+    pub fn start_generate_dot(&mut self) {
+        rap_info!("Generate MIR DOT");
+        std::process::Command::new("mkdir")
+            .args(["MIR_dot_graph"])
+            .output()
+            .expect("Failed to create directory");
+
+        let mir_keys = self.tcx.mir_keys(());
+        for each_mir in mir_keys {
+            let def_id = each_mir.to_def_id();
+            let _ = generate_mir_cfg_dot(self.tcx, def_id, &Vec::new());
         }
     }
 }

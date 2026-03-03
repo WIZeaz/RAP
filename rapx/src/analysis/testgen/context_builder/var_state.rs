@@ -1,5 +1,5 @@
 use super::ContextBuilder;
-use crate::analysis::testgen::context::{Var, DUMMY_INPUT_VAR};
+use crate::analysis::testgen::context::{DUMMY_INPUT_VAR, Var};
 use crate::analysis::testgen::utils;
 use rustc_middle::ty::{self, Ty};
 use std::fmt::{self, Display};

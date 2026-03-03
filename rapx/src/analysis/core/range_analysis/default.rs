@@ -2,19 +2,23 @@
 
 use crate::{
     analysis::{
+        Analysis,
         core::{
+            // Graph used for path-sensitive CFG traversal
             alias_analysis::default::graph::MopGraph,
-            callgraph::{default::CallGraphInfo, visitor::CallGraphVisitor},
+            callgraph::{default::CallGraph, visitor::CallGraphVisitor},
             range_analysis::{
-                domain::{
-                    domain::{ConstConvert, IntervalArithmetic, VarNodes},
-                    ConstraintGraph::ConstraintGraph,
-                },
                 Range, RangeAnalysis,
+                domain::{
+                    ConstraintGraph::ConstraintGraph,
+                    domain::{ConstConvert, IntervalArithmetic, VarNodes},
+                },
             },
+
+            // SSA / ESSA transformation passes
             ssa_transform::*,
         },
-        Analysis,
+        graphs::scc::Scc,
     },
     rap_debug, rap_info,
 };
@@ -29,25 +33,42 @@ use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
     fmt::Debug,
+    fs::{self, File},
+    io::Write,
+    path::PathBuf,
     rc::Rc,
 };
 
 use super::{PathConstraint, PathConstraintMap, RAResult, RAResultMap, RAVecResultMap};
+
+/// RangeAnalyzer performs MIR-based interprocedural range analysis.
+/// It builds SSA/ESSA, constraint graphs, propagates intervals,
+/// and optionally extracts path constraints.
 pub struct RangeAnalyzer<'tcx, T: IntervalArithmetic + ConstConvert + Debug> {
-    pub tcx: TyCtxt<'tcx>,
-    pub debug: bool,
-    pub ssa_def_id: Option<DefId>,
-    pub essa_def_id: Option<DefId>,
-    pub final_vars: RAResultMap<'tcx, T>,
+    pub tcx: TyCtxt<'tcx>, // Compiler type context
+    pub debug: bool,       // Enable debug output
+
+    pub ssa_def_id: Option<DefId>,  // SSA marker function DefId
+    pub essa_def_id: Option<DefId>, // ESSA marker function DefId
+
+    pub final_vars: RAResultMap<'tcx, T>, // Final merged interval results
+
+    // Mapping from original places to SSA-renamed places
     pub ssa_places_mapping: FxHashMap<DefId, HashMap<Place<'tcx>, HashSet<Place<'tcx>>>>,
+
     pub fn_constraintgraph_mapping: FxHashMap<DefId, ConstraintGraph<'tcx, T>>,
-    pub callgraph: CallGraphInfo<'tcx>,
+    pub callgraph: CallGraph<'tcx>,
     pub body_map: FxHashMap<DefId, Body<'tcx>>,
     pub cg_map: FxHashMap<DefId, Rc<RefCell<ConstraintGraph<'tcx, T>>>>,
+
+    // Variable nodes collected per function (per call context)
     pub vars_map: FxHashMap<DefId, Vec<RefCell<VarNodes<'tcx, T>>>>,
-    pub final_vars_vec: RAVecResultMap<'tcx, T>,
-    pub path_constraints: PathConstraintMap<'tcx>,
+
+    pub final_vars_vec: RAVecResultMap<'tcx, T>, // Interval results per call
+
+    pub path_constraints: PathConstraintMap<'tcx>, // Path-sensitive constraints
 }
+
 impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> Analysis for RangeAnalyzer<'tcx, T>
 where
     T: IntervalArithmetic + ConstConvert + Debug,
@@ -56,6 +77,7 @@ where
         "Range Analysis"
     }
 
+    /// Entry point of the analysis
     fn run(&mut self) {
         // self.start();
         self.only_caller_range_analysis();
@@ -76,18 +98,21 @@ where
     fn get_fn_range(&self, def_id: DefId) -> Option<RAResult<'tcx, T>> {
         self.final_vars.get(&def_id).cloned()
     }
+
     fn get_fn_ranges_percall(&self, def_id: DefId) -> Option<Vec<RAResult<'tcx, T>>> {
         self.final_vars_vec.get(&def_id).cloned()
     }
+
     fn get_all_fn_ranges(&self) -> RAResultMap<'tcx, T> {
-        // REFACTOR: Using `.clone()` is more explicit that a copy is being returned.
+        // Return a cloned map of all final ranges
         self.final_vars.clone()
     }
+
     fn get_all_fn_ranges_percall(&self) -> RAVecResultMap<'tcx, T> {
         self.final_vars_vec.clone()
     }
 
-    // REFACTOR: This lookup is now much more efficient.
+    /// Query the range of a specific local variable
     fn get_fn_local_range(&self, def_id: DefId, place: Place<'tcx>) -> Option<Range<T>> {
         self.final_vars
             .get(&def_id)
@@ -139,7 +164,7 @@ where
             final_vars: FxHashMap::default(),
             ssa_places_mapping: FxHashMap::default(),
             fn_constraintgraph_mapping: FxHashMap::default(),
-            callgraph: CallGraphInfo::new(),
+            callgraph: CallGraph::new(tcx),
             body_map: FxHashMap::default(),
             cg_map: FxHashMap::default(),
             vars_map: FxHashMap::default(),
@@ -149,20 +174,37 @@ where
     }
 
     fn build_constraintgraph(&mut self, body_mut_ref: &'tcx Body<'tcx>, def_id: DefId) {
+        rap_debug!(
+            "Building ConstraintGraph for function: {}",
+            self.tcx.def_path_str(def_id)
+        );
         let ssa_def_id = self.ssa_def_id.expect("SSA definition ID is not set");
         let essa_def_id = self.essa_def_id.expect("ESSA definition ID is not set");
         let mut cg: ConstraintGraph<'tcx, T> =
-            ConstraintGraph::new(def_id, essa_def_id, ssa_def_id);
+            ConstraintGraph::new(body_mut_ref, self.tcx, def_id, essa_def_id, ssa_def_id);
         cg.build_graph(body_mut_ref);
         cg.build_nuutila(false);
         // cg.rap_print_vars();
         // cg.rap_print_final_vars();
+        let dot_output = cg.to_dot();
         let vars_map = cg.get_vars().clone();
 
         self.cg_map.insert(def_id, Rc::new(RefCell::new(cg)));
         let mut vec = Vec::new();
         vec.push(RefCell::new(vars_map));
         self.vars_map.insert(def_id, vec);
+        let function_name = self.tcx.def_path_str(def_id);
+
+        let dir_path = PathBuf::from("cg_dot");
+        fs::create_dir_all(dir_path.clone()).unwrap();
+        let safe_filename = format!("{}_cg.dot", function_name);
+        let output_path = dir_path.join(format!("{}", safe_filename));
+
+        let mut file = File::create(&output_path).expect("cannot create file");
+        file.write_all(dot_output.as_bytes())
+            .expect("Could not write to file");
+
+        rap_trace!("Successfully generated graph.dot");
     }
 
     fn only_caller_range_analysis(&mut self) {
@@ -177,6 +219,7 @@ where
                 let def_id = local_def_id.to_def_id();
 
                 if self.tcx.is_mir_available(def_id) {
+                    rap_info!("Processing function: {}", self.tcx.def_path_str(def_id));
                     let mut body = self.tcx.optimized_mir(def_id).clone();
                     let body_mut_ref = unsafe { &mut *(&mut body as *mut Body<'tcx>) };
                     // Run SSA/ESSA passes
@@ -201,7 +244,7 @@ where
                 }
             }
         }
-        rap_debug!("PHASE 1 Complete. CallGraph built.");
+        rap_debug!("PHASE 1 Complete. ConstraintGraphs & CallGraphs built.");
         // self.callgraph.print_call_graph(); // Optional: for debugging
 
         // ====================================================================
@@ -213,12 +256,8 @@ where
 
         let callers_by_callee_id = self.callgraph.get_callers_map();
 
-        for (&node_id_usize, node) in &self.callgraph.functions {
-            let def_id = node.get_def_id();
-
-            if !callers_by_callee_id.contains_key(&node_id_usize)
-                && self.cg_map.contains_key(&def_id)
-            {
+        for &def_id in &self.callgraph.functions {
+            if !callers_by_callee_id.contains_key(&def_id) && self.cg_map.contains_key(&def_id) {
                 call_chain_starts.push(def_id);
             }
         }
@@ -291,9 +330,10 @@ where
             let mut body = self.tcx.optimized_mir(def_id).clone();
             let body_mut_ref = unsafe { &mut *(&mut body as *mut Body<'tcx>) };
 
-            let mut cg: ConstraintGraph<'tcx, T> = ConstraintGraph::new_without_ssa(def_id);
+            let mut cg: ConstraintGraph<'tcx, T> =
+                ConstraintGraph::new_without_ssa(body_mut_ref, self.tcx, def_id);
             let mut graph = MopGraph::new(self.tcx, def_id);
-            graph.solve_scc();
+            graph.find_scc();
             let paths: Vec<Vec<usize>> = graph.get_all_branch_sub_blocks_paths();
             let result = cg.start_analyze_path_constraints(body_mut_ref, &paths);
             rap_debug!(
@@ -327,12 +367,10 @@ where
                     let mut body = self.tcx.optimized_mir(def_id).clone();
                     let body_mut_ref = unsafe { &mut *(&mut body as *mut Body<'tcx>) };
 
-                    let mut cg: ConstraintGraph<'tcx, T> = ConstraintGraph::new_without_ssa(def_id);
+                    let mut cg: ConstraintGraph<'tcx, T> =
+                        ConstraintGraph::new_without_ssa(body_mut_ref, self.tcx, def_id);
                     let mut graph = MopGraph::new(self.tcx, def_id);
-                    graph.solve_scc();
-                    // rap_info!("child_scc: {:?}\n", graph.child_scc);
-                    // rap_info!("scc_indices: {:?}\n", graph.scc_indices);
-                    // rap_info!("blocks: {:?}\n", graph.blocks);
+                    graph.find_scc();
                     let paths: Vec<Vec<usize>> = graph.get_all_branch_sub_blocks_paths();
                     let result = cg.start_analyze_path_constraints(body_mut_ref, &paths);
                     rap_debug!(

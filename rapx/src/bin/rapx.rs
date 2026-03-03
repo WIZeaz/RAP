@@ -3,71 +3,52 @@
 extern crate rustc_driver;
 extern crate rustc_session;
 
-use rapx::{rap_info, rap_trace, utils::log::init_log, RapCallback, RAP_DEFAULT_ARGS};
-use regex::Regex;
-use rustc_session::config::ErrorOutputType;
+use clap::Parser;
+use rapx::cli;
+use rapx::help;
+use rapx::{RAP_DEFAULT_ARGS, RapCallback, rap_debug, rap_info, rap_trace, utils::log::init_log};
 use rustc_session::EarlyDiagCtxt;
+use rustc_session::config::ErrorOutputType;
 use std::env;
 
-fn run_complier(args: &mut Vec<String>, callback: &mut RapCallback) {
-    // Finally, add the default flags all the way in the beginning, but after the binary name.
-    args.splice(1..1, RAP_DEFAULT_ARGS.iter().map(ToString::to_string));
+fn run_complier(callback: &mut RapCallback) {
+    let mut args = env::args().collect::<Vec<_>>();
+    args.extend(RAP_DEFAULT_ARGS.iter().map(ToString::to_string));
+    // Finally, add the default flags of RAP
+    rap_trace!("Final arguments to rustc: {:?}", args);
 
     let handler = EarlyDiagCtxt::new(ErrorOutputType::default());
     rustc_driver::init_rustc_env_logger(&handler);
     rustc_driver::install_ice_hook("bug_report_url", |_| ());
-
-    rustc_driver::run_compiler(args, callback);
+    rustc_driver::run_compiler(&args, callback);
     rap_trace!("The arg for compilation is {:?}", args);
 }
 
+#[derive(Parser, Debug, Clone)]
+#[command(override_usage = help::styled_rapx_usage())]
+#[command(version= help::RAPX_VERSION)]
+#[command(styles = help::RAPX_STYLING)]
+struct RapCli {
+    #[command(flatten)]
+    args: cli::RapxArgs,
+}
+
 fn main() {
-    // Parse the arguments from env.
-    let mut args = vec![];
-    let mut compiler = RapCallback::default();
-    let re_test_crate = Regex::new(r"-test-crate=(\S*)").unwrap();
-
-    for arg in env::args() {
-        if let Some((_full, [test_crate_name])) =
-            re_test_crate.captures(&arg).map(|caps| caps.extract())
-        {
-            compiler.set_test_crate(test_crate_name.to_owned());
-            continue;
-        }
-        match arg.as_str() {
-            "-alias" | "-alias0" | "-alias1" | "-alias2" => compiler.enable_alias(arg),
-            "-adg" => compiler.enable_api_dependency(), // api dependency graph
-            "-callgraph" => compiler.enable_callgraph(),
-            "-dataflow" => compiler.enable_dataflow(1),
-            "-dataflow=debug" => compiler.enable_dataflow(2),
-            "-ownedheap" => compiler.enable_ownedheap(),
-            "-range" => compiler.enable_range_analysis(1),
-            "-range=print_mir" => compiler.enable_range_analysis(2),
-            "-pathcond" => compiler.enable_range_analysis(3),
-            "-test" => compiler.enable_test(),
-            "-F" | "-F0" | "-F1" | "-F2" | "-uaf" => compiler.enable_safedrop(arg),
-            "-I" | "-infer" => compiler.enable_infer(),
-            "-M" | "-mleak" => compiler.enable_rcanary(),
-            "-V" | "-verify" => compiler.enable_verify(),
-            "-O" | "-opt" => compiler.enable_opt(1),
-            "-opt=all" => compiler.enable_opt(2),
-            "-opt=report" => compiler.enable_opt(0),
-            "-scan" => compiler.enable_scan(),
-            "-ssa" => compiler.enable_ssa_transform(),
-            "-audit" => compiler.enable_unsafety_isolation(1),
-            "-doc" => compiler.enable_unsafety_isolation(2),
-            "-upg" => compiler.enable_unsafety_isolation(3),
-            "-ucons" => compiler.enable_unsafety_isolation(4),
-            "-verify-std" => compiler.enable_verify_std(),
-            "-mir" => compiler.enable_show_mir(),
-            "-testgen" => compiler.enable_testgen(),
-            _ => args.push(arg),
-        }
-    }
     _ = init_log().inspect_err(|err| eprintln!("Failed to init log: {err}"));
-    rap_info!("Start analysis with RAPx.");
-    rap_trace!("rap received arguments: {:#?}", env::args());
-    rap_trace!("arguments to rustc: {:?}", &args);
 
-    run_complier(&mut args, &mut compiler);
+    // read RAPFLAGS
+    let mut cli_args =
+        shlex::split(env::var("RAPFLAGS").unwrap_or_default().as_str()).unwrap_or_default();
+    rap_debug!("RAPFLAGS = {:?}", cli_args);
+
+    // parse arguments from RAPFLAGS
+    cli_args.insert(0, "rapx".to_owned());
+    let cli = RapCli::parse_from(cli_args);
+    let rapx_args = cli.args;
+    rapx_args.init_env();
+
+    let mut callback = RapCallback::new(rapx_args);
+    rap_trace!("rap received arguments: {:#?}", env::args());
+    rap_info!("Start analysis with RAPx.");
+    run_complier(&mut callback);
 }

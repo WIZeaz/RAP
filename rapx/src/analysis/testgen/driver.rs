@@ -1,5 +1,6 @@
 use super::path::get_path_resolver;
-use crate::analysis::core::alias_analysis::{AAResultMap, AliasAnalysis};
+use crate::analysis::Analysis;
+use crate::analysis::core::alias_analysis::{AliasAnalysis, FnAliasMap};
 use crate::analysis::core::api_dependency::ApiDependencyAnalysis;
 use crate::analysis::core::{alias_analysis, api_dependency};
 use crate::analysis::testgen::ltgen::LtGenBuilder;
@@ -7,7 +8,6 @@ use crate::analysis::testgen::syn::impls::FuzzDriverSynImpl;
 use crate::analysis::testgen::syn::input::RandomGen;
 use crate::analysis::testgen::syn::project::{CargoProjectBuilder, PocProject, RsProjectOption};
 use crate::analysis::testgen::syn::{SynOption, Synthesizer};
-use crate::analysis::Analysis;
 use crate::{rap_error, rap_info, rap_warn};
 use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_middle::ty::TyCtxt;
@@ -90,7 +90,7 @@ impl Config {
 }
 
 pub fn dump_alias_map(
-    alias_map: &AAResultMap,
+    alias_map: &FnAliasMap,
     mut os: impl Write,
     tcx: TyCtxt<'_>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -192,7 +192,7 @@ pub fn driver_main(tcx: TyCtxt<'_>) -> Result<(), Box<dyn std::error::Error>> {
 
     while config.max_run == 0 || run_count < config.max_run {
         // 1. generate context
-        let cx = ltgen.gen();
+        let cx = ltgen.generate();
 
         // 2. synthesize Rust program
         let option = SynOption {

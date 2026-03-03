@@ -1,38 +1,45 @@
 pub mod alias;
+pub mod assign;
+pub mod block;
 pub mod graph;
 pub mod mop;
 pub mod types;
+pub mod value;
 
-use super::{AAFact, AAResult, AAResultMap, AliasAnalysis};
-use crate::{analysis::Analysis, def_id::*, rap_debug, rap_trace, utils::source::*};
+use super::{AliasAnalysis, AliasPair, FnAliasMap, FnAliasPairs};
+use crate::{
+    analysis::{Analysis, graphs::scc::Scc},
+    def_id::*,
+    utils::source::*,
+};
 use graph::MopGraph;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_hir::def_id::DefId;
 use rustc_middle::ty::TyCtxt;
-use std::{collections::HashSet, convert::From, fmt};
+use std::{cmp::Ordering, collections::HashSet, convert::From, fmt};
 
 pub const VISIT_LIMIT: usize = 1000;
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct MopAAFact {
-    pub fact: AAFact,
+pub struct MopAliasPair {
+    pub fact: AliasPair,
     pub lhs_may_drop: bool,
     pub lhs_need_drop: bool,
     pub rhs_may_drop: bool,
     pub rhs_need_drop: bool,
 }
 
-impl MopAAFact {
+impl MopAliasPair {
     pub fn new(
-        lhs_no: usize,
+        left_local: usize,
         lhs_may_drop: bool,
         lhs_need_drop: bool,
-        rhs_no: usize,
+        right_local: usize,
         rhs_may_drop: bool,
         rhs_need_drop: bool,
-    ) -> MopAAFact {
-        MopAAFact {
-            fact: AAFact::new(lhs_no, rhs_no),
+    ) -> MopAliasPair {
+        MopAliasPair {
+            fact: AliasPair::new(left_local, right_local),
             lhs_may_drop,
             lhs_need_drop,
             rhs_may_drop,
@@ -50,12 +57,12 @@ impl MopAAFact {
         std::mem::swap(&mut self.lhs_need_drop, &mut self.rhs_need_drop);
     }
 
-    pub fn lhs_no(&self) -> usize {
-        self.fact.lhs_no
+    pub fn left_local(&self) -> usize {
+        self.fact.left_local
     }
 
-    pub fn rhs_no(&self) -> usize {
-        self.fact.rhs_no
+    pub fn right_local(&self) -> usize {
+        self.fact.right_local
     }
 
     pub fn lhs_fields(&self) -> &[usize] {
@@ -67,29 +74,56 @@ impl MopAAFact {
     }
 }
 
-impl From<MopAAFact> for AAFact {
-    fn from(m: MopAAFact) -> Self {
+impl From<MopAliasPair> for AliasPair {
+    fn from(m: MopAliasPair) -> Self {
         m.fact
     }
 }
 
-impl From<MopAAResult> for AAResult {
-    fn from(m: MopAAResult) -> Self {
-        let alias_set = m.alias_set.into_iter().map(Into::into).collect(); // MopAAFact -> AAFact
-        AAResult {
+impl From<MopFnAliasPairs> for FnAliasPairs {
+    fn from(m: MopFnAliasPairs) -> Self {
+        let alias_set = m.alias_set.into_iter().map(Into::into).collect(); // MopAliasPair -> AliasPair
+        FnAliasPairs {
             arg_size: m.arg_size,
             alias_set,
         }
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct MopAAResult {
-    arg_size: usize,
-    alias_set: HashSet<MopAAFact>,
+impl PartialOrd for MopAliasPair {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
-impl fmt::Display for MopAAResult {
+impl Ord for MopAliasPair {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.fact
+            .left_local
+            .cmp(&other.fact.left_local)
+            .then_with(|| self.fact.lhs_fields.cmp(&other.fact.lhs_fields))
+            .then_with(|| self.fact.right_local.cmp(&other.fact.right_local))
+            .then_with(|| self.fact.rhs_fields.cmp(&other.fact.rhs_fields))
+            .then_with(|| self.lhs_may_drop.cmp(&other.lhs_may_drop))
+            .then_with(|| self.lhs_need_drop.cmp(&other.lhs_need_drop))
+            .then_with(|| self.rhs_may_drop.cmp(&other.rhs_may_drop))
+            .then_with(|| self.rhs_need_drop.cmp(&other.rhs_need_drop))
+    }
+}
+
+impl fmt::Display for MopAliasPair {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.fact)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MopFnAliasPairs {
+    arg_size: usize,
+    alias_set: HashSet<MopAliasPair>,
+}
+
+impl fmt::Display for MopFnAliasPairs {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
@@ -103,8 +137,8 @@ impl fmt::Display for MopAAResult {
     }
 }
 
-impl MopAAResult {
-    pub fn new(arg_size: usize) -> MopAAResult {
+impl MopFnAliasPairs {
+    pub fn new(arg_size: usize) -> MopFnAliasPairs {
         Self {
             arg_size,
             alias_set: HashSet::new(),
@@ -115,11 +149,11 @@ impl MopAAResult {
         self.arg_size
     }
 
-    pub fn aliases(&self) -> &HashSet<MopAAFact> {
+    pub fn aliases(&self) -> &HashSet<MopAliasPair> {
         &self.alias_set
     }
 
-    pub fn add_alias(&mut self, alias: MopAAFact) {
+    pub fn add_alias(&mut self, alias: MopAliasPair) {
         self.alias_set.insert(alias);
     }
 
@@ -132,7 +166,7 @@ impl MopAAResult {
         let mut new_alias_set = HashSet::with_capacity(alias_set.len());
 
         for mut ra in alias_set.into_iter() {
-            if ra.lhs_no() >= ra.rhs_no() {
+            if ra.left_local() >= ra.right_local() {
                 ra.swap();
             }
             new_alias_set.insert(ra);
@@ -142,11 +176,11 @@ impl MopAAResult {
 }
 
 //struct to cache the results for analyzed functions.
-pub type MopAAResultMap = FxHashMap<DefId, MopAAResult>;
+pub type MopFnAliasMap = FxHashMap<DefId, MopFnAliasPairs>;
 
 pub struct AliasAnalyzer<'tcx> {
     pub tcx: TyCtxt<'tcx>,
-    pub fn_map: FxHashMap<DefId, MopAAResult>,
+    pub fn_map: FxHashMap<DefId, MopFnAliasPairs>,
 }
 
 impl<'tcx> Analysis for AliasAnalyzer<'tcx> {
@@ -177,14 +211,14 @@ impl<'tcx> Analysis for AliasAnalyzer<'tcx> {
 }
 
 impl<'tcx> AliasAnalysis for AliasAnalyzer<'tcx> {
-    fn get_fn_alias(&self, def_id: DefId) -> Option<AAResult> {
+    fn get_fn_alias(&self, def_id: DefId) -> Option<FnAliasPairs> {
         self.fn_map.get(&def_id).cloned().map(Into::into)
     }
 
-    fn get_all_fn_alias(&self) -> AAResultMap {
+    fn get_all_fn_alias(&self) -> FnAliasMap {
         self.fn_map
             .iter()
-            .map(|(k, v)| (*k, AAResult::from(v.clone())))
+            .map(|(k, v)| (*k, FnAliasPairs::from(v.clone())))
             .collect()
     }
 }
@@ -199,14 +233,14 @@ impl<'tcx> AliasAnalyzer<'tcx> {
 
     fn handle_conor_cases(&mut self) {
         let cases = [
-            copy_from_nonoverlapping(),
-            copy_to_nonoverlapping(),
-            copy_to(),
-            copy_from(),
+            copy_from_nonoverlapping_opt(),
+            copy_to_nonoverlapping_opt(),
+            copy_to_opt(),
+            copy_from_opt(),
         ];
-        let alias = MopAAFact::new(1, true, true, 2, true, true);
+        let alias = MopAliasPair::new(1, true, true, 2, true, true);
         for (key, value) in self.fn_map.iter_mut() {
-            if cases.iter().any(|lock| lock == key) {
+            if contains(&cases, *key) {
                 value.alias_set.clear();
                 value.alias_set.insert(alias.clone());
             }
@@ -215,6 +249,12 @@ impl<'tcx> AliasAnalyzer<'tcx> {
 
     fn query_mop(&mut self, def_id: DefId) {
         let fn_name = get_fn_name(self.tcx, def_id);
+        if fn_name
+            .as_ref()
+            .map_or(false, |s| s.contains("__raw_ptr_deref_dummy"))
+        {
+            return;
+        }
         rap_trace!("query_mop: {:?}", fn_name);
         /* filter const mir */
         if let Some(_other) = self.tcx.hir_body_const_context(def_id.expect_local()) {
@@ -223,7 +263,10 @@ impl<'tcx> AliasAnalyzer<'tcx> {
 
         if self.tcx.is_mir_available(def_id) {
             let mut mop_graph = MopGraph::new(self.tcx, def_id);
-            mop_graph.solve_scc();
+            rap_debug!("Mop graph crated: {}", mop_graph);
+            rap_debug!("Search scc components in the graph.");
+            mop_graph.find_scc();
+            rap_trace!("After searching scc: {}", mop_graph);
             let mut recursion_set = HashSet::default();
             mop_graph.check(0, &mut self.fn_map, &mut recursion_set);
             if mop_graph.visit_times > VISIT_LIMIT {
@@ -235,7 +278,7 @@ impl<'tcx> AliasAnalyzer<'tcx> {
         }
     }
 
-    pub fn get_all_fn_alias_raw(&mut self) -> MopAAResultMap {
+    pub fn get_all_fn_alias_raw(&mut self) -> MopFnAliasMap {
         self.fn_map.clone()
     }
 }

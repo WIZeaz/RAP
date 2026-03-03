@@ -109,7 +109,6 @@ impl<'tcx> PathResolver<'tcx> {
                     let trait_ref = self
                         .tcx
                         .impl_trait_ref(assoc_id)
-                        .unwrap()
                         .instantiate(self.tcx, parent_args);
 
                     let self_ty_str = self.ty_str(trait_ref.self_ty());

@@ -1,17 +1,22 @@
 pub mod alias;
 pub mod bug_records;
-pub mod check_bugs;
-pub mod corner_handle;
+pub mod corner_case;
+pub mod drop;
 pub mod graph;
-#[allow(clippy::module_inception)]
 pub mod safedrop;
 
 use rustc_hir::def_id::DefId;
 use rustc_middle::ty::TyCtxt;
 
-use crate::analysis::core::{
-    alias_analysis::default::{AliasAnalyzer, MopAAResultMap},
-    ownedheap_analysis::{default::OwnedHeapAnalyzer, OHAResultMap, OwnedHeapAnalysis},
+use crate::{
+    analysis::{
+        core::{
+            alias_analysis::default::{AliasAnalyzer, MopFnAliasMap},
+            ownedheap_analysis::{OHAResultMap, OwnedHeapAnalysis, default::OwnedHeapAnalyzer},
+        },
+        graphs::scc::Scc,
+    },
+    utils::source::get_fn_name,
 };
 use graph::SafeDropGraph;
 use safedrop::*;
@@ -30,6 +35,8 @@ impl<'tcx> SafeDrop<'tcx> {
         let mut mop = AliasAnalyzer::new(self.tcx);
         mop.run();
         let fn_map = mop.get_all_fn_alias_raw();
+        rap_info!("================================");
+        rap_info!("Aliases found: {:?}", fn_map);
 
         let mut heap = OwnedHeapAnalyzer::new(self.tcx);
         heap.run();
@@ -47,25 +54,29 @@ impl<'tcx> SafeDrop<'tcx> {
     }
 }
 
-pub fn query_safedrop(
-    tcx: TyCtxt,
-    fn_map: &MopAAResultMap,
-    def_id: DefId,
-    adt_owner: OHAResultMap,
-) {
+pub fn query_safedrop(tcx: TyCtxt, fn_map: &MopFnAliasMap, def_id: DefId, adt_owner: OHAResultMap) {
+    let fn_name = get_fn_name(tcx, def_id);
+    if fn_name
+        .as_ref()
+        .map_or(false, |s| s.contains("__raw_ptr_deref_dummy"))
+    {
+        return;
+    }
+    rap_trace!("query_safedrop: {:?}", fn_name);
+    /* filter const mir */
+
     /* filter const mir */
     if let Some(_other) = tcx.hir_body_const_context(def_id.expect_local()) {
         return;
     }
     if tcx.is_mir_available(def_id) {
-        let body = tcx.optimized_mir(def_id);
-        let mut safedrop_graph = SafeDropGraph::new(body, tcx, def_id, adt_owner);
-        safedrop_graph.solve_scc();
-        safedrop_graph.check(0, tcx, fn_map);
-        if safedrop_graph.visit_times <= VISIT_LIMIT {
+        let mut safedrop_graph = SafeDropGraph::new(tcx, def_id, adt_owner);
+        rap_debug!("safedrop grah (raw): {}", safedrop_graph);
+        safedrop_graph.mop_graph.find_scc();
+        rap_debug!("safedrop graph (scc): {}", safedrop_graph);
+        safedrop_graph.check(0, fn_map);
+        if safedrop_graph.mop_graph.visit_times <= VISIT_LIMIT {
             safedrop_graph.report_bugs();
-        } else {
-            println!("Over visited: {:?}", def_id);
         }
     }
 }

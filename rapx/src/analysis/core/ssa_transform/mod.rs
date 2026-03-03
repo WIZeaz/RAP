@@ -220,6 +220,7 @@ impl<'tcx> PassRunner<'tcx> {
             tcx: self.tcx,
             ssatransformer,
             new_local_collection: HashSet::default(),
+            new_locals_to_declare: HashMap::default(),
         };
         replacer.insert_phi_statment(body);
         replacer.insert_essa_statement(body);

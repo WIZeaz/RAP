@@ -1,8 +1,8 @@
 mod select;
 
 use super::context_builder::ContextBuilder;
-use crate::analysis::core::alias_analysis::AAResultMap;
-use crate::analysis::core::api_dependency::{graph::TransformKind, ApiDependencyGraph, DepNode};
+use crate::analysis::core::alias_analysis::FnAliasMap;
+use crate::analysis::core::api_dependency::{ApiDependencyGraph, DepNode, graph::TransformKind};
 use crate::analysis::testgen::context::DUMMY_INPUT_VAR;
 use crate::analysis::testgen::utils::{self};
 use crate::{rap_debug, rap_info};
@@ -20,14 +20,14 @@ pub struct LtGenBuilder<'tcx, 'a, R: Rng> {
     rng: R,
     max_complexity: usize,
     max_iteration: usize,
-    alias_map: &'a AAResultMap,
+    alias_map: &'a FnAliasMap,
     api_graph: ApiDependencyGraph<'tcx>,
 }
 
 impl<'tcx, 'a> LtGenBuilder<'tcx, 'a, ThreadRng> {
     pub fn new(
         tcx: TyCtxt<'tcx>,
-        alias_map: &'a AAResultMap,
+        alias_map: &'a FnAliasMap,
         api_graph: ApiDependencyGraph<'tcx>,
     ) -> LtGenBuilder<'tcx, 'a, ThreadRng> {
         LtGenBuilder {
@@ -123,7 +123,7 @@ pub struct LtGen<'tcx, 'a, R: Rng> {
     tcx: TyCtxt<'tcx>,
     rng: RefCell<R>,
     config: Config,
-    alias_map: &'a AAResultMap,
+    alias_map: &'a FnAliasMap,
     api_graph: ApiDependencyGraph<'tcx>,
     depth_map: HashMap<DepNode<'tcx>, usize>,
     global: GlobalState<'tcx>,
@@ -132,7 +132,7 @@ pub struct LtGen<'tcx, 'a, R: Rng> {
 impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
     fn new(
         tcx: TyCtxt<'tcx>,
-        alias_map: &'a AAResultMap,
+        alias_map: &'a FnAliasMap,
         rng: R,
         max_complexity: usize,
         max_iteration: usize,
@@ -172,7 +172,7 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
         rap_debug!("depth map = {:?}", self.depth_map);
     }
 
-    pub fn gen(&mut self) -> ContextBuilder<'tcx, 'a> {
+    pub fn generate(&mut self) -> ContextBuilder<'tcx, 'a> {
         let mut builder = ContextBuilder::new(self.tcx, &self.alias_map);
         let mut count = 0;
         let mut num_drop_inject = 0;

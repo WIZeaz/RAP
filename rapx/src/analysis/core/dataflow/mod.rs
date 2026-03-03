@@ -226,12 +226,11 @@ pub enum EdgeOp {
     Mut,
     //Place
     Deref,
-    Field(String),
+    Field(usize),
     Downcast(String),
     Index,
     ConstIndex,
     SubSlice,
-    SubType,
 }
 
 #[derive(Clone, Copy, Debug)]

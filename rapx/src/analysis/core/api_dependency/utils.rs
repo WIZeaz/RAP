@@ -1,5 +1,6 @@
-use rustc_hir::def_id::DefId;
+#![allow(warnings, unused)]
 use rustc_hir::LangItem;
+use rustc_hir::def_id::DefId;
 use rustc_middle::ty::{self, FnSig, GenericArgsRef, Ty, TyCtxt, TyKind};
 use rustc_span::sym;
 

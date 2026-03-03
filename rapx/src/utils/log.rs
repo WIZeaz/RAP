@@ -2,8 +2,11 @@ use chrono::Local;
 use fern::colors::{Color, ColoredLevelConfig};
 use fern::{self, Dispatch};
 use log::LevelFilter;
-use rustc_span::source_map::get_source_map;
-use rustc_span::{FileNameDisplayPreference, Pos, Span};
+use rustc_middle::mir::BasicBlock;
+use rustc_span::{
+    source_map::get_source_map,
+    {FileName, Pos, Span},
+};
 use std::ops::Range;
 
 fn log_level() -> LevelFilter {
@@ -119,6 +122,7 @@ pub fn span_to_trimmed_span(span: Span) -> Span {
 }
 
 #[inline]
+/*
 pub fn span_to_filename(span: Span) -> String {
     get_source_map()
         .unwrap()
@@ -126,10 +130,56 @@ pub fn span_to_filename(span: Span) -> String {
         .display(FileNameDisplayPreference::Local)
         .to_string()
 }
+*/
+pub fn span_to_filename(span: Span) -> String {
+    let filename = get_source_map().unwrap().span_to_filename(span);
+    if let FileName::Real(realname) = filename {
+        if let Some(ref path) = realname.local_path() {
+            return path.to_string_lossy().into();
+        }
+    }
+    return "<unknown>".to_string();
+}
 
 #[inline]
 pub fn span_to_line_number(span: Span) -> usize {
     get_source_map().unwrap().lookup_char_pos(span.lo()).line
+}
+
+pub fn get_variable_name<'tcx>(
+    body: &rustc_middle::mir::Body<'tcx>,
+    local_index: usize,
+) -> Option<String> {
+    let target_local = rustc_middle::mir::Local::from_usize(local_index);
+
+    for info in &body.var_debug_info {
+        if let rustc_middle::mir::VarDebugInfoContents::Place(place) = info.value {
+            if place.local == target_local && place.projection.is_empty() {
+                return Some(info.name.to_string());
+            }
+        }
+    }
+
+    None
+}
+
+pub fn get_basic_block_span<'tcx>(body: &rustc_middle::mir::Body<'tcx>, bb_index: usize) -> Span {
+    if bb_index >= body.basic_blocks.len() {
+        return body.span;
+    }
+
+    let bb = BasicBlock::from_usize(bb_index);
+    let block_data = &body.basic_blocks[bb];
+
+    if let Some(ref term) = block_data.terminator {
+        return term.source_info.span;
+    }
+
+    if let Some(stmt) = block_data.statements.first() {
+        return stmt.source_info.span;
+    }
+
+    body.span
 }
 
 #[inline]

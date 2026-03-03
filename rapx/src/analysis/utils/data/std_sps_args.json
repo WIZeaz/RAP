@@ -1,0 +1,110 @@
+{
+  "core::ptr::read": [
+    {
+      "tag": "ValidPtr",
+      "args": ["0", "T", "1"]
+    },
+    {
+      "tag": "Align",
+      "args": ["0", "T"]
+    },
+    {
+      "tag": "Typed",
+      "args": ["0", "T"]
+    }
+  ],
+  "core::ptr::const_ptr::read": [
+    {
+      "tag": "ValidPtr",
+      "args": ["0", "T", "1"]
+    },
+    {
+      "tag": "Align",
+      "args": ["0", "T"]
+    },
+    {
+      "tag": "Typed",
+      "args": ["0", "T"]
+    }
+  ],
+  "core::ptr::mut_ptr::read": [
+    {
+      "tag": "ValidPtr",
+      "args": ["0", "T", "1"]
+    },
+    {
+      "tag": "Align",
+      "args": ["0", "T"]
+    },
+    {
+      "tag": "Typed",
+      "args": ["0", "T"]
+    }
+  ],
+  "core::ptr::byte_offset": [
+    {
+        "tag": "InBound",
+        "args": ["0", "T", "Arg_1"]
+    },
+    {
+        "tag": "ValidNum",
+        "args": []
+    }
+  ],
+  "core::ptr::const_ptr::byte_offset": [
+    {
+        "tag": "InBound",
+        "args": ["0", "T", "Arg_1"]
+    },
+    {
+        "tag": "ValidNum",
+        "args": []
+    }
+  ],
+  "core::ptr::mut_ptr::byte_offset": [
+    {
+        "tag": "InBound",
+        "args": ["0", "T", "Arg_1"]
+    },
+    {
+        "tag": "ValidNum",
+        "args": []
+    }
+  ],
+  "core::ptr::byte_add": [
+    {
+        "tag": "InBound",
+        "args": ["0", "T", "Arg_1"]
+    },
+    {
+        "tag": "ValidNum",
+        "args": []
+    }
+  ],
+  "core::ptr::const_ptr::byte_add": [
+    {
+        "tag": "InBound",
+        "args": ["0", "T", "Arg_1"]
+    },
+    {
+        "tag": "ValidNum",
+        "args": []
+    }
+  ],
+  "core::ptr::mut_ptr::byte_add": [
+    {
+        "tag": "InBound",
+        "args": ["0", "T", "Arg_1"]
+    },
+    {
+        "tag": "ValidNum",
+        "args": []
+    }
+  ],
+  "core::slice::from_raw_parts_mut": [
+    {
+      "tag": "Align",
+      "args": ["0", "T"]
+    }
+  ]
+}

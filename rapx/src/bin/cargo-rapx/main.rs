@@ -7,51 +7,60 @@
 #[macro_use]
 extern crate rapx;
 
+use crate::utils::*;
+use clap::Parser;
+use rapx::cli;
+use rapx::help;
 use rapx::utils::log::{init_log, rap_error_and_exit};
+use std::env;
 
 mod args;
-mod help;
-
-mod utils;
-use crate::utils::*;
-
 mod cargo_check;
+mod utils;
 
 fn phase_cargo_rap() {
-    rap_trace!("Start cargo-rapx.");
-
-    // here we skip two args: cargo rapx
-    let Some(arg) = args::get_arg(2) else {
-        rap_error!("Expect command: e.g., `cargo rapx -help`.");
-        return;
-    };
-    match arg {
-        "-version" | "-v" | "--version" => {
-            println!("{}", help::RAPX_VERSION);
-            return;
-        }
-        "-help" | "-h" | "--help" => {
-            println!("{}", help::RAPX_HELP);
-            return;
-        }
-        _ => {}
-    }
-
+    rap_trace!("Start phase cargo-rapx.");
     cargo_check::run();
 }
 
 fn phase_rustc_wrapper() {
     rap_trace!("Launch cargo-rapx again triggered by cargo check.");
 
-    let is_direct = args::is_current_compile_crate();
+    let is_primary = env::var("CARGO_PRIMARY_PACKAGE").is_ok();
+    let package_name = env::var("CARGO_PKG_NAME").unwrap_or_default();
+
+    // check `CARGO_PRIMARY_PACKAGE` to make sure we only run
+    // rapx for the local crate, but not dependencies.
     // rapx only checks local crates
-    if is_direct && args::filter_crate_type() {
+    if is_primary {
+        rap_debug!("run rapx for package {}", package_name);
         run_rap();
         return;
     }
 
+    rap_debug!("run rustc for package {}", package_name);
     // for dependencies and some special crate types, run rustc as usual
     run_rustc();
+}
+
+#[derive(Parser, Debug)]
+#[command(name = "cargo")]
+#[command(bin_name = "cargo")]
+#[command(version, about)]
+#[command(styles = help::CARGO_RAPX_STYLING)]
+enum CargoCli {
+    #[command(override_usage = help::styled_cargo_rapx_usage())]
+    #[command(version= help::RAPX_VERSION)]
+    #[command(after_help = help::RAPX_AFTER_HELP)]
+    Rapx(cli::RapxArgs),
+}
+
+impl CargoCli {
+    fn args(&self) -> &cli::RapxArgs {
+        match self {
+            CargoCli::Rapx(args) => args,
+        }
+    }
 }
 
 fn main() {
@@ -66,8 +75,11 @@ fn main() {
     init_log().expect("Failed to init log.");
 
     match args::get_arg(1).unwrap() {
-        s if s.ends_with("rapx") => phase_cargo_rap(),
-        s if s.ends_with("rustc") => phase_rustc_wrapper(),
+        "rapx" => {
+            let _ = args::cargo_cli();
+            phase_cargo_rap()
+        }
+        arg if arg.ends_with("rustc") => phase_rustc_wrapper(),
         _ => rap_error_and_exit(
             "rapx must be called with either `rap` or `rustc` as first argument.",
         ),

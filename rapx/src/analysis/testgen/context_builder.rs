@@ -5,8 +5,8 @@ mod pattern;
 mod safety;
 mod var_state;
 
-use crate::analysis::core::alias_analysis::AAResultMap;
-use crate::analysis::testgen::context::{Context, ExploitKind, Var, DUMMY_UNIT_VAR};
+use crate::analysis::core::alias_analysis::{FnAliasMap, FnAliasPairs};
+use crate::analysis::testgen::context::{Context, DUMMY_UNIT_VAR, ExploitKind, Var};
 use crate::analysis::testgen::utils;
 use crate::rap_debug;
 use bit_set::BitSet;
@@ -31,13 +31,13 @@ pub struct ContextBuilder<'tcx, 'a> {
     live_state: BitSet,
     region_graph: RegionGraph,
     pat_provider: PatternProvider<'tcx>,
-    alias_map: &'a AAResultMap,
+    alias_map: &'a FnAliasMap,
     explicit_droped_cnt: usize,
     lack_of_alias: Vec<DefId>,
 }
 
 impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
-    pub fn new(tcx: TyCtxt<'tcx>, alias_map: &'a AAResultMap) -> Self {
+    pub fn new(tcx: TyCtxt<'tcx>, alias_map: &'a FnAliasMap) -> Self {
         Self {
             tcx,
             cx: Context::new(tcx),

@@ -9,10 +9,7 @@ use rustc_hir::def_id::DefId;
 use rustc_middle::mir::BinOp;
 use rustc_middle::ty::Ty;
 use rustc_middle::ty::TyCtxt;
-use safety_parser::{
-    property_attr::property::{Kind, PropertyName},
-    syn::Expr,
-};
+use safety_parser::{safety::TagNameType, syn::Expr};
 
 #[derive(Clone, Debug)]
 pub enum CisRangeItem {
@@ -58,7 +55,7 @@ impl CisRange {
 pub enum PropertyContract<'tcx> {
     // Align (ty)
     Align(Ty<'tcx>),
-    Size(Kind),
+    Size(),
     NoPadding,
     NonNull,
     // Allocated( ty, length)
@@ -89,73 +86,67 @@ pub enum PropertyContract<'tcx> {
 }
 
 impl<'tcx> PropertyContract<'tcx> {
-    pub fn new(
-        tcx: TyCtxt<'tcx>,
-        def_id: DefId,
-        kind: Kind,
-        name: PropertyName,
-        exprs: &Vec<Expr>,
-    ) -> Self {
+    pub fn new(tcx: TyCtxt<'tcx>, def_id: DefId, name: &str, exprs: &Vec<Expr>) -> Self {
         match name {
-            PropertyName::Align => {
+            "Align" => {
                 Self::check_arg_length(exprs.len(), 2, "Align");
                 let ty = Self::parse_type(tcx, def_id, &exprs[1], "Align");
                 Self::Align(ty)
             }
-            PropertyName::Size => Self::Size(kind),
-            PropertyName::NoPadding => Self::NoPadding,
-            PropertyName::NonNull => Self::NonNull,
-            PropertyName::Allocated => {
+            "Size" => Self::Size(),
+            "NoPadding" => Self::NoPadding,
+            "NonNull" => Self::NonNull,
+            "Allocated" => {
                 Self::check_arg_length(exprs.len(), 3, "Allocated");
                 let ty = Self::parse_type(tcx, def_id, &exprs[1], "Allocated");
                 let length = Self::parse_length(tcx, def_id, &exprs[2], "Allocated");
                 Self::Allocated(ty, length)
             }
-            PropertyName::InBound => {
+            "InBound" => {
                 Self::check_arg_length(exprs.len(), 3, "InBound");
                 let ty = Self::parse_type(tcx, def_id, &exprs[1], "InBound");
                 let length = Self::parse_length(tcx, def_id, &exprs[2], "InBound");
                 Self::InBound(ty, length)
             }
-            PropertyName::NonOverlap => Self::NonOverlap,
-            PropertyName::ValidNum => {
+            "NonOverlap" => Self::NonOverlap,
+            "ValidNum" => {
                 Self::check_arg_length(exprs.len(), 1, "ValidNum");
                 let bin_op = BinOp::Ne;
                 let length = Self::parse_length(tcx, def_id, &exprs[0], "ValidNum");
                 return Self::ValidNum(CisRange::new(bin_op, length));
             }
-            PropertyName::ValidString => Self::ValidString,
-            PropertyName::ValidCStr => Self::ValidCStr,
-            PropertyName::Init => {
+            "ValidString" => Self::ValidString,
+            "ValidCStr" => Self::ValidCStr,
+            "Init" => {
                 Self::check_arg_length(exprs.len(), 3, "Init");
                 let ty = Self::parse_type(tcx, def_id, &exprs[1], "Init");
                 let length = Self::parse_length(tcx, def_id, &exprs[2], "Init");
                 Self::Init(ty, length)
             }
-            PropertyName::Unwrap => Self::Unwrap,
-            PropertyName::Typed => {
+            "Unwrap" => Self::Unwrap,
+            "Typed" => {
                 Self::check_arg_length(exprs.len(), 2, "Typed");
                 let ty = Self::parse_type(tcx, def_id, &exprs[1], "Typed");
                 Self::Typed(ty)
             }
-            PropertyName::Owning => Self::Owning,
-            PropertyName::Alias => Self::Alias,
-            PropertyName::Alive => Self::Alive,
-            PropertyName::Pinned => Self::Pinned,
-            PropertyName::NonVolatile => Self::NonVolatile,
-            PropertyName::Opened => Self::Opened,
-            PropertyName::Trait => Self::Trait,
-            PropertyName::Unreachable => Self::Unreachable,
-            PropertyName::ValidPtr => {
+            "Owning" => Self::Owning,
+            "Alias" => Self::Alias,
+            "Alive" => Self::Alive,
+            "Pinned" => Self::Pinned,
+            "NonVolatile" => Self::NonVolatile,
+            "Opened" => Self::Opened,
+            "Trait" => Self::Trait,
+            "Unreachable" => Self::Unreachable,
+            "ValidPtr" => {
                 Self::check_arg_length(exprs.len(), 3, "ValidPtr");
                 let ty = Self::parse_type(tcx, def_id, &exprs[1], "ValidPtr");
                 let length = Self::parse_length(tcx, def_id, &exprs[2], "ValidPtr");
                 Self::ValidPtr(ty, length)
             }
-            PropertyName::Deref => Self::Deref,
-            PropertyName::Ptr2Ref => Self::Ptr2Ref,
-            PropertyName::Layout => Self::Layout,
-            PropertyName::Unknown => Self::Unknown,
+            "Deref" => Self::Deref,
+            "Ptr2Ref" => Self::Ptr2Ref,
+            "Layout" => Self::Layout,
+            _ => Self::Unknown,
         }
     }
 
@@ -195,10 +186,31 @@ impl<'tcx> PropertyContract<'tcx> {
             CisRangeItem::Var(var_len.0, var_len.1.iter().map(|(x, _)| *x).collect())
         } else if parse_expr_into_number(expr).is_some() {
             CisRangeItem::Value(parse_expr_into_number(expr).unwrap())
+        } else if Self::parse_arg_length(expr).is_some() {
+            return Self::parse_arg_length(expr).unwrap();
         } else {
-            rap_error!("Range length error in {:?} Tag!", sp);
+            rap_error!(
+                "Range length error in {:?} Tag! Unknown anntation:\n{:?}",
+                sp,
+                expr
+            );
             CisRangeItem::Unknown
         }
+    }
+
+    fn parse_arg_length(expr: &Expr) -> Option<CisRangeItem> {
+        if let Expr::Path(expr_path) = expr {
+            if let Some(ident) = expr_path.path.get_ident() {
+                let s = ident.to_string();
+
+                if let Some(num_str) = s.strip_prefix("Arg_") {
+                    if let Ok(idx) = num_str.parse::<usize>() {
+                        return Some(CisRangeItem::Var(idx, Vec::new()));
+                    }
+                }
+            }
+        }
+        None
     }
 }
 

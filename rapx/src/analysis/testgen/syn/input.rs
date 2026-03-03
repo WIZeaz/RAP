@@ -1,4 +1,4 @@
-use rand::{rngs::ThreadRng, seq::IndexedRandom, Rng};
+use rand::{Rng, rngs::ThreadRng, seq::IndexedRandom};
 use rustc_abi::FIRST_VARIANT;
 use rustc_hir::LangItem;
 use rustc_middle::ty::{AdtDef, GenericArgsRef, Ty, TyCtxt, TyKind};
@@ -34,7 +34,7 @@ pub trait InputGen {
         None
     }
 
-    fn gen<'tcx>(
+    fn syn<'tcx>(
         &mut self,
         ty: Ty<'tcx>,
         tcx: TyCtxt<'tcx>,
@@ -52,7 +52,7 @@ pub trait InputGen {
                 format!(
                     "{}{}",
                     mutability.ref_prefix_str(),
-                    self.gen(*inner_ty, tcx, resolver)
+                    self.syn(*inner_ty, tcx, resolver)
                 )
             }
             TyKind::Bool => self.gen_bool().to_string(),
@@ -85,14 +85,14 @@ pub trait InputGen {
 
                 let mut arr: Vec<String> = Vec::new();
                 for _ in 0..len {
-                    arr.push(self.gen(*inner_ty, tcx, resolver).to_string());
+                    arr.push(self.syn(*inner_ty, tcx, resolver).to_string());
                 }
                 format!("[{}]", arr.join(", "))
             }
             TyKind::Tuple(tys) => {
                 let mut fields = Vec::new();
                 for ty in tys.iter() {
-                    fields.push(self.gen(ty, tcx, resolver).to_string());
+                    fields.push(self.syn(ty, tcx, resolver).to_string());
                 }
                 format!("({})", fields.join(", "))
             }
@@ -101,7 +101,7 @@ pub trait InputGen {
             }
             TyKind::Slice(inner_ty) => {
                 let len = 3; // Fixed length for simplicity
-                let element = self.gen(*inner_ty, tcx, resolver).to_string();
+                let element = self.syn(*inner_ty, tcx, resolver).to_string();
                 format!("[{}; {}]", element, len)
             }
             _ => panic!("Unsupported type: {:?}", ty),
@@ -150,7 +150,7 @@ impl InputGen for SillyInputGen {
             for field in adt_def.all_fields() {
                 let field_name = field.name.to_string();
                 let field_type = field.ty(tcx, args);
-                let field_input = self.gen(field_type, tcx, resolver).to_string();
+                let field_input = self.syn(field_type, tcx, resolver).to_string();
                 fields.push(format!("{field_name}: {field_input}"));
             }
             return format!("{name} {{ {} }}", fields.join(", "));
@@ -164,7 +164,7 @@ impl InputGen for SillyInputGen {
             for field in variant_def.fields.iter() {
                 let field_name = field.name.to_string();
                 let field_type = field.ty(tcx, args);
-                let field_input = self.gen(field_type, tcx, resolver).to_string();
+                let field_input = self.syn(field_type, tcx, resolver).to_string();
                 fields.push(format!("{field_name}: {field_input}"));
             }
             if fields.is_empty() {
@@ -246,7 +246,7 @@ impl<R: Rng> InputGen for RandomGen<R> {
                 let mut elements = Vec::new();
                 for _ in 0..len {
                     let element_ty = args.type_at(0);
-                    let element_input = self.gen(element_ty, tcx, resolver);
+                    let element_input = self.syn(element_ty, tcx, resolver);
                     elements.push(element_input);
                 }
                 return Some(format!("vec![{}]", elements.join(", ")));
@@ -269,7 +269,7 @@ impl<R: Rng> InputGen for RandomGen<R> {
             for field in adt_def.all_fields() {
                 let field_name = field.name.to_string();
                 let field_type = field.ty(tcx, args);
-                let field_input = self.gen(field_type, tcx, resolver).to_string();
+                let field_input = self.syn(field_type, tcx, resolver).to_string();
                 fields.push(format!("{field_name}: {field_input}"));
             }
             return format!("{name} {{ {} }}", fields.join(", "));
@@ -284,7 +284,7 @@ impl<R: Rng> InputGen for RandomGen<R> {
             for field in variant_def.fields.iter() {
                 let field_name = field.name.to_string();
                 let field_type = field.ty(tcx, args);
-                let field_input = self.gen(field_type, tcx, resolver).to_string();
+                let field_input = self.syn(field_type, tcx, resolver).to_string();
                 fields.push(format!("{field_name}: {field_input}"));
             }
             if fields.is_empty() {

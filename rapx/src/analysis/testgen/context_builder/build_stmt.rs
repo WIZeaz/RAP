@@ -1,15 +1,15 @@
 use super::folder::RidExtractFolder;
 use super::lifetime::{RegionNode, Rid};
 use crate::analysis::testgen::context::{
-    ApiCall, ExploitKind, StmtKind, DUMMY_INPUT_VAR, DUMMY_UNIT_VAR,
+    ApiCall, DUMMY_INPUT_VAR, DUMMY_UNIT_VAR, ExploitKind, StmtKind,
 };
 use crate::analysis::testgen::context::{Stmt, Var};
-use crate::analysis::testgen::context_builder::{is_ty_move_on_call, ContextBuilder};
+use crate::analysis::testgen::context_builder::{ContextBuilder, is_ty_move_on_call};
 use crate::analysis::testgen::utils;
 use crate::{rap_debug, rap_trace};
 use itertools::Itertools;
-use rustc_hir::def_id::DefId;
 use rustc_hir::LangItem;
+use rustc_hir::def_id::DefId;
 use rustc_middle::ty::{self, Ty, TyCtxt, TyKind, TypeFoldable};
 use rustc_span::sym::{self};
 use std::collections::VecDeque;

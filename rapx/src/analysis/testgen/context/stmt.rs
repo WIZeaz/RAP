@@ -1,6 +1,6 @@
 use super::utils;
 use super::var::Var;
-use crate::analysis::testgen::context::{var::DUMMY_UNIT_VAR, Context};
+use crate::analysis::testgen::context::{Context, var::DUMMY_UNIT_VAR};
 use rustc_abi::VariantIdx;
 use rustc_hir::def_id::DefId;
 use rustc_middle::ty::{self, AdtDef, GenericArgsRef, TyCtxt};

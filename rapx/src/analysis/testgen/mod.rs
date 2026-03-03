@@ -8,7 +8,6 @@ mod syn;
 mod utils;
 
 use crate::analysis::testgen::driver::driver_main;
-use crate::{rap_error, rap_info};
 use rustc_middle::ty::TyCtxt;
 
 /// Automatic Test Generator for detecting lifetime-related bugs

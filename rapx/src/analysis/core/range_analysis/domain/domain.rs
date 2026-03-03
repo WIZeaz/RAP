@@ -4,18 +4,22 @@
 #![allow(unused_assignments)]
 #![allow(unused_parens)]
 #![allow(non_snake_case)]
+use rust_intervals::NothingBetween;
 
 use crate::analysis::core::range_analysis::domain::ConstraintGraph::ConstraintGraph;
+use crate::analysis::core::range_analysis::domain::SymbolicExpr::{
+    BasicInterval, IntervalType, IntervalTypeTrait, SymbExpr,
+};
 use crate::analysis::core::range_analysis::{Range, RangeType};
 use crate::{rap_debug, rap_trace};
-use num_traits::{Bounded, CheckedAdd, CheckedSub, One, ToPrimitive, Zero};
+use num_traits::{Bounded, CheckedAdd, CheckedSub, One, ToPrimitive, Zero, ops};
 use rustc_abi::Size;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_hir::def_id::DefId;
 use rustc_middle::mir::coverage::Op;
 use rustc_middle::mir::{
-    BasicBlock, BinOp, Const, Local, LocalDecl, Operand, Place, Rvalue, Statement, StatementKind,
-    Terminator, UnOp,
+    BasicBlock, BinOp, BorrowKind, CastKind, Const, Local, LocalDecl, Operand, Place, Rvalue,
+    Statement, StatementKind, Terminator, UnOp,
 };
 use rustc_middle::ty::ScalarInt;
 use rustc_span::sym::no_default_passes;
@@ -89,179 +93,17 @@ pub trait IntervalArithmetic:
     + Add<Output = Self>
     + Sub<Output = Self>
     + Mul<Output = Self>
-    + fmt::Display
+    + core::fmt::Debug
+    + PartialOrd
+    + PartialEq
+    + NothingBetween
 {
 }
 
-impl<T> IntervalArithmetic for T where
-    T: PartialOrd
-        + Clone
-        + Bounded
-        + Zero
-        + One
-        + Copy
-        + CheckedAdd
-        + CheckedSub
-        + Add<Output = T>
-        + Sub<Output = T>
-        + Mul<Output = T>
-        + fmt::Display
-{
-}
-#[derive(Debug, Clone, PartialEq)]
-pub enum IntervalType<'tcx, T: IntervalArithmetic + ConstConvert + Debug> {
-    Basic(BasicInterval<T>),
-    Symb(SymbInterval<'tcx, T>), // Using 'static for simplicity, adjust lifetime as needed
-}
-impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> fmt::Display for IntervalType<'tcx, T>
-where
-    T: IntervalArithmetic + ConstConvert + Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            IntervalType::Basic(b) => write!(f, "BasicInterval: {}", b.get_range()),
-            IntervalType::Symb(s) => write!(f, "SymbInterval: {}", s.get_range()),
-        }
-    }
-}
-pub trait IntervalTypeTrait<T: IntervalArithmetic + ConstConvert + Debug> {
-    // fn get_value_id(&self) -> IntervalId;
-    fn get_range(&self) -> &Range<T>;
-    fn set_range(&mut self, new_range: Range<T>);
-}
-impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> IntervalTypeTrait<T>
-    for IntervalType<'tcx, T>
-{
-    fn get_range(&self) -> &Range<T> {
-        match self {
-            IntervalType::Basic(b) => b.get_range(),
-            IntervalType::Symb(s) => s.get_range(),
-        }
-    }
-
-    fn set_range(&mut self, new_range: Range<T>) {
-        match self {
-            IntervalType::Basic(b) => b.set_range(new_range),
-            IntervalType::Symb(s) => s.set_range(new_range),
-        }
-    }
-}
-#[derive(Debug, Clone, PartialEq)]
-pub struct BasicInterval<T: IntervalArithmetic + ConstConvert + Debug> {
-    range: Range<T>,
-}
-
-impl<T: IntervalArithmetic + ConstConvert + Debug> BasicInterval<T> {
-    pub fn new(range: Range<T>) -> Self {
-        Self { range }
-    }
-    pub fn default() -> Self {
-        Self {
-            range: Range::default(T::min_value()),
-        }
-    }
-}
-
-impl<T: IntervalArithmetic + ConstConvert + Debug> IntervalTypeTrait<T> for BasicInterval<T> {
-    // fn get_value_id(&self) -> IntervalId {
-    //     IntervalId::BasicIntervalId
-    // }
-
-    fn get_range(&self) -> &Range<T> {
-        &self.range
-    }
-
-    fn set_range(&mut self, new_range: Range<T>) {
-        self.range = new_range;
-        if self.range.get_lower() > self.range.get_upper() {
-            self.range.set_empty();
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-
-pub struct SymbInterval<'tcx, T: IntervalArithmetic + ConstConvert + Debug> {
-    range: Range<T>,
-    symbound: &'tcx Place<'tcx>,
-    predicate: BinOp,
-}
-
-impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> SymbInterval<'tcx, T> {
-    pub fn new(range: Range<T>, symbound: &'tcx Place<'tcx>, predicate: BinOp) -> Self {
-        Self {
-            range: range,
-            symbound,
-            predicate,
-        }
-    }
-
-    pub fn get_operation(&self) -> BinOp {
-        self.predicate
-    }
-
-    pub fn get_bound(&self) -> &'tcx Place<'tcx> {
-        self.symbound
-    }
-
-    pub fn sym_fix_intersects(
-        &self,
-        bound: &VarNode<'tcx, T>,
-        sink: &VarNode<'tcx, T>,
-    ) -> Range<T> {
-        let l = bound.get_range().get_lower().clone();
-        let u = bound.get_range().get_upper().clone();
-
-        let lower = sink.get_range().get_lower().clone();
-        let upper = sink.get_range().get_upper().clone();
-
-        match self.predicate {
-            BinOp::Eq => Range::new(l, u, RangeType::Regular),
-
-            BinOp::Le => Range::new(lower, u, RangeType::Regular),
-
-            BinOp::Lt => {
-                if u != T::max_value() {
-                    let u_minus_1 = u.checked_sub(&T::one()).unwrap_or(u);
-                    Range::new(lower, u_minus_1, RangeType::Regular)
-                } else {
-                    Range::new(lower, u, RangeType::Regular)
-                }
-            }
-
-            BinOp::Ge => Range::new(l, upper, RangeType::Regular),
-
-            BinOp::Gt => {
-                if l != T::min_value() {
-                    let l_plus_1 = l.checked_add(&T::one()).unwrap_or(l);
-                    Range::new(l_plus_1, upper, RangeType::Regular)
-                } else {
-                    Range::new(l, upper, RangeType::Regular)
-                }
-            }
-
-            BinOp::Ne => Range::new(T::min_value(), T::max_value(), RangeType::Regular),
-
-            _ => Range::new(T::min_value(), T::max_value(), RangeType::Regular),
-        }
-    }
-}
-
-impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> IntervalTypeTrait<T>
-    for SymbInterval<'tcx, T>
-{
-    // fn get_value_id(&self) -> IntervalId {
-    //     IntervalId::SymbIntervalId
-    // }
-
-    fn get_range(&self) -> &Range<T> {
-        &self.range
-    }
-
-    fn set_range(&mut self, new_range: Range<T>) {
-        self.range = new_range;
-    }
-}
+impl IntervalArithmetic for i32 {}
+impl IntervalArithmetic for usize {}
+impl IntervalArithmetic for i64 {}
+use rustc_middle::ty::Ty;
 
 // Define the basic operation trait
 pub trait Operation<T: IntervalArithmetic + ConstConvert + Debug> {
@@ -278,18 +120,63 @@ pub enum BasicOpKind<'tcx, T: IntervalArithmetic + ConstConvert + Debug> {
     Phi(PhiOp<'tcx, T>),
     Use(UseOp<'tcx, T>),
     Call(CallOp<'tcx, T>),
+    Ref(RefOp<'tcx, T>),
+    Aggregate(AggregateOp<'tcx, T>),
 }
 
 impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> fmt::Display for BasicOpKind<'tcx, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            BasicOpKind::Unary(op) => write!(f, "UnaryOp: intersect {} sink:{:?} source:{:?} inst:{:?} ",op.intersect,op.sink,op.source,op.inst),
-            BasicOpKind::Binary(op) => write!(f, "BinaryOp: intersect {} sink:{:?} source1:{:?} source2:{:?} inst:{:?} const_value:{} ",op.intersect,op.sink,op.source1,op.source2,op.inst,op.const_value.clone().unwrap()),
-            BasicOpKind::Essa(op) => write!(f, "EssaOp: intersect {} sink:{:?} source:{:?} inst:{:?} unresolved:{:?} ",op.intersect,op.sink,op.source,op.inst,op.unresolved),
-            BasicOpKind::ControlDep(op) => write!(f, "ControlDep: intersect {} sink:{:?} source:{:?} inst:{:?}  ",op.intersect,op.sink,op.source,op.inst),
-            BasicOpKind::Phi(op) => write!(f, "PhiOp: intersect {} sink:{:?} source:{:?} inst:{:?}  ",op.intersect,op.sink,op.sources,op.inst),
-            BasicOpKind::Use(op) => write!(f, "UseOp: intersect {} sink:{:?} source:{:?} inst:{:?} ",op.intersect,op.sink,op.source,op.inst ),
-            BasicOpKind::Call(op) => write!(f, "CallOp: intersect {} sink:{:?} args:{:?} inst:{:?}", op.intersect, op.sink, op.args, op.inst),
+            BasicOpKind::Unary(op) => write!(
+                f,
+                "UnaryOp: intersect {} sink:{:?} source:{:?} inst:{:?} ",
+                op.intersect, op.sink, op.source, op.inst
+            ),
+            BasicOpKind::Binary(op) => write!(
+                f,
+                "BinaryOp: intersect {} sink:{:?} source1:{:?} source2:{:?} inst:{:?} const_value:{} ",
+                op.intersect,
+                op.sink,
+                op.source1,
+                op.source2,
+                op.inst,
+                op.const_value.clone().unwrap()
+            ),
+            BasicOpKind::Essa(op) => write!(
+                f,
+                "EssaOp: intersect {} sink:{:?} source:{:?} inst:{:?} unresolved:{:?} ",
+                op.intersect, op.sink, op.source, op.inst, op.unresolved
+            ),
+            BasicOpKind::ControlDep(op) => write!(
+                f,
+                "ControlDep: intersect {} sink:{:?} source:{:?} inst:{:?}  ",
+                op.intersect, op.sink, op.source, op.inst
+            ),
+            BasicOpKind::Phi(op) => write!(
+                f,
+                "PhiOp: intersect {} sink:{:?} source:{:?} inst:{:?}  ",
+                op.intersect, op.sink, op.sources, op.inst
+            ),
+            BasicOpKind::Use(op) => write!(
+                f,
+                "UseOp: intersect {} sink:{:?} source:{:?} inst:{:?} ",
+                op.intersect, op.sink, op.source, op.inst
+            ),
+            BasicOpKind::Call(op) => write!(
+                f,
+                "CallOp: intersect {} sink:{:?} args:{:?} inst:{:?}",
+                op.intersect, op.sink, op.args, op.inst
+            ),
+            BasicOpKind::Ref(op) => write!(
+                f,
+                "RefOp: intersect {} sink:{:?} source:{:?} inst:{:?} borrowkind:{:?}",
+                op.intersect, op.sink, op.source, op.inst, op.borrowkind
+            ),
+            BasicOpKind::Aggregate(op) => write!(
+                f,
+                "AggregateOp: intersect {} sink:{:?} operands:{:?} inst:{:?}",
+                op.intersect, op.sink, op.operands, op.inst
+            ),
         }
     }
 }
@@ -303,6 +190,8 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> BasicOpKind<'tcx, T> {
             BasicOpKind::Phi(op) => op.eval(vars),
             BasicOpKind::Use(op) => op.eval(vars),
             BasicOpKind::Call(op) => op.eval(vars),
+            BasicOpKind::Ref(op) => op.eval(vars),
+            BasicOpKind::Aggregate(op) => op.eval(vars),
         }
     }
     pub fn get_type_name(&self) -> &'static str {
@@ -314,6 +203,8 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> BasicOpKind<'tcx, T> {
             BasicOpKind::Phi(_) => "Phi",
             BasicOpKind::Use(_) => "Use",
             BasicOpKind::Call(_) => "Call",
+            BasicOpKind::Ref(_) => "Ref",
+            BasicOpKind::Aggregate(_) => "Aggregate",
         }
     }
     pub fn get_sink(&self) -> &'tcx Place<'tcx> {
@@ -325,6 +216,8 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> BasicOpKind<'tcx, T> {
             BasicOpKind::Phi(op) => op.sink,
             BasicOpKind::Use(op) => op.sink,
             BasicOpKind::Call(op) => op.sink,
+            BasicOpKind::Ref(op) => op.sink,
+            BasicOpKind::Aggregate(op) => op.sink,
         }
     }
     pub fn get_instruction(&self) -> Option<&'tcx Statement<'tcx>> {
@@ -336,6 +229,8 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> BasicOpKind<'tcx, T> {
             BasicOpKind::Phi(op) => Some(op.inst),
             BasicOpKind::Use(op) => Some(op.inst),
             BasicOpKind::Call(op) => None,
+            BasicOpKind::Ref(op) => Some(op.inst),
+            BasicOpKind::Aggregate(op) => Some(op.inst),
         }
     }
     pub fn get_intersect(&self) -> &IntervalType<'tcx, T> {
@@ -347,6 +242,8 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> BasicOpKind<'tcx, T> {
             BasicOpKind::Phi(op) => &op.intersect,
             BasicOpKind::Use(op) => &op.intersect,
             BasicOpKind::Call(op) => &op.intersect,
+            BasicOpKind::Ref(op) => &op.intersect,
+            BasicOpKind::Aggregate(op) => &op.intersect,
         }
     }
     pub fn op_fix_intersects(&mut self, v: &VarNode<'tcx, T>, sink: &VarNode<'tcx, T>) {
@@ -355,13 +252,26 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> BasicOpKind<'tcx, T> {
         if let IntervalType::Symb(symbi) = intersect {
             let range = symbi.sym_fix_intersects(v, sink);
             rap_trace!(
-                "from {:?} to {:?} fix_intersects: {:} -> {}\n",
+                "from {:?} to {:?} fix_intersects: {:} -> {:?}\n",
                 v.get_value().clone(),
                 sink.get_value().clone(),
                 intersect.clone(),
                 range
             );
             self.set_intersect(range);
+        }
+    }
+    pub fn set_sink(&mut self, new_sink: &'tcx Place<'tcx>) {
+        match self {
+            BasicOpKind::Unary(op) => op.sink = new_sink,
+            BasicOpKind::Binary(op) => op.sink = new_sink,
+            BasicOpKind::Essa(op) => op.sink = new_sink,
+            BasicOpKind::ControlDep(op) => op.sink = new_sink,
+            BasicOpKind::Phi(op) => op.sink = new_sink,
+            BasicOpKind::Use(op) => op.sink = new_sink,
+            BasicOpKind::Call(op) => op.sink = new_sink,
+            BasicOpKind::Ref(op) => op.sink = new_sink,
+            BasicOpKind::Aggregate(op) => op.sink = new_sink,
         }
     }
     pub fn set_intersect(&mut self, new_intersect: Range<T>) {
@@ -373,6 +283,8 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> BasicOpKind<'tcx, T> {
             BasicOpKind::Phi(op) => op.intersect.set_range(new_intersect),
             BasicOpKind::Use(op) => op.intersect.set_range(new_intersect),
             BasicOpKind::Call(op) => op.intersect.set_range(new_intersect),
+            BasicOpKind::Ref(op) => op.intersect.set_range(new_intersect),
+            BasicOpKind::Aggregate(op) => op.intersect.set_range(new_intersect),
         }
     }
     pub fn get_intersect_mut(&mut self) -> &mut IntervalType<'tcx, T> {
@@ -384,6 +296,41 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> BasicOpKind<'tcx, T> {
             BasicOpKind::Phi(op) => &mut op.intersect,
             BasicOpKind::Use(op) => &mut op.intersect,
             BasicOpKind::Call(op) => &mut op.intersect,
+            BasicOpKind::Ref(op) => &mut op.intersect,
+            BasicOpKind::Aggregate(op) => &mut op.intersect,
+        }
+    }
+    pub fn get_sources(&self) -> Vec<&'tcx Place<'tcx>> {
+        match self {
+            BasicOpKind::Unary(op) => vec![op.source],
+            BasicOpKind::Binary(op) => {
+                let mut sources = Vec::new();
+
+                if let Some(src1) = op.source1 {
+                    sources.push(src1);
+                }
+
+                if let Some(src2) = op.source2 {
+                    sources.push(src2);
+                }
+
+                sources
+            }
+            BasicOpKind::Essa(op) => vec![op.source],
+            BasicOpKind::ControlDep(op) => vec![op.source],
+            BasicOpKind::Phi(op) => op.sources.clone(),
+            BasicOpKind::Use(op) => {
+                let mut sources = Vec::new();
+
+                if let Some(src1) = op.source {
+                    sources.push(src1);
+                }
+
+                sources
+            }
+            BasicOpKind::Call(op) => op.sources.clone(),
+            BasicOpKind::Ref(op) => vec![op.source],
+            BasicOpKind::Aggregate(_) => vec![],
         }
     }
 }
@@ -394,6 +341,8 @@ pub struct CallOp<'tcx, T: IntervalArithmetic + ConstConvert + Debug> {
     pub inst: &'tcx Terminator<'tcx>,
     pub args: Vec<Operand<'tcx>>,
     pub def_id: DefId,
+    pub fun_path: String,
+    pub sources: Vec<&'tcx Place<'tcx>>,
 }
 
 impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> CallOp<'tcx, T> {
@@ -406,13 +355,17 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> CallOp<'tcx, T> {
         inst: &'tcx Terminator<'tcx>,
         args: Vec<Operand<'tcx>>,
         def_id: DefId,
+        fun_path: String,
+        sources: Vec<&'tcx Place<'tcx>>,
     ) -> Self {
         Self {
             intersect,
             sink,
             inst,
             args,
+            sources,
             def_id,
+            fun_path,
         }
     }
 
@@ -425,6 +378,103 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> CallOp<'tcx, T> {
         cg_map: &FxHashMap<DefId, Rc<RefCell<ConstraintGraph<'tcx, T>>>>,
         vars_map: &mut FxHashMap<DefId, Vec<RefCell<VarNodes<'tcx, T>>>>,
     ) -> Range<T> {
+        match self.fun_path.as_str() {
+            "std::iter::IntoIterator::into_iter" => match self.args.first() {
+                Some(Operand::Copy(place)) | Some(Operand::Move(place)) => {
+                    rap_trace!(
+                        "Iterator detected on place {:?}, returning its range",
+                        place
+                    );
+                    if let Some(var_node) = caller_vars.get(place) {
+                        let range = var_node.get_range().clone();
+                        rap_trace!(
+                            "Iterator detected on place {:?}, returning its range: {:?}",
+                            place,
+                            range
+                        );
+                        return range;
+                    }
+                }
+                _ => {}
+            },
+            "std::iter::Iterator::next" => match self.args.first() {
+                Some(Operand::Copy(place)) | Some(Operand::Move(place)) => {
+                    rap_trace!(
+                        "Iterator next detected on place {:?}, returning its range",
+                        place
+                    );
+                    if let Some(var_node) = caller_vars.get(place) {
+                        let range = var_node.get_range().clone();
+                        rap_trace!(
+                            "Iterator next detected on place {:?}, returning its range: {:?}",
+                            place,
+                            range
+                        );
+                        return range;
+                    }
+                }
+                _ => {}
+            },
+            "core::slice::<impl [T]>::len" => {
+                let mut result = Range::default(T::min_value());
+                match self.args.last() {
+                    Some(Operand::Copy(place)) | Some(Operand::Move(place)) => {
+                        let range = caller_vars[place].get_range().clone();
+                        let len = range.get_upper().clone() - range.get_lower().clone();
+                        result = Range::new(len.clone(), len.clone(), RangeType::Regular);
+                    }
+                    Some(Operand::Constant(c)) => {}
+                    None => {}
+                }
+                rap_trace!(
+                    "len() detected on place {:?}, returning its range: {:?}",
+                    self.sink,
+                    result
+                );
+                return result;
+            }
+            "std::ops::IndexMut::index_mut" => {
+                let mut result = Range::default(T::min_value());
+
+                match self.args.last() {
+                    Some(Operand::Copy(place)) | Some(Operand::Move(place)) => {
+                        result = caller_vars[place].get_range().clone();
+                    }
+                    Some(Operand::Constant(c)) => {}
+                    None => {}
+                }
+
+                rap_trace!(
+                    "IndexMut detected on place {:?}, returning its range: {:?}",
+                    self.sink,
+                    result
+                );
+                return result;
+            }
+            "std::ops::Index::index" => {
+                let mut result = Range::default(T::min_value());
+
+                match self.args.last() {
+                    Some(Operand::Copy(place)) | Some(Operand::Move(place)) => {
+                        result = caller_vars[place].get_range().clone();
+                    }
+                    Some(Operand::Constant(c)) => {}
+                    None => {}
+                }
+
+                rap_trace!(
+                    "Index detected on place {:?}, returning its range: {:?}",
+                    self.sink,
+                    result
+                );
+                return result;
+            }
+            "core::panicking::panic" | "std::panicking::panic" => {
+                rap_trace!("Panic call detected, returning bottom range.");
+                return Range::new(T::max_value(), T::min_value(), RangeType::Empty);
+            }
+            _ => {}
+        }
         // 1. Find the callee's ConstraintGraph in the map.
         if let Some(rc_callee_cg_cell) = cg_map.get(&self.def_id) {
             rap_debug!(
@@ -459,13 +509,13 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> CallOp<'tcx, T> {
                                     let arg_range = caller_arg_node.get_range().clone();
                                     callee_arg_node.set_range(arg_range);
                                     rap_debug!(
-                                                    "Passing argument from {:?} to callee {:?} : {:?} {:?} -> {:?}",
-                                                    caller_arg_place,
-                                                    self.def_id,
-                                                    callee_arg_node.get_value(),
-                                                    caller_arg_node.get_range(),
-                                                    callee_arg_node.get_range()
-                                                );
+                                        "Passing argument from {:?} to callee {:?} : {:?} {:?} -> {:?}",
+                                        caller_arg_place,
+                                        self.def_id,
+                                        callee_arg_node.get_value(),
+                                        caller_arg_node.get_range(),
+                                        callee_arg_node.get_range()
+                                    );
                                 }
                             }
                         }
@@ -491,13 +541,13 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> CallOp<'tcx, T> {
                                     );
                                     callee_arg_node.set_range(arg_range.clone());
                                     rap_debug!(
-                                                    "Passing argument from {:?} to callee {:?} : {:?} {:?} -> {:?}",
-                                                    const_value,
-                                                    self.def_id,
-                                                    callee_arg_node.get_value(),
-                                                    arg_range,
-                                                    callee_arg_node.get_range()
-                                                );
+                                        "Passing argument from {:?} to callee {:?} : {:?} {:?} -> {:?}",
+                                        const_value,
+                                        self.def_id,
+                                        callee_arg_node.get_value(),
+                                        arg_range,
+                                        callee_arg_node.get_range()
+                                    );
                                 }
                             }
                             // Find the corresponding Place and VarNode in the callee.
@@ -520,7 +570,7 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> CallOp<'tcx, T> {
                 // The `rerurn_places` set in the callee's graph tracks these.
                 if let Some(return_node) = callee_cg.vars.get_mut(&Place::return_place()) {
                     return_range = return_node.get_range().clone();
-                    rap_debug!(" final return range {} ", return_range);
+                    rap_debug!(" final return range {:?} ", return_range);
                     return return_range;
                 }
                 let Some(callee_varnodes_vec) = vars_map.get_mut(&self.def_id) else {
@@ -550,6 +600,94 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> CallOp<'tcx, T> {
         Range::new(T::min_value(), T::max_value(), RangeType::Regular)
     }
 }
+#[derive(Debug, Clone)]
+pub enum AggregateOperand<'tcx> {
+    Place(&'tcx Place<'tcx>),
+    Const(Const<'tcx>),
+}
+#[derive(Debug, Clone)]
+
+pub struct AggregateOp<'tcx, T: IntervalArithmetic + ConstConvert + Debug> {
+    pub intersect: IntervalType<'tcx, T>,
+    pub sink: &'tcx Place<'tcx>,
+    pub inst: &'tcx Statement<'tcx>,
+    pub operands: Vec<AggregateOperand<'tcx>>,
+    pub unique_adt: usize,
+}
+
+impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> AggregateOp<'tcx, T> {
+    pub fn new(
+        intersect: IntervalType<'tcx, T>,
+        sink: &'tcx Place<'tcx>,
+        inst: &'tcx Statement<'tcx>,
+        operands: Vec<AggregateOperand<'tcx>>,
+        unique_adt: usize,
+    ) -> Self {
+        Self {
+            intersect,
+            sink,
+            inst,
+            operands,
+            unique_adt,
+        }
+    }
+
+    pub fn eval(&self, vars: &VarNodes<'tcx, T>) -> Range<T> {
+        if self.operands.is_empty() {
+            return self.intersect.get_range().clone();
+        }
+
+        let mut result: Range<T> = Range::default(T::min_value());
+        match self.unique_adt {
+            0 => {
+                // If unique_adt is 0, we assume it's a regular array or slice.
+                // We can use the first operand's range as the initial result.
+                match self.operands.first() {
+                    Some(AggregateOperand::Place(place)) => {
+                        let range = vars[*place].get_range().clone();
+                        result = range;
+                    }
+                    Some(AggregateOperand::Const(c)) => {
+                        result = Range::new(
+                            T::from_const(c).unwrap_or(T::min_value()),
+                            T::from_const(c).unwrap_or(T::max_value()),
+                            RangeType::Regular,
+                        );
+                    }
+                    None => {}
+                }
+            }
+            1 => {
+                // If unique_adt is 1, we assume it's a Range with two operands.
+                let mut lower = T::min_value();
+                let mut upper = T::max_value();
+                match self.operands.first() {
+                    Some(AggregateOperand::Place(place)) => {
+                        lower = vars[*place].get_range().get_lower().clone();
+                    }
+                    Some(AggregateOperand::Const(c)) => {
+                        lower = T::from_const(c).unwrap_or(T::min_value());
+                    }
+                    None => {}
+                }
+                match self.operands.last() {
+                    Some(AggregateOperand::Place(place)) => {
+                        upper = vars[*place].get_range().get_upper().clone();
+                    }
+                    Some(AggregateOperand::Const(c)) => {
+                        upper = T::from_const(c).unwrap_or(T::max_value());
+                    }
+                    None => {}
+                }
+
+                result = Range::new(lower, upper, RangeType::Regular);
+            }
+            _ => {}
+        }
+        result
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UseOp<'tcx, T: IntervalArithmetic + ConstConvert + Debug> {
     pub intersect: IntervalType<'tcx, T>,
@@ -655,7 +793,7 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> EssaOp<'tcx, T> {
         let source_range = vars[self.source].get_range().clone();
         let result = source_range.intersectwith(self.intersect.get_range());
         rap_trace!(
-            "EssaOp eval: {:?} {} intersectwith {}-> {}\n",
+            "EssaOp eval: {:?} {:?} intersectwith {:?} -> {:?}\n",
             self.source,
             self.intersect.get_range(),
             source_range,
@@ -796,7 +934,7 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> PhiOp<'tcx, T> {
             let node = &vars[phisource];
             result = result.unionwith(node.get_range());
             rap_trace!(
-                "PhiOp eval:  {} unionwith {} -> {}\n",
+                "PhiOp eval:  {:?} unionwith {:?} -> {:?}\n",
                 vars[first].get_range().clone(),
                 node.get_range(),
                 result
@@ -806,6 +944,55 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> PhiOp<'tcx, T> {
     }
     pub fn get_sources(&self) -> &[&'tcx Place<'tcx>] {
         &self.sources
+    }
+}
+#[derive(Debug, Clone)]
+pub struct RefOp<'tcx, T: IntervalArithmetic + ConstConvert + Debug> {
+    pub intersect: IntervalType<'tcx, T>,
+    pub sink: &'tcx Place<'tcx>,
+    pub inst: &'tcx Statement<'tcx>,
+    pub source: &'tcx Place<'tcx>,
+    pub borrowkind: BorrowKind,
+}
+impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> RefOp<'tcx, T> {
+    pub fn new(
+        intersect: IntervalType<'tcx, T>,
+        sink: &'tcx Place<'tcx>,
+        inst: &'tcx Statement<'tcx>,
+        source: &'tcx Place<'tcx>,
+        borrowkind: BorrowKind,
+    ) -> Self {
+        Self {
+            intersect,
+            sink,
+            inst,
+            source,
+            borrowkind,
+        }
+    }
+
+    pub fn eval(&self, vars: &VarNodes<'tcx, T>) -> Range<T> {
+        let var_node = vars.get(self.source);
+        rap_trace!("RefOp eval: searching for {:?}\n", var_node);
+        if let Some(var_node) = var_node {
+            let range = var_node.get_range().clone();
+
+            rap_trace!(
+                "RefOp eval: {:?} {:?} intersectwith {:?}\n",
+                self.source,
+                self.intersect.get_range(),
+                range
+            );
+
+            range
+        } else {
+            rap_trace!(
+                "RefOp eval: {:?} not found, returning intersect {:?}\n",
+                self.source,
+                self.intersect.get_range()
+            );
+            self.intersect.get_range().clone()
+        }
     }
 }
 #[derive(Debug, Clone)]
@@ -837,12 +1024,12 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> ControlDep<'tcx, T> {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, Clone)]
 pub struct VarNode<'tcx, T: IntervalArithmetic + ConstConvert + Debug> {
     // The program variable which is represented.
     pub v: &'tcx Place<'tcx>,
     // A Range associated to the variable.
-    pub interval: Range<T>,
+    pub interval: IntervalType<'tcx, T>,
     // Used by the crop meet operator.
     pub abstract_state: char,
 }
@@ -850,48 +1037,50 @@ impl<'tcx, T: IntervalArithmetic + ConstConvert + Debug> VarNode<'tcx, T> {
     pub fn new(v: &'tcx Place<'tcx>) -> Self {
         Self {
             v,
-            interval: Range::default(T::min_value()),
+            interval: IntervalType::Basic(BasicInterval::new(Range::default(T::min_value()))),
             abstract_state: '?',
         }
     }
-
-    /// Initializes the value of the node.
-    pub fn init(&mut self, outside: bool) {
-        let value = self.get_value();
+    pub fn new_symb(v: &'tcx Place<'tcx>, symb_expr: SymbExpr<'tcx>) -> Self {
+        Self {
+            v,
+            interval: IntervalType::Basic(BasicInterval::new_symb(
+                Range::default(T::min_value()),
+                symb_expr.clone(),
+                symb_expr.clone(),
+            )),
+            abstract_state: '?',
+        }
     }
-
-    /// Returns the range of the variable represented by this node.
     pub fn get_range(&self) -> &Range<T> {
-        &self.interval
+        self.interval.get_range()
     }
 
-    /// Returns the variable represented by this node.
-    pub fn get_value(&self) -> &'tcx Place<'tcx> {
-        self.v
-    }
-
-    /// Changes the status of the variable represented by this node.
     pub fn set_range(&mut self, new_interval: Range<T>) {
+        self.interval.set_range(new_interval);
+    }
+
+    pub fn set_interval(&mut self, new_interval: IntervalType<'tcx, T>) {
         self.interval = new_interval;
     }
 
-    /// Pretty print.
-    pub fn print(&self, os: &mut dyn std::io::Write) {
-        // Implementation of pretty printing using the `os` writer.
+    pub fn get_interval(&self) -> &IntervalType<'tcx, T> {
+        &self.interval
     }
+
     pub fn set_default(&mut self) {
-        self.interval.set_default();
+        let mut range = Range::default(T::min_value());
+        range.set_default();
+        self.interval.set_range(range);
     }
-
-    pub fn get_abstract_state(&self) -> char {
-        self.abstract_state
+    pub fn get_value(&self) -> &'tcx Place<'tcx> {
+        self.v
     }
-
-    /// The possible states are '0', '+', '-', and '?'.
-    pub fn store_abstract_state(&mut self) {
-        // Implementation of storing the abstract state.
+    pub fn init(&mut self, outside: bool) {
+        let value = self.get_value();
     }
 }
+
 #[derive(Debug, Clone)]
 pub struct ValueBranchMap<'tcx, T: IntervalArithmetic + ConstConvert + Debug> {
     v: &'tcx Place<'tcx>,         // The value associated with the branch

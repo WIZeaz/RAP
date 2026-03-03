@@ -1,10 +1,9 @@
 use super::super::utils;
+use super::ContextBuilder;
 use super::folder::extract_rids;
 use super::lifetime::Rid;
-use super::ContextBuilder;
-use crate::analysis::core::alias_analysis::AAFact;
+use crate::analysis::core::alias_analysis::AliasPair;
 use crate::analysis::testgen::context::{Stmt, Var};
-use crate::{rap_debug, rap_trace};
 use rand::seq::IndexedRandom;
 use rustc_middle::ty::{self, Ty, TyCtxt, TyKind};
 use std::collections::{HashMap, HashSet};
@@ -38,15 +37,23 @@ fn get_fn_arg_ty_at<'tcx>(no: usize, fn_sig: ty::FnSig<'tcx>) -> Ty<'tcx> {
 
 fn destruct_ret_alias<'tcx>(
     fn_sig: ty::FnSig<'tcx>,
-    fact: &AAFact,
+    fact: &AliasPair,
     tcx: TyCtxt<'tcx>,
 ) -> (Ty<'tcx>, Ty<'tcx>) {
-    let lhs_no = fact.lhs_no();
-    let rhs_no = fact.rhs_no();
+    let left_local = fact.left_local();
+    let right_local = fact.right_local();
 
     (
-        ty_project_to(get_fn_arg_ty_at(lhs_no, fn_sig), &fact.lhs_fields(), tcx),
-        ty_project_to(get_fn_arg_ty_at(rhs_no, fn_sig), &fact.rhs_fields(), tcx),
+        ty_project_to(
+            get_fn_arg_ty_at(left_local, fn_sig),
+            &fact.lhs_fields(),
+            tcx,
+        ),
+        ty_project_to(
+            get_fn_arg_ty_at(right_local, fn_sig),
+            &fact.rhs_fields(),
+            tcx,
+        ),
     )
 }
 
@@ -140,7 +147,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
             .expect(&format!("{:?} do not have alias infomation", call.fn_did()))
             .aliases()
             .iter()
-            .filter(|fact| fact.lhs_no() <= fact.rhs_no())
+            .filter(|fact| fact.left_local() <= fact.right_local())
             .cloned()
             .flat_map(|fact| {
                 let mut rfact = fact.clone();
@@ -150,20 +157,20 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
 
         for fact in facts {
             rap_debug!("alias fact: {}", fact);
-            if fact.rhs_no() == 0 {
+            if fact.right_local() == 0 {
                 rap_debug!("filter this fact (rhs is return value)");
                 continue;
             }
 
             let (lhs_ty, rhs_ty) = destruct_ret_alias(fn_sig, &fact, self.tcx);
 
-            // if fact.lhs_no() != 0 && !check_possibility(lhs_ty, rhs_ty, tcx) {
+            // if fact.left_local() != 0 && !check_possibility(lhs_ty, rhs_ty, tcx) {
             //     rap_debug!("filter this fact (lhs is not mutable reference)");
             //     continue;
             // }
 
-            let lhs_var = stmt.call_inputs_and_output_var_at(fact.lhs_no());
-            let rhs_var = stmt.call_inputs_and_output_var_at(fact.rhs_no());
+            let lhs_var = stmt.call_inputs_and_output_var_at(fact.left_local());
+            let rhs_var = stmt.call_inputs_and_output_var_at(fact.right_local());
             add_potential_paths(lhs_var, lhs_ty, rhs_var, rhs_ty);
         }
         if ret.is_empty() {
