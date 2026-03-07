@@ -42,7 +42,6 @@ pub struct ApiDependencyGraph<'tcx> {
     node_indices: HashMap<DepNode<'tcx>, NodeIndex>,
     ty_nodes: Vec<NodeIndex>,
     api_nodes: Vec<NodeIndex>,
-    all_apis: HashSet<DefId>,
     tcx: TyCtxt<'tcx>,
 }
 
@@ -61,7 +60,6 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
             ty_nodes: Vec::new(),
             api_nodes: Vec::new(),
             tcx,
-            all_apis: HashSet::new(),
         }
     }
 
@@ -84,15 +82,23 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
 
     pub fn build(&mut self, config: Config) {
         let tcx = self.tcx();
-        let mut fn_visitor = FnVisitor::new(self, config, tcx);
+        let mut visitor = FnVisitor::new(config, tcx);
 
         // 1. collect APIs
-        tcx.hir_visit_all_item_likes_in_crate(&mut fn_visitor);
-        self.all_apis = fn_visitor.apis().into_iter().collect();
+        tcx.hir_visit_all_item_likes_in_crate(&mut visitor);
 
-        // 2. resolve generic API to monomorphic API
+        // 2. add non generic APIs
+        visitor.non_generic_apis().iter().for_each(|&fn_did| {
+            self.add_identity_api(fn_did);
+        });
+
+        // 3. resolve generic API to monomorphic API
         if config.resolve_generic {
-            self.resolve_generic_api();
+            self.resolve_generic_api(
+                visitor.non_generic_apis(),
+                visitor.generic_apis(),
+                config.max_generic_search_iteration,
+            );
         } else {
             self.update_transform_edges();
         }
@@ -171,15 +177,14 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
         }
     }
 
-    pub fn add_generic_api(&mut self, fn_did: DefId) -> bool {
+    pub fn add_identity_api(&mut self, fn_did: DefId) -> bool {
         let args = ty::GenericArgs::identity_for_item(self.tcx, fn_did);
 
         if !self.add_api(fn_did, args) {
             return false;
         }
 
-        let api_node = self.get_or_create_index(DepNode::api(fn_did, args));
-        let binder_fn_sig = self.tcx.fn_sig(fn_did).instantiate_identity();
+        self.get_or_create_index(DepNode::api(fn_did, args));
 
         true
     }

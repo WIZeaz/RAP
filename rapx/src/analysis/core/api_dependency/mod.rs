@@ -10,20 +10,34 @@ mod utils;
 mod visitor;
 
 use crate::analysis::Analysis;
-use crate::rap_info;
 pub use graph::ApiDependencyGraph;
 pub use graph::{DepEdge, DepNode};
 use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_middle::ty::TyCtxt;
+use serde::Deserialize;
 pub use utils::{is_def_id_public, is_fuzzable_ty};
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Default)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Deserialize)]
 pub struct Config {
     pub pub_only: bool,
     pub resolve_generic: bool,
     pub ignore_const_generic: bool,
     pub include_unsafe: bool,
     pub include_drop: bool,
+    pub max_generic_search_iteration: usize,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            pub_only: true,
+            resolve_generic: true,
+            ignore_const_generic: true,
+            include_unsafe: false,
+            include_drop: false,
+            max_generic_search_iteration: 10,
+        }
+    }
 }
 
 pub trait ApiDependencyAnalysis<'tcx> {
@@ -64,7 +78,6 @@ impl<'tcx> Analysis for ApiDependencyAnalyzer<'tcx> {
 
         let api_graph = &mut self.api_graph;
         api_graph.build(config);
-
         let (estimate, total) = api_graph.estimate_coverage();
 
         let statistics = api_graph.statistics();

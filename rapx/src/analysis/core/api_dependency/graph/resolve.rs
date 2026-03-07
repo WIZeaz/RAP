@@ -206,12 +206,20 @@ pub fn partion_generic_api<'tcx>(
 }
 
 impl<'tcx> ApiDependencyGraph<'tcx> {
-    pub fn resolve_generic_api(&mut self) {
+    pub fn resolve_generic_api(
+        &mut self,
+        non_generic_apis: &[DefId],
+        generic_apis: &[DefId],
+        max_iteration: usize,
+    ) {
         rap_info!("start resolving generic APIs");
-        // 1. Reachable generic API search
-        let generic_map = self.search_reachable_apis();
 
-        self.add_monomorphic_apis(&generic_map);
+        // 1. Reachable generic API search
+        let generic_map = self.search_reachable_apis(non_generic_apis, generic_apis, max_iteration);
+
+        self.add_mono_apis_from_map(&generic_map);
+        self.update_transform_edges();
+
         self.dump_to_dot(Path::new("api_graph_unpruned.dot"));
 
         let reserved = self.prune_by_similarity(generic_map);
@@ -227,23 +235,24 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
         );
     }
 
-    pub fn search_reachable_apis(&mut self) -> HashMap<DefId, HashSet<Mono<'tcx>>> {
+    pub fn search_reachable_apis(
+        &mut self,
+        non_generic_apis: &[DefId],
+        generic_apis: &[DefId],
+        max_iteration: usize,
+    ) -> HashMap<DefId, HashSet<Mono<'tcx>>> {
         let tcx = self.tcx;
         let mut type_candidates = TypeCandidates::new(self.tcx, MAX_TY_COMPLX);
 
         type_candidates.add_prelude_tys();
 
         let mut generic_map: HashMap<DefId, HashSet<Mono>> = HashMap::new();
-
-        // initialize unreachable non generic API
-        let (mut unreachable_non_generic_api, generic_apis) =
-            partion_generic_api(&self.all_apis, tcx);
+        let mut unreachable_non_generic_api = Vec::from(non_generic_apis);
 
         rap_debug!("[resolve_generic] non_generic_api = {unreachable_non_generic_api:?}");
         rap_debug!("[resolve_generic] generic_api = {generic_apis:?}");
 
         let mut num_iter = 0;
-        let max_iteration = 10;
 
         loop {
             num_iter += 1;
@@ -310,23 +319,19 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
 
         let mono_cnt = generic_map.values().fold(0, |acc, monos| acc + monos.len());
 
-        rap_debug!(
-            "# of reachable types: {}",
-            type_candidates.candidates().len()
-        );
-        rap_debug!("# of mono APIs: {}", mono_cnt);
+        rap_debug!("# reachable types: {}", type_candidates.candidates().len());
+        rap_debug!("# mono APIs: {}", mono_cnt);
 
         generic_map
     }
 
-    pub fn add_monomorphic_apis(&mut self, generic_map: &HashMap<DefId, HashSet<Mono<'tcx>>>) {
+    pub fn add_mono_apis_from_map(&mut self, generic_map: &HashMap<DefId, HashSet<Mono<'tcx>>>) {
         for (fn_did, mono_set) in generic_map {
             for mono in mono_set {
                 let args = self.tcx.mk_args(&mono.value);
                 self.add_api(*fn_did, args);
             }
         }
-        self.update_transform_edges();
     }
 
     pub fn heuristic_select(&mut self, reserved: &mut [bool]) {

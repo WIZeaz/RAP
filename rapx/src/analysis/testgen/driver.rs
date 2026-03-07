@@ -151,6 +151,7 @@ pub fn driver_main(tcx: TyCtxt<'_>) -> Result<(), Box<dyn std::error::Error>> {
             ignore_const_generic: true,
             include_unsafe: false,
             include_drop: false,
+            max_generic_search_iteration: 10,
         },
     );
     api_analyzer.run();

@@ -14,25 +14,19 @@ use rustc_middle::ty::{self, FnSig, ParamEnv, Ty, TyCtxt, TyKind};
 use rustc_span::Span;
 use std::io::Write;
 
-pub struct FnVisitor<'tcx, 'a> {
+pub struct FnVisitor<'tcx> {
     tcx: TyCtxt<'tcx>,
     apis: Vec<DefId>,
+    generic_apis: Vec<DefId>,
     config: Config,
-    graph: &'a mut ApiDependencyGraph<'tcx>,
 }
 
-impl<'tcx, 'a> FnVisitor<'tcx, 'a> {
-    pub fn new(
-        graph: &'a mut ApiDependencyGraph<'tcx>,
-        config: Config,
-        tcx: TyCtxt<'tcx>,
-    ) -> FnVisitor<'tcx, 'a> {
-        let fn_cnt = 0;
-        let funcs = Vec::new();
+impl<'tcx> FnVisitor<'tcx> {
+    pub fn new(config: Config, tcx: TyCtxt<'tcx>) -> FnVisitor<'tcx> {
         FnVisitor {
             tcx,
-            graph,
-            apis: funcs,
+            apis: Vec::new(),
+            generic_apis: Vec::new(),
             config,
         }
     }
@@ -41,8 +35,16 @@ impl<'tcx, 'a> FnVisitor<'tcx, 'a> {
         self.apis.len()
     }
 
-    pub fn apis(self) -> Vec<DefId> {
-        self.apis
+    pub fn count_generic_api(&self) -> usize {
+        self.generic_apis.len()
+    }
+
+    pub fn non_generic_apis(&self) -> &[DefId] {
+        &self.apis
+    }
+
+    pub fn generic_apis(&self) -> &[DefId] {
+        &self.generic_apis
     }
 
     pub fn write_funcs<T: Write>(&self, f: &mut T) {
@@ -79,49 +81,65 @@ fn is_drop_impl(tcx: TyCtxt<'_>, fn_did: DefId) -> bool {
     false
 }
 
-impl<'tcx, 'a> Visitor<'tcx> for FnVisitor<'tcx, 'a> {
+impl<'tcx> Visitor<'tcx> for FnVisitor<'tcx> {
     fn visit_fn<'v>(
         &mut self,
         fk: FnKind<'v>,
         _fd: &'v FnDecl<'v>,
         _b: BodyId,
-        _span: Span,
+        span: Span,
         id: LocalDefId,
     ) -> Self::Result {
         let fn_did = id.to_def_id();
         let generics = self.tcx.generics_of(fn_did);
+        rap_trace!(
+            "visit fn: {:?} (path: {}), generics: {:?}, span: {:?}",
+            fn_did,
+            self.tcx.def_path_str(fn_did),
+            generics,
+            span,
+        );
 
-        let is_generic = generics.requires_monomorphization(self.tcx);
+        if self.tcx.def_path_str(fn_did).ends_with("dummy") && self.tcx.def_span(fn_did).is_dummy()
+        {
+            rap_trace!("skip rustc dummy fn");
+            return;
+        }
+
         if self.config.pub_only && !is_def_id_public(fn_did, self.tcx) {
+            rap_trace!("skip for non-public");
             return;
         }
 
         if !self.config.include_drop && is_drop_impl(self.tcx, fn_did) {
+            rap_trace!("skip drop impl");
             return;
         }
 
-        // if config.resolve_generic is false,
-        // skip all generic functions
+        let is_generic = generics.requires_monomorphization(self.tcx);
+
+        // if config.resolve_generic is false, skip all generic functions
         if !self.config.resolve_generic && is_generic {
+            rap_trace!("skip generic fn");
             return;
         }
 
         // if config.ignore_const_generic is true,
         // skip functions with const generics
         if self.config.ignore_const_generic && has_const_generics(generics, self.tcx) {
+            rap_trace!("skip const generic fn");
             return;
         }
 
         if !self.config.include_unsafe && fk.header().unwrap().safety().is_unsafe() {
-            rap_trace!("skip unsafe fn: {}", self.tcx.def_path_str(fn_did));
+            rap_trace!("skip unsafe fn");
             return;
         }
 
-        if !is_generic {
-            let args = ty::GenericArgs::identity_for_item(self.tcx, fn_did);
-            self.graph.add_api(fn_did, &args);
+        if is_generic {
+            self.generic_apis.push(fn_did);
+        } else {
+            self.apis.push(fn_did);
         }
-
-        self.apis.push(fn_did);
     }
 }

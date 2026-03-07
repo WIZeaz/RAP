@@ -33,7 +33,11 @@ extern crate rustc_type_ir;
 extern crate thin_vec;
 
 use crate::{
-    analysis::{core::alias_analysis::mfp::MfpAliasAnalyzer, scan::ScanAnalysis, testgen::Testgen},
+    analysis::{
+        core::{alias_analysis::mfp::MfpAliasAnalyzer, api_dependency},
+        scan::ScanAnalysis,
+        testgen::Testgen,
+    },
     cli::{AliasStrategyKind, AnalysisKind, Commands, OptLevel, RapxArgs},
 };
 use analysis::{
@@ -209,16 +213,8 @@ pub fn start_analyzer(tcx: TyCtxt, callback: &RapCallback) {
                 rap_info!("{}", FnAliasMapWrapper(alias));
             }
             AnalysisKind::Adg => {
-                let mut analyzer = ApiDependencyAnalyzer::new(
-                    tcx,
-                    analysis::core::api_dependency::Config {
-                        pub_only: true,
-                        resolve_generic: true,
-                        ignore_const_generic: true,
-                        include_unsafe: false,
-                        include_drop: false,
-                    },
-                );
+                let mut analyzer =
+                    ApiDependencyAnalyzer::new(tcx, api_dependency::Config::default());
                 analyzer.run();
             }
             AnalysisKind::Upg => {
