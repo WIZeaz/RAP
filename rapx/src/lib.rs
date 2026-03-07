@@ -22,6 +22,7 @@ extern crate rustc_infer;
 extern crate rustc_interface;
 extern crate rustc_metadata;
 extern crate rustc_middle;
+extern crate rustc_mir_dataflow;
 extern crate rustc_public;
 extern crate rustc_session;
 extern crate rustc_span;
@@ -30,6 +31,7 @@ extern crate rustc_trait_selection;
 extern crate rustc_traits;
 extern crate rustc_type_ir;
 extern crate thin_vec;
+
 use crate::{
     analysis::{core::alias_analysis::mfp::MfpAliasAnalyzer, scan::ScanAnalysis, testgen::Testgen},
     cli::{AliasStrategyKind, AnalysisKind, Commands, OptLevel, RapxArgs},
