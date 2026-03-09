@@ -68,6 +68,7 @@ const ANALYZE_UPG_CMD: &[&str] = &["analyze", "upg"];
 const ANALYZE_SSA_CMD: &[&str] = &["analyze", "ssa"];
 const ANALYZE_RANGE_CMD: &[&str] = &["analyze", "range"];
 const ANALYZE_CALLGRAPH_CMD: &[&str] = &["analyze", "callgraph"];
+const ANALYZE_ADG_CMD: &[&str] = &["analyze", "adg"];
 
 // ================Dangling Pointer Detection Test=====================
 #[test]
@@ -545,4 +546,10 @@ fn test_symbolic_interval() {
             output
         );
     }
+}
+
+#[test]
+fn test_adg_bug() {
+    // This test pass if don't panic (e.g., stack overflow) during ADG construction and resolution.
+    let _ = run_with_args("adg/bug-regression", ANALYZE_ADG_CMD);
 }
