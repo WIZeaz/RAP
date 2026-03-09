@@ -269,6 +269,7 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
             // if the api is reachable, add output type to reachble_tys,
             // and remove it from the set.
             unreachable_non_generic_api.retain(|fn_did| {
+                rap_info!("check {:?}", fn_did);
                 !add_return_type_if_reachable(
                     *fn_did,
                     ty::GenericArgs::identity_for_item(tcx, *fn_did),

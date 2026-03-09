@@ -1,3 +1,4 @@
+mod fuzzable;
 /// NOTE: This analysis module is currently under development and is highly unstable.
 /// The #[allow(unused)] attribute is applied to suppress excessive lint warnings.
 /// Once the analysis stabilizes, this marker should be removed.
@@ -126,12 +127,13 @@ impl<'tcx> Analysis for ApiDependencyAnalyzer<'tcx> {
         );
 
         rap_info!(
-            "covered APIs/covered GAPI/total GAPI: {}({:.2})/{}({:.2})/{}",
+            "Cov API/Cov GAPI/#API/#GAPI: {}({:.2})/{}({:.2})/{}/{}",
             num_covered_apis,
-            num_covered_apis as f64 / num_total as f64,
+            num_covered_apis as f64 / stats.num_api as f64,
             num_covered_generic_apis,
-            num_covered_generic_apis as f64 / num_total as f64,
-            num_total
+            num_covered_generic_apis as f64 / stats.num_generic_api as f64,
+            stats.num_api,
+            stats.num_generic_api
         );
 
         let stats_with_coverage = StatsWithCoverage {
@@ -142,7 +144,8 @@ impl<'tcx> Analysis for ApiDependencyAnalyzer<'tcx> {
         };
 
         let stats_file = std::fs::File::create("stats.json").unwrap();
-        serde_json::to_writer(stats_file, &stats_with_coverage);
+        serde_json::to_writer(stats_file, &stats_with_coverage)
+            .expect("failed to dump stats to JSON");
 
         let dot_path = format!("api_graph_{}_{}.dot", local_crate_name, local_crate_type);
         let json_path = format!("api_graph_{}_{}.json", local_crate_name, local_crate_type);
