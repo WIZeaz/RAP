@@ -220,19 +220,14 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
         self.add_mono_apis_from_map(&generic_map);
         self.update_transform_edges();
 
+        rap_info!("finish resolving generic APIs");
+        self.statistics().info();
         self.dump_to_dot(Path::new("api_graph_unpruned.dot"));
 
         let reserved = self.prune_by_similarity(generic_map);
 
         let count = self.reserve_nodes(&reserved);
         rap_info!("remove {} nodes by pruning", count);
-        let (estimate, total) = self.estimate_coverage_distinct();
-        rap_info!(
-            "estimate API coverage after pruning: {:.2} ({}/{})",
-            estimate as f64 / total as f64,
-            estimate,
-            total
-        );
     }
 
     pub fn search_reachable_apis(

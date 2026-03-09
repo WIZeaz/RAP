@@ -9,7 +9,7 @@ pub mod cli;
 pub mod def_id;
 pub mod help;
 pub mod preprocess;
-extern crate intervals;
+
 extern crate rustc_abi;
 extern crate rustc_ast;
 extern crate rustc_data_structures;

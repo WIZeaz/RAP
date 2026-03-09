@@ -47,9 +47,22 @@ pub struct ApiDependencyGraph<'tcx> {
 
 #[derive(Copy, Clone, Debug)]
 pub struct Statistics {
-    pub api_count: usize,
+    pub num_api: usize,
+    pub num_generic_api: usize,
     pub type_count: usize,
     pub edge_cnt: usize,
+}
+
+impl Statistics {
+    pub fn info(&self) {
+        rap_info!(
+            "API Graph contains {} API nodes, {} generic API nodes, {} type nodes, {} edges",
+            self.num_api,
+            self.num_generic_api,
+            self.type_count,
+            self.edge_cnt
+        );
+    }
 }
 
 impl<'tcx> ApiDependencyGraph<'tcx> {
@@ -109,13 +122,19 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
     }
 
     pub fn statistics(&self) -> Statistics {
-        let mut api_cnt = 0;
+        let mut num_api = 0;
+        let mut num_generic_api = 0;
         let mut ty_cnt = 0;
         let mut edge_cnt = 0;
 
         for node in self.graph.node_indices() {
             match self.graph[node] {
-                DepNode::Api(..) => api_cnt += 1,
+                DepNode::Api(did, ..) => {
+                    num_api += 1;
+                    if utils::fn_requires_monomorphization(did, self.tcx) {
+                        num_generic_api += 1;
+                    }
+                }
                 DepNode::Ty(_) => ty_cnt += 1,
             }
         }
@@ -125,7 +144,8 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
         }
 
         Statistics {
-            api_count: api_cnt,
+            num_api,
+            num_generic_api,
             type_count: ty_cnt,
             edge_cnt,
         }

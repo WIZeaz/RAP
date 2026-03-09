@@ -10,14 +10,42 @@ mod utils;
 mod visitor;
 
 use crate::analysis::Analysis;
+use clap::Args;
 pub use graph::ApiDependencyGraph;
 pub use graph::{DepEdge, DepNode};
 use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_middle::ty::TyCtxt;
-use serde::Deserialize;
+use serde::Serialize;
 pub use utils::{is_def_id_public, is_fuzzable_ty};
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Deserialize)]
+#[derive(Debug, Clone, Args)]
+pub struct CliArgs {
+    #[arg(long)]
+    /// Include private APIs in the API graph. By default, only public APIs are included.
+    include_private: bool,
+    #[arg(long)]
+    /// Include unsafe APIs in API graph. By default, only safe APIs are included.
+    include_unsafe: bool,
+    /// Include Drop trait in API graph. By default, Drop is not included.
+    #[arg(long)]
+    include_drop: bool,
+    /// The maximum number of iterations to search for generic APIs.
+    #[arg(long)]
+    max_iteration: usize,
+    /// The path to dump statistics to.
+    #[arg(long)]
+    dump_stats: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StatsWithCoverage {
+    pub num_apis: usize,
+    pub num_generic_apis: usize,
+    pub num_covered_apis: usize,
+    pub num_covered_generic_apis: usize,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd)]
 pub struct Config {
     pub pub_only: bool,
     pub resolve_generic: bool,
@@ -78,22 +106,44 @@ impl<'tcx> Analysis for ApiDependencyAnalyzer<'tcx> {
 
         let api_graph = &mut self.api_graph;
         api_graph.build(config);
-        let (estimate, total) = api_graph.estimate_coverage();
 
-        let statistics = api_graph.statistics();
-        // print all statistics
-        rap_info!(
-            "API Graph contains {} API nodes, {} type nodes, {} edges",
-            statistics.api_count,
-            statistics.type_count,
-            statistics.edge_cnt
+        let stats = api_graph.statistics();
+        stats.info();
+        let mut num_covered_apis = 0;
+        let mut num_covered_generic_apis = 0;
+        let mut num_total = 0;
+
+        api_graph.traverse_covered_api_with(
+            &mut |did| {
+                num_covered_apis += 1;
+                if utils::fn_requires_monomorphization(did, self.tcx) {
+                    num_covered_generic_apis += 1;
+                }
+            },
+            &mut |_| {
+                num_total += 1;
+            },
         );
+
         rap_info!(
-            "estimate coverage: {:.2} ({}/{})",
-            estimate as f64 / total as f64,
-            estimate,
-            total
+            "covered APIs/covered GAPI/total GAPI: {}({:.2})/{}({:.2})/{}",
+            num_covered_apis,
+            num_covered_apis as f64 / num_total as f64,
+            num_covered_generic_apis,
+            num_covered_generic_apis as f64 / num_total as f64,
+            num_total
         );
+
+        let stats_with_coverage = StatsWithCoverage {
+            num_apis: stats.num_api,
+            num_generic_apis: stats.num_generic_api,
+            num_covered_apis,
+            num_covered_generic_apis,
+        };
+
+        let stats_file = std::fs::File::create("stats.json").unwrap();
+        serde_json::to_writer(stats_file, &stats_with_coverage);
+
         let dot_path = format!("api_graph_{}_{}.dot", local_crate_name, local_crate_type);
         let json_path = format!("api_graph_{}_{}.json", local_crate_name, local_crate_type);
         let api_file_path = format!("apis_{}_{}.log", local_crate_name, local_crate_type);
