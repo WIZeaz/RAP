@@ -1,9 +1,10 @@
 use rustc_middle::ty::{self, Mutability, Ty};
+use serde::Serialize;
 use std::{fmt::Display, sync::OnceLock};
 
 use super::transform::TransformKind;
 
-#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug, Serialize)]
 pub enum DepEdge {
     Arg(usize),
     Ret,

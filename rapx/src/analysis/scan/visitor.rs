@@ -49,12 +49,11 @@ impl<'tcx> FnVisitor<'tcx> {
         id: LocalDefId,
     ) {
         let fn_did = id.to_def_id();
-
-        if !is_api_public(fn_did, self.tcx) {
-            return;
-        }
         rap_debug!("API path: {}", self.tcx.def_path_str(fn_did));
-        rap_debug!("type: {}", self.tcx.type_of(fn_did).instantiate_identity());
+        rap_debug!(
+            "fn_sig: {}",
+            self.tcx.type_of(fn_did).instantiate_identity()
+        );
         rap_debug!(
             "visibility: {:?}",
             self.tcx
@@ -62,6 +61,12 @@ impl<'tcx> FnVisitor<'tcx> {
                 .effective_vis(fn_did.as_local().unwrap())
                 .unwrap()
         );
+
+        if !is_api_public(fn_did, self.tcx) {
+            rap_debug!("skip for not public API");
+            return;
+        }
+
         let is_generic = self
             .tcx
             .generics_of(fn_did)

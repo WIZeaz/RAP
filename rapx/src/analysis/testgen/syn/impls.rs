@@ -2,8 +2,7 @@ use super::super::context::{Context, Stmt, StmtKind, Var};
 use super::input::InputGen;
 use super::{SynOption, Synthesizer};
 use crate::analysis::testgen::context::ExploitKind;
-use crate::analysis::testgen::path::PathResolver;
-use crate::rap_debug;
+use crate::analysis::utils::path::PathResolver;
 use rustc_middle::ty::{self, TyCtxt};
 
 pub struct FuzzDriverSynImpl<'a, 'tcx, I: InputGen> {

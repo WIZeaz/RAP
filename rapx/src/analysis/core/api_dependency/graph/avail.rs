@@ -1,4 +1,4 @@
-use super::super::visitor::FnVisitor;
+use super::super::visit::FnVisitor;
 use super::ApiDependencyGraph;
 use super::Config;
 use super::dep_edge::DepEdge;

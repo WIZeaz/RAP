@@ -3,7 +3,6 @@ mod context_builder;
 mod driver;
 mod generator;
 mod ltgen;
-mod path;
 mod syn;
 mod utils;
 

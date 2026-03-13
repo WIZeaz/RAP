@@ -8,35 +8,17 @@ pub mod graph;
 mod mono;
 mod utils;
 #[allow(unused)]
-mod visitor;
+mod visit;
 
 use crate::analysis::Analysis;
-use clap::Args;
 pub use graph::ApiDependencyGraph;
 pub use graph::{DepEdge, DepNode};
 use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_middle::ty::TyCtxt;
 use serde::Serialize;
+use std::path::PathBuf;
 pub use utils::{is_def_id_public, is_fuzzable_ty};
-
-#[derive(Debug, Clone, Args)]
-pub struct CliArgs {
-    #[arg(long)]
-    /// Include private APIs in the API graph. By default, only public APIs are included.
-    include_private: bool,
-    #[arg(long)]
-    /// Include unsafe APIs in API graph. By default, only safe APIs are included.
-    include_unsafe: bool,
-    /// Include Drop trait in API graph. By default, Drop is not included.
-    #[arg(long)]
-    include_drop: bool,
-    /// The maximum number of iterations to search for generic APIs.
-    #[arg(long)]
-    max_iteration: usize,
-    /// The path to dump statistics to.
-    #[arg(long)]
-    dump_stats: Option<String>,
-}
+pub use visit::Config as VisitConfig;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StatsWithCoverage {
@@ -46,25 +28,21 @@ pub struct StatsWithCoverage {
     pub num_covered_generic_apis: usize,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, Eq, PartialEq, PartialOrd)]
 pub struct Config {
-    pub pub_only: bool,
     pub resolve_generic: bool,
-    pub ignore_const_generic: bool,
-    pub include_unsafe: bool,
-    pub include_drop: bool,
+    pub visit_config: visit::Config,
     pub max_generic_search_iteration: usize,
+    pub dump: Option<PathBuf>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Config {
-            pub_only: true,
             resolve_generic: true,
-            ignore_const_generic: true,
-            include_unsafe: false,
-            include_drop: false,
+            visit_config: VisitConfig::default(),
             max_generic_search_iteration: 10,
+            dump: None,
         }
     }
 }
@@ -97,16 +75,15 @@ impl<'tcx> Analysis for ApiDependencyAnalyzer<'tcx> {
     fn run(&mut self) {
         let local_crate_name = self.tcx.crate_name(LOCAL_CRATE);
         let local_crate_type = self.tcx.crate_types()[0];
-        let config = self.config;
         rap_info!(
             "Build API dependency graph on {} ({}), config = {:?}",
             local_crate_name.as_str(),
             local_crate_type,
-            config,
+            self.config,
         );
 
         let api_graph = &mut self.api_graph;
-        api_graph.build(config);
+        api_graph.build(&self.config);
 
         let stats = api_graph.statistics();
         stats.info();
@@ -126,6 +103,8 @@ impl<'tcx> Analysis for ApiDependencyAnalyzer<'tcx> {
             },
         );
 
+        rap_info!("uncovered APIs: {:?}", api_graph.uncovered_api());
+
         rap_info!(
             "Cov API/Cov GAPI/#API/#GAPI: {}({:.2})/{}({:.2})/{}/{}",
             num_covered_apis,
@@ -143,21 +122,20 @@ impl<'tcx> Analysis for ApiDependencyAnalyzer<'tcx> {
             num_covered_generic_apis,
         };
 
-        let stats_file = std::fs::File::create("stats.json").unwrap();
+        // dump adg stats
+        let stats_file = std::fs::File::create("adg_stats.json").unwrap();
         serde_json::to_writer(stats_file, &stats_with_coverage)
             .expect("failed to dump stats to JSON");
 
-        let dot_path = format!("api_graph_{}_{}.dot", local_crate_name, local_crate_type);
-        let json_path = format!("api_graph_{}_{}.json", local_crate_name, local_crate_type);
-        let api_file_path = format!("apis_{}_{}.log", local_crate_name, local_crate_type);
-        rap_info!("uncovered APIs: {:?}", api_graph.uncovered_api());
-        rap_info!("Dump API dependency graph to {}", dot_path);
-        api_graph.dump_to_dot(dot_path);
-        api_graph
-            .dump_to_json(&json_path)
-            .expect("failed to dump API graph to JSON");
-        api_graph.dump_apis(api_file_path);
-        rap_info!("Dump API dependency graph to {}", json_path);
+        // dump API graph, determine the format base on extension name
+        if let Some(dump_path) = &self.config.dump {
+            self.api_graph
+                .dump(dump_path)
+                .inspect_err(|err| {
+                    rap_error!("{:?}", err);
+                })
+                .expect("failed to dump API graph");
+        }
     }
 
     fn reset(&mut self) {

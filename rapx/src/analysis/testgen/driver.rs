@@ -1,4 +1,3 @@
-use super::path::get_path_resolver;
 use crate::analysis::Analysis;
 use crate::analysis::core::alias_analysis::{AliasAnalysis, FnAliasMap};
 use crate::analysis::core::api_dependency::ApiDependencyAnalysis;
@@ -8,7 +7,7 @@ use crate::analysis::testgen::syn::impls::FuzzDriverSynImpl;
 use crate::analysis::testgen::syn::input::RandomGen;
 use crate::analysis::testgen::syn::project::{CargoProjectBuilder, PocProject, RsProjectOption};
 use crate::analysis::testgen::syn::{SynOption, Synthesizer};
-use crate::{rap_error, rap_info, rap_warn};
+use crate::analysis::utils::path::get_path_resolver;
 use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_middle::ty::TyCtxt;
 use serde::Deserialize;
@@ -146,12 +145,16 @@ pub fn driver_main(tcx: TyCtxt<'_>) -> Result<(), Box<dyn std::error::Error>> {
     let mut api_analyzer = api_dependency::ApiDependencyAnalyzer::new(
         tcx,
         api_dependency::Config {
-            pub_only: true,
             resolve_generic: true,
-            ignore_const_generic: true,
-            include_unsafe: false,
-            include_drop: false,
+            visit_config: api_dependency::VisitConfig {
+                pub_only: true,
+                include_generic: true,
+                ignore_const_generic: true,
+                include_unsafe: false,
+                include_drop: false,
+            },
             max_generic_search_iteration: 10,
+            dump: None,
         },
     );
     api_analyzer.run();

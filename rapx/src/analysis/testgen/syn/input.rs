@@ -1,3 +1,4 @@
+use crate::analysis::utils::path::PathResolver;
 use rand::{Rng, rngs::ThreadRng, seq::IndexedRandom};
 use rustc_abi::FIRST_VARIANT;
 use rustc_hir::LangItem;
@@ -5,8 +6,6 @@ use rustc_middle::ty::{AdtDef, GenericArgsRef, Ty, TyCtxt, TyKind};
 use rustc_span::sym;
 use rustc_type_ir::{IntTy, UintTy};
 use std::ops::Range;
-
-use crate::analysis::testgen::{path::PathResolver, utils::is_fuzzable_ty};
 
 // fn int_ty_suffix()
 

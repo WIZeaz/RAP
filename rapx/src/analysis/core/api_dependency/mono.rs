@@ -238,12 +238,12 @@ fn is_args_fit_trait_bound<'tcx>(
     tcx: TyCtxt<'tcx>,
 ) -> bool {
     let args = tcx.mk_args(args);
-    // rap_info!(
-    //     "fn: {:?} args: {:?} identity: {:?}",
-    //     fn_did,
-    //     args,
-    //     ty::GenericArgs::identity_for_item(tcx, fn_did)
-    // );
+    rap_trace!(
+        "fn: {:?} args: {:?} identity: {:?}",
+        fn_did,
+        args,
+        ty::GenericArgs::identity_for_item(tcx, fn_did)
+    );
     let infcx = tcx.infer_ctxt().build(ty::TypingMode::PostAnalysis);
     let pred = tcx.predicates_of(fn_did);
     let inst_pred = pred.instantiate(tcx, args);
@@ -260,6 +260,7 @@ fn is_args_fit_trait_bound<'tcx>(
             param_env,
             pred.as_predicate(),
         );
+        rap_trace!("[trait bound] check pred: {:?}", pred);
 
         let res = infcx.evaluate_obligation(&obligation);
         match res {
@@ -636,18 +637,18 @@ pub fn get_impls<'tcx>(
     fn_did: DefId,
     args: GenericArgsRef<'tcx>,
 ) -> HashSet<DefId> {
+    rap_debug!(
+        "get impls for fn: {:?} args: {:?}",
+        tcx.def_path_str_with_args(fn_did, args),
+        args
+    );
     let mut impls = HashSet::new();
     let preds = tcx.predicates_of(fn_did).instantiate(tcx, args);
     for (pred, _) in preds {
         if let Some(trait_pred) = pred.as_trait_clause() {
-            let trait_ref: rustc_type_ir::TraitRef<TyCtxt<'tcx>> =
-                trait_pred.skip_binder().trait_ref;
-            // ignore Sized trait
-            // if tcx.is_lang_item(trait_ref.def_id, LangItem::Sized)
-            //     || tcx.def_path_str(trait_ref.def_id) == "std::default::Default"
-            // {
-            //     continue;
-            // }
+            let trait_ref: rustc_type_ir::TraitRef<TyCtxt<'tcx>> = tcx
+                .liberate_late_bound_regions(fn_did, trait_pred)
+                .trait_ref;
 
             let res = tcx.codegen_select_candidate(
                 TypingEnv::fully_monomorphized().as_query_input(trait_ref),

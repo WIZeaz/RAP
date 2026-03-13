@@ -5,6 +5,7 @@ use rustc_middle::ty::{self, Ty, TyCtxt, TyKind};
 use rustc_span::Ident;
 use std::collections::HashMap;
 
+/// A utility to resolve the actual visible path for re-export items.
 pub struct PathResolver<'tcx> {
     tcx: TyCtxt<'tcx>,
     path_map: HashMap<DefId, String>,
@@ -53,11 +54,18 @@ impl<'tcx> PathResolver<'tcx> {
         }
     }
 
-    pub fn non_assoc_path_str(&self, def_id: DefId) -> String {
+    fn non_assoc_path_str(&self, def_id: DefId) -> String {
         match self.path_map.get(&def_id) {
             Some(path) => path.clone(),
             None => {
-                rap_debug!("[PathResolver] cannot find path for {:?}", def_id);
+                // if def_id is from local crate, but we cannot find it in path_map,
+                // report this error.
+                if def_id.is_local() {
+                    rap_error!(
+                        "[PathResolver] cannot find path for {:?}, fallback to self.tcx.def_path_str",
+                        def_id
+                    );
+                }
                 self.tcx.def_path_str(def_id)
             }
         }
@@ -118,7 +126,7 @@ impl<'tcx> PathResolver<'tcx> {
                             "<{} as {}{}>",
                             self_ty_str,
                             trait_str,
-                            self.generic_arg_str(&trait_ref.args[1..])
+                            self.generic_args_str(&trait_ref.args[1..])
                         )
                     } else {
                         format!("<{} as {}>", self_ty_str, trait_str)
@@ -142,7 +150,7 @@ impl<'tcx> PathResolver<'tcx> {
                             "<{} as {}{}>",
                             self_ty_str,
                             trait_str,
-                            self.generic_arg_str(&parent_args[1..])
+                            self.generic_args_str(&parent_args[1..])
                         )
                     } else {
                         format!("<{} as {}>", self_ty_str, trait_str)
@@ -164,7 +172,7 @@ impl<'tcx> PathResolver<'tcx> {
                     "{}::{}::{}",
                     parent_path_str,
                     self.tcx.item_name(def_id),
-                    self.generic_arg_str(own_args)
+                    self.generic_args_str(own_args)
                 )
             } else {
                 format!("{}::{}", parent_path_str, self.tcx.item_name(def_id))
@@ -174,7 +182,7 @@ impl<'tcx> PathResolver<'tcx> {
                 format!(
                     "{}::{}",
                     self.non_assoc_path_str(def_id),
-                    self.generic_arg_str(args)
+                    self.generic_args_str(args)
                 )
             } else {
                 format!("{}", self.non_assoc_path_str(def_id))
@@ -182,16 +190,21 @@ impl<'tcx> PathResolver<'tcx> {
         }
     }
 
-    fn generic_arg_str(&self, generic_args: &[ty::GenericArg<'tcx>]) -> String {
-        let mut args: Vec<String> = Vec::new();
-        for arg in generic_args {
-            args.push(match arg.kind() {
-                // ty::GenericArgKind::Lifetime(re) => re.to_string(),
-                ty::GenericArgKind::Lifetime(_) => "'_".to_string(),
-                ty::GenericArgKind::Type(ty) => self.ty_str(ty),
-                ty::GenericArgKind::Const(const_) => format!("{}", const_),
-            });
+    pub fn generic_arg_str(&self, arg: ty::GenericArg<'tcx>) -> String {
+        match arg.kind() {
+            ty::GenericArgKind::Lifetime(_) => "'_".to_string(),
+            ty::GenericArgKind::Type(ty) => self.ty_str(ty),
+            ty::GenericArgKind::Const(const_) => format!("{}", const_),
         }
-        format!("<{}>", args.join(", "))
+    }
+
+    fn generic_args_str(&self, generic_args: &[ty::GenericArg<'tcx>]) -> String {
+        format!(
+            "<{}>",
+            generic_args
+                .iter()
+                .map(|arg| self.generic_arg_str(*arg))
+                .join(", ")
+        )
     }
 }

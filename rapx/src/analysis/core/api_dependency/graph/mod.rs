@@ -3,12 +3,13 @@ pub mod dep_edge;
 pub mod dep_node;
 mod resolve;
 mod serialize;
+mod std_tys;
 pub mod transform;
 mod ty_wrapper;
 
 use super::Config;
 use super::utils;
-use super::visitor::FnVisitor;
+use super::visit::{self, FnVisitor};
 use crate::analysis::core::api_dependency::is_fuzzable_ty;
 use crate::analysis::utils::def_path::path_str_def_id;
 use crate::rap_debug;
@@ -93,9 +94,9 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
         self.tcx
     }
 
-    pub fn build(&mut self, config: Config) {
+    pub fn build(&mut self, config: &Config) {
         let tcx = self.tcx();
-        let mut visitor = FnVisitor::new(config, tcx);
+        let mut visitor = FnVisitor::new(config.visit_config, tcx);
 
         // 1. collect APIs
         tcx.hir_visit_all_item_likes_in_crate(&mut visitor);

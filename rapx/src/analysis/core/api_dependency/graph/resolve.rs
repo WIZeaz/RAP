@@ -4,11 +4,12 @@ use super::dep_node::{DepNode, desc_str};
 use super::transform::TransformKind;
 use super::ty_wrapper::TyWrapper;
 use crate::analysis::core::api_dependency::ApiDependencyGraph;
+use crate::analysis::core::api_dependency::graph::std_tys;
 use crate::analysis::core::api_dependency::mono::{Mono, get_mono_complexity};
 use crate::analysis::core::api_dependency::utils::{
     fn_requires_monomorphization, is_fuzzable_ty, ty_complexity,
 };
-use crate::analysis::core::api_dependency::visitor::FnVisitor;
+use crate::analysis::core::api_dependency::visit::FnVisitor;
 use crate::analysis::core::api_dependency::{mono, utils};
 use crate::analysis::utils::def_path::path_str_def_id;
 use crate::utils::fs::rap_create_file;
@@ -139,12 +140,6 @@ impl<'tcx> TypeCandidates<'tcx> {
 
     pub fn add_prelude_tys(&mut self) {
         let tcx = self.tcx;
-        // let vec_def_id = path_str_def_id(tcx, "std::vec::Vec");
-        let vec_def_id = tcx.get_diagnostic_item(sym::Vec).unwrap();
-        let vec_ty_for = |element_ty: Ty<'tcx>| {
-            let args = self.tcx.mk_args(&[ty::GenericArg::from(element_ty)]);
-            Ty::new_adt(self.tcx, self.tcx.adt_def(vec_def_id), args)
-        };
 
         let primitive_tys = [
             tcx.types.bool,
@@ -177,7 +172,7 @@ impl<'tcx> TypeCandidates<'tcx> {
         ));
         for element_ty in &primitive_tys {
             // Vec<T>
-            prelude_tys.push(vec_ty_for(*element_ty));
+            prelude_tys.push(std_tys::std_vec(*element_ty, self.tcx));
         }
         prelude_tys.into_iter().for_each(|ty| {
             self.insert_all(ty);
@@ -269,7 +264,6 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
             // if the api is reachable, add output type to reachble_tys,
             // and remove it from the set.
             unreachable_non_generic_api.retain(|fn_did| {
-                rap_info!("check {:?}", fn_did);
                 !add_return_type_if_reachable(
                     *fn_did,
                     ty::GenericArgs::identity_for_item(tcx, *fn_did),
@@ -330,6 +324,8 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
         }
     }
 
+    /// heuristic strategy: prioritize to reserve APIs that first arg of which is reachable.
+    /// This is based on that we want to reserve APIs that have the same Self type ASAP.
     pub fn heuristic_select(&mut self, reserved: &mut [bool]) {
         let mut worklist = VecDeque::new();
         let mut visited = vec![false; self.graph.node_count()];
@@ -337,7 +333,7 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
         let mut count_map: HashMap<DefId, usize> = HashMap::new();
 
         // traverse from start node, if a node can achieve a reserved node,
-        // this node should be reserved as well
+        // this node should be reserved
         for node in self.graph.node_indices() {
             if self.is_start_node_index(node) {
                 rap_trace!("initial node {:?}", self.graph[node]);

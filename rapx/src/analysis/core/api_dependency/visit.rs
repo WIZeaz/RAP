@@ -1,4 +1,3 @@
-use super::Config;
 use super::graph::ApiDependencyGraph;
 use super::graph::{DepEdge, DepNode};
 use super::is_def_id_public;
@@ -13,6 +12,27 @@ use rustc_hir::{
 use rustc_middle::ty::{self, FnSig, ParamEnv, Ty, TyCtxt, TyKind};
 use rustc_span::Span;
 use std::io::Write;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Hash)]
+pub struct Config {
+    pub ignore_const_generic: bool,
+    pub include_unsafe: bool,
+    pub include_drop: bool,
+    pub include_generic: bool,
+    pub pub_only: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            pub_only: true,
+            ignore_const_generic: true,
+            include_unsafe: false,
+            include_drop: false,
+            include_generic: true,
+        }
+    }
+}
 
 pub struct FnVisitor<'tcx> {
     tcx: TyCtxt<'tcx>,
@@ -119,7 +139,7 @@ impl<'tcx> Visitor<'tcx> for FnVisitor<'tcx> {
         let is_generic = generics.requires_monomorphization(self.tcx);
 
         // if config.resolve_generic is false, skip all generic functions
-        if !self.config.resolve_generic && is_generic {
+        if !self.config.include_generic && is_generic {
             rap_trace!("skip generic fn");
             return;
         }

@@ -8,11 +8,6 @@ use rustc_middle::{
 
 use rustc_hir::def_id::DefId;
 
-#[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
-enum IntrinsicKind {
-    Borrow,
-}
-
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum DepNode<'tcx> {
     Api(DefId, ty::GenericArgsRef<'tcx>),

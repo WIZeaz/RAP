@@ -196,7 +196,7 @@ pub fn start_analyzer(tcx: TyCtxt, callback: &RapCallback) {
             }
         }
 
-        &Commands::Analyze { kind } => match kind {
+        Commands::Analyze { kind } => match kind {
             AnalysisKind::Alias { strategy } => {
                 let alias = match strategy {
                     AliasStrategyKind::Mop => {
@@ -212,9 +212,20 @@ pub fn start_analyzer(tcx: TyCtxt, callback: &RapCallback) {
                 };
                 rap_info!("{}", FnAliasMapWrapper(alias));
             }
-            AnalysisKind::Adg => {
-                let mut analyzer =
-                    ApiDependencyAnalyzer::new(tcx, api_dependency::Config::default());
+            AnalysisKind::Adg(args) => {
+                let config = api_dependency::Config {
+                    resolve_generic: true,
+                    visit_config: api_dependency::VisitConfig {
+                        pub_only: !args.include_private,
+                        include_generic: true,
+                        ignore_const_generic: true,
+                        include_unsafe: args.include_unsafe,
+                        include_drop: args.include_drop,
+                    },
+                    max_generic_search_iteration: args.max_iteration,
+                    dump: args.dump.clone(),
+                };
+                let mut analyzer = ApiDependencyAnalyzer::new(tcx, config);
                 analyzer.run();
             }
             AnalysisKind::Upg => {
@@ -235,7 +246,7 @@ pub fn start_analyzer(tcx: TyCtxt, callback: &RapCallback) {
                     }
                 );
             }
-            AnalysisKind::Dataflow { debug } => {
+            &AnalysisKind::Dataflow { debug } => {
                 if debug {
                     let mut analyzer = DataFlowAnalyzer::new(tcx, true);
                     analyzer.run();
@@ -260,7 +271,7 @@ pub fn start_analyzer(tcx: TyCtxt, callback: &RapCallback) {
                 let result = analyzer.get_all_path_constraints();
                 rap_info!("{}", PathConstraintMapWrapper(result));
             }
-            AnalysisKind::Range { debug } => {
+            &AnalysisKind::Range { debug } => {
                 let mut analyzer = RangeAnalyzer::<i64>::new(tcx, debug);
                 analyzer.run();
                 let result = analyzer.get_all_fn_ranges();
@@ -280,7 +291,7 @@ pub fn start_analyzer(tcx: TyCtxt, callback: &RapCallback) {
                 SSATrans::new(tcx, false).start();
             }
         },
-        &Commands::Test => {
+        Commands::Test => {
             Testgen::new(tcx).start();
         }
     }
