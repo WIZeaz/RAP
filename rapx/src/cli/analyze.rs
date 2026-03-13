@@ -16,7 +16,7 @@ pub struct AdgArgs {
     #[arg(long, default_value_t = 10)]
     pub max_iteration: usize,
     /// The path to dump the API graph to. Output format is decided by extension suffix.
-    /// By default, the graph will be dumped to `./api_graph.dot`.
+    /// default PATH = `./api_graph.dot`.
     #[arg(long, default_missing_value = "./api_graph.dot", value_name = "PATH")]
     pub dump: Option<PathBuf>,
 }
