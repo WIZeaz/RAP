@@ -258,7 +258,7 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
                         .fold(1.0, |acc, &var| acc + builder.step_of(var) as f32);
 
                     // FIXME: depth_of sometimes return LARGE_ENOUGH
-                    let api_score = self
+                    let _api_score = self
                         .depth_of(action.node)
                         .expect(&format!("visit unexpected node: {:?}", action.node))
                         as f32;

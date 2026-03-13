@@ -14,13 +14,6 @@ pub enum DepNode<'tcx> {
     Ty(TyWrapper<'tcx>),
 }
 
-pub fn desc_str<'tcx>(node: DepNode<'tcx>, tcx: TyCtxt<'tcx>) -> String {
-    match node {
-        DepNode::Api(def_id, args) => tcx.def_path_str_with_args(def_id, args),
-        DepNode::Ty(ty) => ty.desc_str(tcx),
-    }
-}
-
 impl<'tcx> DepNode<'tcx> {
     pub fn api(id: impl IntoQueryParam<DefId>, args: ty::GenericArgsRef<'tcx>) -> DepNode<'tcx> {
         DepNode::Api(id.into_query_param(), args)
@@ -55,6 +48,13 @@ impl<'tcx> DepNode<'tcx> {
             _ => {
                 panic!("{self:?} is not an api")
             }
+        }
+    }
+
+    pub fn desc_str(&self, tcx: TyCtxt<'tcx>) -> String {
+        match self {
+            DepNode::Api(def_id, args) => tcx.def_path_str_with_args(*def_id, *args),
+            DepNode::Ty(ty) => ty.desc_str(tcx),
         }
     }
 }

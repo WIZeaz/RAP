@@ -160,7 +160,7 @@ pub fn driver_main(tcx: TyCtxt<'_>) -> Result<(), Box<dyn std::error::Error>> {
     api_analyzer.run();
     let api_dep_graph = api_analyzer.get_api_dependency_graph();
 
-    api_dep_graph.dump_to_dot(workspace_dir.join("api_graph.dot"));
+    api_dep_graph.dump_to_file(workspace_dir.join("api_graph.dot"));
 
     let mut alias_analyzer = alias_analysis::default::AliasAnalyzer::new(tcx);
     alias_analyzer.run();

@@ -6,7 +6,6 @@ use crate::analysis::testgen::context::{
 use crate::analysis::testgen::context::{Stmt, Var};
 use crate::analysis::testgen::context_builder::{ContextBuilder, is_ty_move_on_call};
 use crate::analysis::testgen::utils;
-use crate::{rap_debug, rap_trace};
 use itertools::Itertools;
 use rustc_hir::LangItem;
 use rustc_hir::def_id::DefId;
@@ -56,7 +55,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
                         + 1
                 }
                 StmtKind::Comment(_) | StmtKind::Exploit(..) => unreachable!(),
-                StmtKind::Ctor(ctor_dict) => todo!(),
+                StmtKind::Ctor(_ctor_dict) => todo!(),
             };
             self.set_step_of(place, num_steps);
         }

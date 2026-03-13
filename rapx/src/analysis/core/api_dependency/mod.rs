@@ -130,7 +130,7 @@ impl<'tcx> Analysis for ApiDependencyAnalyzer<'tcx> {
         // dump API graph, determine the format base on extension name
         if let Some(dump_path) = &self.config.dump {
             self.api_graph
-                .dump(dump_path)
+                .dump_to_file(dump_path)
                 .inspect_err(|err| {
                     rap_error!("{:?}", err);
                 })

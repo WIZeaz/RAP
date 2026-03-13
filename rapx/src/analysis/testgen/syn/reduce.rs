@@ -2,7 +2,7 @@ use super::super::driver;
 use super::project::PocProject;
 use std::{
     fs,
-    io::{self, Write},
+    io::{self},
 };
 
 fn join_lines_if(lines: &[&str], reserved: &[bool]) -> String {

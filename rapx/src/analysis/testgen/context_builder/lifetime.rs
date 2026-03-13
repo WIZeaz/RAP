@@ -1,7 +1,6 @@
 use super::pattern::EdgePatterns;
 use super::pattern::PatternNode;
 use crate::analysis::testgen::context::Var;
-use crate::{rap_debug, rap_trace};
 use bit_set::BitSet;
 use petgraph::dot::{Config, Dot};
 use petgraph::graph::NodeIndex;
@@ -200,7 +199,7 @@ impl RegionGraph {
     }
 
     pub fn dump(&self, os: &mut impl Write) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let dot = petgraph::dot::Dot::new(&self.inner);
+        let _dot = petgraph::dot::Dot::new(&self.inner);
 
         let get_node_attr = |_, node_ref: (NodeIndex, &RegionNode)| {
             format!(
@@ -264,7 +263,7 @@ impl RegionGraph {
     pub fn for_each_var_from(&self, src_rid: Rid, f: &mut impl FnMut(Var)) {
         let mut visited = BitSet::with_capacity(self.total_node_count());
         let mut q = VecDeque::new();
-        let src_var = self.get_node(src_rid).as_var().unwrap();
+        let _src_var = self.get_node(src_rid).as_var().unwrap();
         q.push_back(src_rid);
         visited.insert(src_rid.index());
         while let Some(rid) = q.pop_front() {

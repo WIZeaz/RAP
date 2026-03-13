@@ -26,9 +26,9 @@ pub trait InputGen {
 
     fn gen_custom<'tcx>(
         &mut self,
-        ty: Ty<'tcx>,
-        tcx: TyCtxt<'tcx>,
-        resolver: &PathResolver<'tcx>,
+        _ty: Ty<'tcx>,
+        _tcx: TyCtxt<'tcx>,
+        _resolver: &PathResolver<'tcx>,
     ) -> Option<String> {
         None
     }
@@ -115,11 +115,11 @@ impl InputGen for SillyInputGen {
         false
     }
 
-    fn gen_int(&mut self, int_ty: IntTy) -> i64 {
+    fn gen_int(&mut self, _int_ty: IntTy) -> i64 {
         42
     }
 
-    fn gen_uint(&mut self, uint_ty: UintTy) -> u64 {
+    fn gen_uint(&mut self, _uint_ty: UintTy) -> u64 {
         42
     }
 
@@ -205,11 +205,11 @@ impl<R: Rng> InputGen for RandomGen<R> {
         self.rng.random()
     }
 
-    fn gen_int(&mut self, int_ty: IntTy) -> i64 {
+    fn gen_int(&mut self, _int_ty: IntTy) -> i64 {
         self.rng.random_range(range_for_int_ty(IntTy::I8))
     }
 
-    fn gen_uint(&mut self, uint_ty: UintTy) -> u64 {
+    fn gen_uint(&mut self, _uint_ty: UintTy) -> u64 {
         self.rng.random_range(range_for_uint_ty(UintTy::U8))
     }
 

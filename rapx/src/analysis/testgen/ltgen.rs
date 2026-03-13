@@ -5,7 +5,6 @@ use crate::analysis::core::alias_analysis::FnAliasMap;
 use crate::analysis::core::api_dependency::{ApiDependencyGraph, DepNode, graph::TransformKind};
 use crate::analysis::testgen::context::DUMMY_INPUT_VAR;
 use crate::analysis::testgen::utils::{self};
-use crate::{rap_debug, rap_info};
 use itertools::Itertools;
 use rand::rngs::ThreadRng;
 use rand::{self, Rng};

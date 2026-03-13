@@ -6,9 +6,8 @@ use super::utils::{self};
 use itertools::Itertools;
 use rustc_middle::ty::{self, Ty, TyCtxt};
 use std::collections::HashMap;
-pub use stmt::{ApiCall, CtorDict, ExploitKind, Stmt, StmtKind};
+pub use stmt::{ApiCall, ExploitKind, Stmt, StmtKind};
 pub use var::*;
-pub use var_set::*;
 
 #[derive(Clone)]
 pub struct Context<'tcx> {

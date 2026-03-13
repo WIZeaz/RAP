@@ -1,8 +1,8 @@
 pub mod avail;
 pub mod dep_edge;
 pub mod dep_node;
+mod dump;
 mod resolve;
-mod serialize;
 mod std_tys;
 pub mod transform;
 mod ty_wrapper;
@@ -17,7 +17,7 @@ use crate::rap_trace;
 use crate::utils::fs::rap_create_file;
 use bit_set::BitSet;
 pub use dep_edge::DepEdge;
-pub use dep_node::{DepNode, desc_str};
+pub use dep_node::DepNode;
 use petgraph::Direction;
 use petgraph::Graph;
 use petgraph::dot;
@@ -432,38 +432,6 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
             },
         );
         (estimate.len(), total.len())
-    }
-
-    pub fn dump_to_dot<P: AsRef<Path>>(&self, path: P) {
-        let tcx = self.tcx;
-        let get_edge_attr =
-            |graph: &Graph<DepNode<'tcx>, DepEdge>,
-             edge_ref: petgraph::graph::EdgeReference<DepEdge>| {
-                let color = match edge_ref.weight() {
-                    DepEdge::Arg(_) | DepEdge::Ret => "black",
-                    DepEdge::Transform(_) => "darkorange",
-                };
-                format!("label=\"{}\", color = {}", edge_ref.weight(), color)
-            };
-        let get_node_attr = |graph: &Graph<DepNode<'tcx>, DepEdge>,
-                             node_ref: (NodeIndex, &DepNode<'tcx>)| {
-            format!("label={:?}, ", desc_str(node_ref.1.clone(), tcx))
-                + match node_ref.1 {
-                    DepNode::Api(..) => "color = blue",
-                    DepNode::Ty(_) => "color = red",
-                }
-                + ", shape=box"
-        };
-
-        let dot = dot::Dot::with_attr_getters(
-            &self.graph,
-            &[dot::Config::NodeNoLabel, dot::Config::EdgeNoLabel],
-            &get_edge_attr,
-            &get_node_attr,
-        );
-        let mut file = rap_create_file(path, "can not create dot file");
-        write!(&mut file, "{:?}", dot).expect("fail when writing data to dot file");
-        // println!("{:?}", dot);
     }
 
     pub fn dump_apis<P: AsRef<Path>>(&self, path: P) {

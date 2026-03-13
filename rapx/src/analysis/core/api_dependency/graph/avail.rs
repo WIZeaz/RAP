@@ -2,7 +2,7 @@ use super::super::visit::FnVisitor;
 use super::ApiDependencyGraph;
 use super::Config;
 use super::dep_edge::DepEdge;
-use super::dep_node::{DepNode, desc_str};
+use super::dep_node::DepNode;
 use super::transform::TransformKind;
 use super::ty_wrapper::TyWrapper;
 use super::utils;

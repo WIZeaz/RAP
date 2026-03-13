@@ -194,7 +194,7 @@ impl<'a, 'tcx, I: InputGen> FuzzDriverSynImpl<'a, 'tcx, I> {
 }
 
 impl<'a, 'tcx, I: InputGen> Synthesizer<'tcx> for FuzzDriverSynImpl<'a, 'tcx, I> {
-    fn syn(&mut self, cx: &Context<'tcx>, tcx: TyCtxt<'tcx>) -> String {
+    fn syn(&mut self, cx: &Context<'tcx>, _tcx: TyCtxt<'tcx>) -> String {
         format!("{}\n{}", self.header_str(), self.main_str(cx))
     }
 }

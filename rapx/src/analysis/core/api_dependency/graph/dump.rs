@@ -2,10 +2,17 @@ use super::dep_edge::DepEdge;
 use super::dep_node::DepNode;
 use crate::analysis::core::api_dependency::ApiDependencyGraph;
 use crate::analysis::utils::path::{PathResolver, get_path_resolver};
+use crate::utils::fs::rap_create_file;
+use anyhow::Result;
 use itertools::Itertools;
+use petgraph::Graph;
+use petgraph::dot;
+use petgraph::graph::NodeIndex;
 use rustc_middle::ty::{self, Ty, TyCtxt, TyKind};
 use rustc_middle::ty::{GenericArgsRef, List};
 use serde::{Serialize, ser::SerializeMap};
+use serde_yaml;
+use std::io::Write;
 use std::mem::MaybeUninit;
 use std::path::Path;
 
@@ -29,15 +36,19 @@ struct EdgeInfo {
 }
 
 impl<'tcx> ApiDependencyGraph<'tcx> {
-    pub fn dump(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
+    pub fn dump_to_file(&self, path: impl AsRef<Path>) -> Result<()> {
         let dump_path = path.as_ref();
+        let file = std::fs::File::create(path.as_ref())?;
         match dump_path.extension() {
             Some(ext) if ext == "json" => {
-                self.dump_to_json(dump_path)
-                    .expect("failed to dump API graph to JSON");
+                serde_json::to_writer_pretty(file, self)?;
             }
             Some(ext) if ext == "dot" => {
-                self.dump_to_dot(dump_path);
+                let dot_str = self.dump_to_dot();
+                std::fs::write(dump_path, dot_str)?;
+            }
+            Some(ext) if ext == "yml" || ext == "yaml" => {
+                serde_yaml::to_writer(file, self)?;
             }
             _ => {
                 rap_info!(
@@ -47,12 +58,6 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
             }
         }
         rap_info!("Dump API dependency graph to {}", dump_path.display());
-        Ok(())
-    }
-
-    pub fn dump_to_json(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
-        let file = std::fs::File::create(path)?;
-        serde_json::to_writer_pretty(file, self)?;
         Ok(())
     }
 }
@@ -136,5 +141,37 @@ impl<'tcx> Serialize for ApiDependencyGraph<'tcx> {
         map.serialize_entry("nodes", &nodes)?;
         map.serialize_entry("edges", &edges)?;
         map.end()
+    }
+}
+
+impl<'tcx> ApiDependencyGraph<'tcx> {
+    pub fn dump_to_dot(&self) -> String {
+        let tcx = self.tcx;
+        let get_edge_attr =
+            |graph: &Graph<DepNode<'tcx>, DepEdge>,
+             edge_ref: petgraph::graph::EdgeReference<DepEdge>| {
+                let color = match edge_ref.weight() {
+                    DepEdge::Arg(_) | DepEdge::Ret => "black",
+                    DepEdge::Transform(_) => "darkorange",
+                };
+                format!("label=\"{}\", color = {}", edge_ref.weight(), color)
+            };
+        let get_node_attr = |graph: &Graph<DepNode<'tcx>, DepEdge>,
+                             node_ref: (NodeIndex, &DepNode<'tcx>)| {
+            format!("label={:?}, ", node_ref.1.desc_str(tcx))
+                + match node_ref.1 {
+                    DepNode::Api(..) => "color = blue",
+                    DepNode::Ty(_) => "color = red",
+                }
+                + ", shape=box"
+        };
+
+        let dot = dot::Dot::with_attr_getters(
+            &self.graph,
+            &[dot::Config::NodeNoLabel, dot::Config::EdgeNoLabel],
+            &get_edge_attr,
+            &get_node_attr,
+        );
+        format!("{:?}", dot)
     }
 }

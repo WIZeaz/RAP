@@ -1,6 +1,6 @@
 use super::Config;
 use super::dep_edge::DepEdge;
-use super::dep_node::{DepNode, desc_str};
+use super::dep_node::DepNode;
 use super::transform::TransformKind;
 use super::ty_wrapper::TyWrapper;
 use crate::analysis::core::api_dependency::ApiDependencyGraph;
@@ -217,7 +217,7 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
 
         rap_info!("finish resolving generic APIs");
         self.statistics().info();
-        self.dump_to_dot(Path::new("api_graph_unpruned.dot"));
+        self.dump_to_file(Path::new("api_graph_unpruned.dot"));
 
         let reserved = self.prune_by_similarity(generic_map);
 

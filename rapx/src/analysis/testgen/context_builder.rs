@@ -5,10 +5,9 @@ mod pattern;
 mod safety;
 mod var_state;
 
-use crate::analysis::core::alias_analysis::{FnAliasMap, FnAliasPairs};
+use crate::analysis::core::alias_analysis::FnAliasMap;
 use crate::analysis::testgen::context::{Context, DUMMY_UNIT_VAR, ExploitKind, Var};
 use crate::analysis::testgen::utils;
-use crate::rap_debug;
 use bit_set::BitSet;
 use lifetime::visit_ty_region_with;
 use lifetime::{RegionGraph, Rid};
@@ -17,7 +16,7 @@ use rustc_hir::def_id::DefId;
 use rustc_infer::infer::TyCtxtInferExt;
 use rustc_middle::ty::{self, ParamEnv, Ty, TyCtxt, TypingMode};
 use rustc_trait_selection::infer::InferCtxtExt;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 pub fn is_ty_move_on_call<'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'tcx>) -> bool {
     !utils::is_ty_impl_copy(ty, tcx) || ty.is_ref()
