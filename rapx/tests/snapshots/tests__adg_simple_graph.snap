@@ -19,10 +19,15 @@ nodes:
 edges:
 - from: 0
   to: 1
-  kind: Ret
+  kind:
+    type: Ret
 - from: 1
   to: 2
-  kind: !Arg 0
+  kind:
+    type: Arg
+    no: 0
 - from: 3
   to: 4
-  kind: !Arg 0
+  kind:
+    type: Arg
+    no: 0
