@@ -8,6 +8,7 @@ use crate::analysis::testgen::syn::input::RandomGen;
 use crate::analysis::testgen::syn::project::{CargoProjectBuilder, PocProject, RsProjectOption};
 use crate::analysis::testgen::syn::{SynOption, Synthesizer};
 use crate::analysis::utils::path::get_path_resolver;
+use anyhow::Result;
 use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_middle::ty::TyCtxt;
 use serde::Deserialize;
@@ -88,11 +89,7 @@ impl Config {
     }
 }
 
-pub fn dump_alias_map(
-    alias_map: &FnAliasMap,
-    mut os: impl Write,
-    tcx: TyCtxt<'_>,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn dump_alias_map(alias_map: &FnAliasMap, mut os: impl Write, tcx: TyCtxt<'_>) -> Result<()> {
     for (did, aliases) in alias_map {
         if tcx.is_closure_like(*did) {
             continue;
@@ -120,7 +117,7 @@ fn asan_env_vars() -> &'static [(&'static str, &'static str)] {
     &[("RUSTFLAGS", "-Awarnings -Zsanitizer=address")]
 }
 
-pub fn driver_main(tcx: TyCtxt<'_>) -> Result<(), Box<dyn std::error::Error>> {
+pub fn driver_main(tcx: TyCtxt<'_>) -> Result<()> {
     let config = Config::load()?;
     let local_crate_name = tcx.crate_name(LOCAL_CRATE);
     rap_info!("run on crate: {}", local_crate_name);
@@ -160,7 +157,7 @@ pub fn driver_main(tcx: TyCtxt<'_>) -> Result<(), Box<dyn std::error::Error>> {
     api_analyzer.run();
     let api_dep_graph = api_analyzer.get_api_dependency_graph();
 
-    api_dep_graph.dump_to_file(workspace_dir.join("api_graph.dot"));
+    api_dep_graph.dump_to_file(workspace_dir.join("api_graph.dot"))?;
 
     let mut alias_analyzer = alias_analysis::default::AliasAnalyzer::new(tcx);
     alias_analyzer.run();

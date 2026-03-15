@@ -151,7 +151,7 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
             |graph: &Graph<DepNode<'tcx>, DepEdge>,
              edge_ref: petgraph::graph::EdgeReference<DepEdge>| {
                 let color = match edge_ref.weight() {
-                    DepEdge::Arg(_) | DepEdge::Ret => "black",
+                    DepEdge::Arg { .. } | DepEdge::Ret => "black",
                     DepEdge::Transform(_) => "darkorange",
                 };
                 format!("label=\"{}\", color = {}", edge_ref.weight(), color)
