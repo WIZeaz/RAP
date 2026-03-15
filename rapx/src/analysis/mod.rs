@@ -1,4 +1,5 @@
 pub mod core;
+pub mod extract;
 pub mod graphs;
 pub mod opt;
 pub mod rcanary;

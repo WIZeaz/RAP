@@ -54,6 +54,12 @@ pub enum Commands {
         #[arg(long)]
         verify_std: bool,
     },
+    /// extract unsafe APIs and output a JSON document
+    #[command(arg_required_else_help = true)]
+    Extract {
+        #[command(subcommand)]
+        kind: ExtractKind,
+    },
     /// test the crate with automatically generated test cases
     Test,
 }
@@ -63,6 +69,15 @@ pub enum OptLevel {
     Report,
     Default,
     All,
+}
+
+// use command string to automatically generate help messages
+#[derive(Debug, Clone, Copy, Subcommand)]
+pub enum ExtractKind {
+    /// output all `pub unsafe` APIs of the current crate as JSON
+    UnsafeApis,
+    /// output all `pub unsafe` APIs of the Rust standard library as JSON
+    StdUnsafeApis,
 }
 
 impl RapxArgs {

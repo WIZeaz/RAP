@@ -75,6 +75,7 @@ const ANALYZE_UPG_CMD: &[&str] = &["analyze", "upg"];
 const ANALYZE_SSA_CMD: &[&str] = &["analyze", "ssa"];
 const ANALYZE_RANGE_CMD: &[&str] = &["analyze", "range"];
 const ANALYZE_CALLGRAPH_CMD: &[&str] = &["analyze", "callgraph"];
+const AUDIT_UNSAFE_APIS_CMD: &[&str] = &["extract", "unsafe-apis"];
 const ANALYZE_ADG_CMD: &[&str] = &["analyze", "adg", "--dump", "api_graph.yml"];
 
 // ================Dangling Pointer Detection Test=====================
@@ -553,6 +554,15 @@ fn test_symbolic_interval() {
             output
         );
     }
+}
+
+#[test]
+fn test_extract_unsafe_apis() {
+    let output = run_with_args("extract/unsafe_apis_test", AUDIT_UNSAFE_APIS_CMD);
+    assert_contain(&output, "\"name\"");
+    assert_contain(&output, "\"deref_raw\"");
+    assert_contain(&output, "\"safety_doc\"");
+    assert_contain(&output, "The pointer must be valid and non-null.");
 }
 
 #[test]

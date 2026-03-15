@@ -38,7 +38,7 @@ use crate::{
         scan::ScanAnalysis,
         testgen::Testgen,
     },
-    cli::{AliasStrategyKind, AnalysisKind, Commands, OptLevel, RapxArgs},
+    cli::{AliasStrategyKind, AnalysisKind, Commands, ExtractKind, OptLevel, RapxArgs},
 };
 use analysis::{
     Analysis,
@@ -55,6 +55,7 @@ use analysis::{
         },
         ssa_transform::SSATrans,
     },
+    extract::ExtractUnsafeApis,
     opt::Opt,
     rcanary::rCanary,
     safedrop::SafeDrop,
@@ -195,6 +196,24 @@ pub fn start_analyzer(tcx: TyCtxt, callback: &RapCallback) {
                 // SenryxCheck::new(tcx, 2).generate_uig_by_def_id();
             }
         }
+
+        &Commands::Extract { kind } => match kind {
+            ExtractKind::UnsafeApis => {
+                ExtractUnsafeApis::new(tcx).run_local();
+            }
+            ExtractKind::StdUnsafeApis => {
+                ExtractUnsafeApis::new(tcx).run_std();
+            }
+        },
+
+        &Commands::Extract { kind } => match kind {
+            ExtractKind::UnsafeApis => {
+                ExtractUnsafeApis::new(tcx).run_local();
+            }
+            ExtractKind::StdUnsafeApis => {
+                ExtractUnsafeApis::new(tcx).run_std();
+            }
+        },
 
         Commands::Analyze { kind } => match kind {
             AnalysisKind::Alias { strategy } => {
