@@ -371,7 +371,7 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
                 DepNode::Ty(..) => {
                     for edge in self.graph.edges_directed(node, Direction::Outgoing) {
                         let weight = self.graph.edge_weight(edge.id()).unwrap();
-                        if let DepEdge::Transform(_) | DepEdge::Arg { no: 0 } = weight {
+                        if let DepEdge::Transform { .. } | DepEdge::Arg { .. } = weight {
                             worklist.push_back(edge.target());
                         }
                     }

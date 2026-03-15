@@ -578,3 +578,11 @@ fn test_adg_simple_graph() {
         .expect("read api_graph.yml fail");
     assert_snapshot!(graph_str);
 }
+
+#[test]
+fn test_adg_doc_graph() {
+    let _ = run_with_args("adg/doc-graph", ANALYZE_ADG_CMD);
+    let graph_str = std::fs::read_to_string(project_path("adg/doc-graph").join("api_graph.yml"))
+        .expect("read api_graph.yml fail");
+    assert_snapshot!(graph_str);
+}

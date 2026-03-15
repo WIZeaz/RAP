@@ -1,0 +1,89 @@
+---
+source: tests/tests.rs
+expression: graph_str
+---
+nodes:
+- type: api
+  path: api1
+  generic_args: []
+- type: ty
+  path: i32
+- type: ty
+  path: '&''_ f32'
+- type: ty
+  path: S1
+- type: api
+  path: api2
+  generic_args: []
+- type: ty
+  path: '&''_ mut i32'
+- type: ty
+  path: f32
+- type: ty
+  path: S2
+- type: api
+  path: api3
+  generic_args: []
+- type: ty
+  path: '&''_ S1'
+- type: ty
+  path: '&''_ S2'
+edges:
+- from: 1
+  to: 0
+  kind:
+    type: Arg
+    no: 0
+- from: 2
+  to: 0
+  kind:
+    type: Arg
+    no: 1
+- from: 0
+  to: 3
+  kind:
+    type: Ret
+- from: 5
+  to: 4
+  kind:
+    type: Arg
+    no: 0
+- from: 6
+  to: 4
+  kind:
+    type: Arg
+    no: 1
+- from: 4
+  to: 7
+  kind:
+    type: Ret
+- from: 9
+  to: 8
+  kind:
+    type: Arg
+    no: 0
+- from: 10
+  to: 8
+  kind:
+    type: Arg
+    no: 1
+- from: 7
+  to: 10
+  kind:
+    type: Transform
+    transform_kind: ref
+- from: 1
+  to: 5
+  kind:
+    type: Transform
+    transform_kind: ref_mut
+- from: 3
+  to: 9
+  kind:
+    type: Transform
+    transform_kind: ref
+- from: 6
+  to: 2
+  kind:
+    type: Transform
+    transform_kind: ref

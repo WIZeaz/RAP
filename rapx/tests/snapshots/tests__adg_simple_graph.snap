@@ -3,17 +3,17 @@ source: tests/tests.rs
 expression: graph_str
 ---
 nodes:
-- type: Api
+- type: api
   path: foo
   generic_args: []
-- type: Ty
+- type: ty
   path: Item
-- type: Api
+- type: api
   path: bar
   generic_args: []
-- type: Ty
+- type: ty
   path: std::vec::Vec::<i32, std::alloc::Global>
-- type: Api
+- type: api
   path: vec_arg
   generic_args: []
 edges:

@@ -240,7 +240,7 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
         let mut tfs = Vec::new();
         if let Some(index) = self.get_index(DepNode::Ty(ty.into())) {
             for edge in self.graph.edges_directed(index, Direction::Outgoing) {
-                if let DepEdge::Transform(kind) = edge.weight() {
+                if let DepEdge::Transform { kind } = edge.weight() {
                     tfs.push(*kind);
                 }
             }

@@ -1,6 +1,7 @@
 use super::dep_edge::DepEdge;
 use super::{ApiDependencyGraph, DepNode, TyWrapper};
 use petgraph::graph::NodeIndex;
+use rustc_ast::Mutability;
 use rustc_middle::ty::{self};
 use serde::Serialize;
 use std::fmt::Display;
@@ -38,7 +39,11 @@ impl Serialize for TransformKind {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(&self.to_string())
+        serializer.serialize_str(match self {
+            TransformKind::Ref(Mutability::Not) => "ref",
+            TransformKind::Ref(Mutability::Mut) => "ref_mut",
+            TransformKind::Unwrap => "unwrap",
+        })
     }
 }
 

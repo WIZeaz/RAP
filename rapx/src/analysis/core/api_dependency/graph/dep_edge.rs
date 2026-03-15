@@ -7,9 +7,14 @@ use super::transform::TransformKind;
 #[derive(Clone, Copy, Eq, PartialEq, Debug, Serialize)]
 #[serde(tag = "type")]
 pub enum DepEdge {
-    Arg { no: usize },
+    Arg {
+        no: usize,
+    },
     Ret,
-    Transform(TransformKind),
+    Transform {
+        #[serde(rename = "transform_kind")]
+        kind: TransformKind,
+    },
 }
 
 impl Display for DepEdge {
@@ -17,7 +22,7 @@ impl Display for DepEdge {
         match self {
             DepEdge::Arg { no } => write!(f, "{}", no),
             DepEdge::Ret => write!(f, "r"),
-            DepEdge::Transform(kind) => write!(f, "Transform({})", kind),
+            DepEdge::Transform { kind } => write!(f, "Transform({})", kind),
         }
     }
 }
@@ -31,11 +36,11 @@ impl DepEdge {
     }
 
     pub fn transform(kind: TransformKind) -> DepEdge {
-        DepEdge::Transform(kind)
+        DepEdge::Transform { kind }
     }
     pub fn as_transform_kind(self) -> Option<TransformKind> {
         match self {
-            DepEdge::Transform(kind) => Some(kind),
+            DepEdge::Transform { kind } => Some(kind),
             _ => None,
         }
     }
