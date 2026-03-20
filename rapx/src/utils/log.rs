@@ -1,3 +1,4 @@
+use crate::{rap_info, rap_warn};
 use chrono::Local;
 use fern::colors::{Color, ColoredLevelConfig};
 use fern::{self, Dispatch};
@@ -9,20 +10,57 @@ use rustc_span::{
 };
 use std::ops::Range;
 
-fn log_level() -> LevelFilter {
-    if let Ok(s) = std::env::var("RAP_LOG") {
-        match s.parse() {
-            Ok(level) => return level,
-            Err(err) => eprintln!("RAP_LOG is invalid: {err}"),
+fn parse_rap_log() -> (LevelFilter, Vec<(String, LevelFilter)>) {
+    let mut global_level = LevelFilter::Info;
+    let mut module_levels = Vec::new();
+    let crate_name = env!("CARGO_PKG_NAME");
+
+    let Ok(raw) = std::env::var("RAP_LOG") else {
+        return (global_level, module_levels);
+    };
+
+    for item in raw.split(',') {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+
+        // `module:LEVEL`
+        if let Some((module, level)) = item.rsplit_once(':') {
+            let module = module.trim();
+            let level = level.trim();
+            if module.is_empty() {
+                rap_warn!("RAP_LOG module is empty in entry: {item}");
+                continue;
+            }
+            match level.parse() {
+                Ok(parsed) => module_levels.push((format!("{}::{}", crate_name, module), parsed)),
+                Err(err) => rap_warn!("RAP_LOG entry is invalid: {item} ({err})"),
+            }
+            continue;
+        }
+
+        match item.parse() {
+            Ok(parsed) => global_level = parsed,
+            Err(err) => rap_warn!("RAP_LOG entry is invalid: {item} ({err})"),
         }
     }
-    LevelFilter::Info
+
+    (global_level, module_levels)
 }
 
-/// Detect `RAP_LOG` environment variable first; if it's not set,
-/// default to INFO level.
+/// Parse `RAP_LOG` environment variable for global and module log levels.
+///
+/// Supported forms:
+/// - `RAP_LOG=TRACE` -> global level
+/// - `RAP_LOG=some::module:DEBUG` -> module level
+/// - `RAP_LOG=TRACE,some::module:INFO,other::module:DEBUG` -> mixed
 pub fn init_log() -> Result<(), fern::InitError> {
-    let dispatch = Dispatch::new().level(log_level());
+    let (global_level, module_levels) = parse_rap_log();
+    let mut dispatch = Dispatch::new().level(global_level);
+    for (module, level) in module_levels {
+        dispatch = dispatch.level_for(module, level);
+    }
 
     let color_line = ColoredLevelConfig::new()
         .error(Color::Red)
@@ -60,35 +98,35 @@ pub fn init_log() -> Result<(), fern::InitError> {
 #[macro_export]
 macro_rules! rap_trace {
     ($($arg:tt)+) => (
-        ::log::trace!(target: "RAP", $($arg)+)
+        ::log::trace!($($arg)+)
     );
 }
 
 #[macro_export]
 macro_rules! rap_debug {
     ($($arg:tt)+) => (
-        ::log::debug!(target: "RAP", $($arg)+)
+        ::log::debug!($($arg)+)
     );
 }
 
 #[macro_export]
 macro_rules! rap_info {
     ($($arg:tt)+) => (
-        ::log::info!(target: "RAP", $($arg)+)
+        ::log::info!($($arg)+)
     );
 }
 
 #[macro_export]
 macro_rules! rap_warn {
     ($($arg:tt)+) => (
-        ::log::warn!(target: "RAP", $($arg)+)
+        ::log::warn!($($arg)+)
     );
 }
 
 #[macro_export]
 macro_rules! rap_error {
     ($($arg:tt)+) => (
-        ::log::error!(target: "RAP", $($arg)+)
+        ::log::error!($($arg)+)
     );
 }
 

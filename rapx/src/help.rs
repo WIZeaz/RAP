@@ -25,6 +25,10 @@ will perform two kinds of detection in a row.
                      trace: print all the detailed RAP execution traces.
                      debug: display intermediate analysis results.
                      warn: show bugs detected only.
+                     RAP_LOG supports both global and module level settings. For example:
+                     - `RAP_LOG=TRACE` -> global level
+                     - `RAP_LOG=some::module:DEBUG` -> module level
+                     - `RAP_LOG=TRACE,some::module:INFO,other::module:DEBUG` -> mixed
 
     RAP_CLEAN        run cargo clean before check: true, false
                      * true is the default value except that false is set
