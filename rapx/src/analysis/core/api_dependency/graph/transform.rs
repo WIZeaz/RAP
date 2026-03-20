@@ -94,20 +94,20 @@ mod tests {
     fn serialize_ref_not_matches_expected() {
         let kind = TransformKind::Ref(ty::Mutability::Not);
         let serialized = serde_json::to_string(&kind).expect("serialize TransformKind::Ref(Not)");
-        assert_eq!(serialized, "\"&T\"");
+        assert_eq!(serialized, "\"ref\"");
     }
 
     #[test]
     fn serialize_ref_mut_matches_expected() {
         let kind = TransformKind::Ref(ty::Mutability::Mut);
         let serialized = serde_json::to_string(&kind).expect("serialize TransformKind::Ref(Mut)");
-        assert_eq!(serialized, "\"&mut T\"");
+        assert_eq!(serialized, "\"ref_mut\"");
     }
 
     #[test]
     fn serialize_unwrap_matches_expected() {
         let kind = TransformKind::Unwrap;
         let serialized = serde_json::to_string(&kind).expect("serialize TransformKind::Unwrap");
-        assert_eq!(serialized, "\"Unwrap\"");
+        assert_eq!(serialized, "\"unwrap\"");
     }
 }

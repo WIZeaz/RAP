@@ -164,16 +164,17 @@ impl<'tcx> TypeCandidates<'tcx> {
             tcx.lifetimes.re_erased,
             tcx.types.str_,
         ));
-        // String
-        prelude_tys.push(Ty::new_adt(
-            self.tcx,
-            self.tcx.adt_def(self.tcx.lang_items().string().unwrap()),
-            ty::GenericArgs::empty(),
-        ));
-        for element_ty in &primitive_tys {
-            // Vec<T>
-            prelude_tys.push(std_tys::std_vec(*element_ty, self.tcx));
+
+        if let Some(string_ty) = std_tys::std_string(tcx) {
+            prelude_tys.push(string_ty);
         }
+
+        for element_ty in &primitive_tys {
+            if let Some(vec_ty) = std_tys::std_vec(*element_ty, tcx) {
+                prelude_tys.push(vec_ty);
+            }
+        }
+
         prelude_tys.into_iter().for_each(|ty| {
             self.insert_all(ty);
         });
