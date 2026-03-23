@@ -194,23 +194,28 @@ impl<'tcx> Stmt<'tcx> {
     pub fn mk_fn_sig_with_var_tys(&self, cx: &Context<'tcx>) -> ty::FnSig<'tcx> {
         match self.kind() {
             StmtKind::Call(call) => {
+                rap_trace!("mk_fn_sig_with_var_tys for call: {:?}", call);
                 let tcx = cx.tcx;
                 let fn_sig = utils::fn_sig_with_identities(call.fn_did(), tcx);
                 let var_ty = cx.type_of(self.place());
+                rap_trace!("place -> {:?}", var_ty);
 
                 // get actual vid of input in the pattern
                 let mut inputs = Vec::new();
                 for var in call.args() {
                     let ty = cx.type_of(*var);
+                    rap_trace!("var {:?} -> {:?}", var, ty);
                     inputs.push(ty);
                 }
-                tcx.mk_fn_sig(
+                let fn_sig = tcx.mk_fn_sig(
                     inputs.into_iter(),
                     var_ty,
                     fn_sig.c_variadic,
                     fn_sig.safety,
                     fn_sig.abi,
-                )
+                );
+                rap_trace!("fn_sig = {:?}", fn_sig);
+                fn_sig
             }
             _ => panic!("not a call"),
         }

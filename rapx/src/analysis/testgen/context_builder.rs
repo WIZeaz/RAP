@@ -1,5 +1,4 @@
 mod build_stmt;
-mod folder;
 mod lifetime;
 mod pattern;
 mod safety;
@@ -56,14 +55,6 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
         &self.cx
     }
 
-    pub fn cx_mut(&mut self) -> &mut Context<'tcx> {
-        &mut self.cx
-    }
-
-    pub fn into_cx(self) -> Context<'tcx> {
-        self.cx
-    }
-
     pub fn live_state(&self) -> &BitSet {
         &self.live_state
     }
@@ -77,7 +68,10 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
     }
 
     pub fn region_of(&self, var: Var) -> ty::Region<'tcx> {
-        ty::Region::new_var(self.tcx, ty::RegionVid::from_usize(self.rid_of(var).into()))
+        ty::Region::new_var(
+            self.tcx,
+            ty::RegionVid::from_usize(self.rid_of(var).index()),
+        )
     }
 
     pub fn step_of(&self, var: Var) -> usize {

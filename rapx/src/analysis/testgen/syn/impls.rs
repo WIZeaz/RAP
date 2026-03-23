@@ -1,7 +1,7 @@
 use super::super::context::{Context, Stmt, StmtKind, Var};
 use super::input::InputGen;
 use super::{SynOption, Synthesizer};
-use crate::analysis::testgen::context::ExploitKind;
+use crate::analysis::testgen::context::{DUMMY_INPUT_VAR, DUMMY_UNIT_VAR, ExploitKind};
 use crate::analysis::utils::path::PathResolver;
 use rustc_middle::ty::{self, TyCtxt};
 
@@ -45,7 +45,7 @@ impl<'a, 'tcx, I: InputGen> FuzzDriverSynImpl<'a, 'tcx, I> {
                     self.resolver.path_str_with_args(call.fn_did(), args),
                     call.args
                         .iter()
-                        .map(|arg| arg.to_string())
+                        .map(|arg| self.call_arg_str(*arg))
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -55,7 +55,7 @@ impl<'a, 'tcx, I: InputGen> FuzzDriverSynImpl<'a, 'tcx, I> {
                     "{}({})",
                     path,
                     vars.iter()
-                        .map(|arg| arg.to_string())
+                        .map(|arg| self.call_arg_str(*arg))
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -84,7 +84,7 @@ impl<'a, 'tcx, I: InputGen> FuzzDriverSynImpl<'a, 'tcx, I> {
                 format!(
                     "[{}]",
                     vars.iter()
-                        .map(|arg| arg.to_string())
+                        .map(|arg| self.var_str(*arg))
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -93,7 +93,7 @@ impl<'a, 'tcx, I: InputGen> FuzzDriverSynImpl<'a, 'tcx, I> {
                 format!(
                     "({})",
                     vars.iter()
-                        .map(|arg| arg.to_string())
+                        .map(|arg| self.var_str(*arg))
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -132,7 +132,19 @@ impl<'a, 'tcx, I: InputGen> FuzzDriverSynImpl<'a, 'tcx, I> {
         }
     }
 
+    fn call_arg_str(&self, arg: Var) -> String {
+        if arg == DUMMY_UNIT_VAR {
+            "()".to_string()
+        } else {
+            self.var_str(arg)
+        }
+    }
+
     fn var_str(&self, var: Var) -> String {
+        assert!(
+            var != DUMMY_UNIT_VAR && var != DUMMY_INPUT_VAR,
+            "DUMMY_UNIT_VAR and DUMMY_INPUT_VAR should not be used in var_str"
+        );
         format!("{}", var)
     }
 

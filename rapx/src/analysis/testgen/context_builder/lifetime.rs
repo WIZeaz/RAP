@@ -28,25 +28,28 @@ impl RegionNode {
 impl Display for RegionNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RegionNode::Static => write!(f, "static"),
+            RegionNode::Static => write!(f, "'static"),
             RegionNode::Named(var) => write!(f, "'{}", var),
-            RegionNode::Anon => write!(f, "_"),
+            RegionNode::Anon => write!(f, "'_"),
         }
     }
 }
 
-pub struct RegionGraph {
-    inner: petgraph::Graph<RegionNode, ()>,
-    static_rid: Rid,
-}
-
 // Region Graph Id
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Rid(NodeIndex);
+pub struct Rid(usize);
+
+const STATIC_RID: Rid = Rid(0);
 
 impl Rid {
     pub fn index(&self) -> usize {
-        self.0.index()
+        self.0
+    }
+    pub fn static_() -> Rid {
+        STATIC_RID
+    }
+    pub fn is_static(&self) -> bool {
+        *self == STATIC_RID
     }
 }
 
@@ -58,31 +61,19 @@ impl Display for Rid {
 
 impl From<NodeIndex> for Rid {
     fn from(index: NodeIndex) -> Self {
-        Rid(index)
+        Rid(index.index())
     }
 }
 
 impl Into<NodeIndex> for Rid {
     fn into(self) -> NodeIndex {
-        self.0
-    }
-}
-
-impl Into<usize> for Rid {
-    fn into(self) -> usize {
-        self.index()
-    }
-}
-
-impl From<usize> for Rid {
-    fn from(index: usize) -> Self {
-        Rid(NodeIndex::new(index))
+        NodeIndex::new(self.0)
     }
 }
 
 impl From<ty::RegionVid> for Rid {
     fn from(vid: ty::RegionVid) -> Self {
-        Rid(NodeIndex::new(vid.index()))
+        Rid(vid.index())
     }
 }
 
@@ -93,41 +84,39 @@ impl Into<ty::RegionVid> for Rid {
 }
 
 pub fn region_to_rid(region: ty::Region<'_>) -> Rid {
-    region.as_var().index().into()
+    match region.kind() {
+        ty::RegionKind::ReVar(vid) => Rid::from(vid),
+        ty::RegionKind::ReStatic => STATIC_RID,
+        _ => panic!("unexpected region kind: {:?}", region),
+    }
+}
+
+pub struct RegionGraph {
+    inner: petgraph::Graph<RegionNode, ()>,
 }
 
 impl RegionGraph {
-    pub fn is_static(&self, rid: Rid) -> bool {
-        self.static_rid == rid
-    }
-
     pub fn inner(&self) -> &petgraph::Graph<RegionNode, ()> {
         &self.inner
     }
 
     pub fn add_node(&mut self, node: RegionNode) -> Rid {
         let index = self.inner.add_node(node);
-        Rid(index)
+        Rid(index.index())
     }
 
     pub fn new() -> RegionGraph {
         let mut graph = petgraph::Graph::new();
-        let static_index = Rid(graph.add_node(RegionNode::Static));
+        let static_rid: Rid = graph.add_node(RegionNode::Static).into();
+        assert_eq!(static_rid, STATIC_RID);
 
-        RegionGraph {
-            inner: graph,
-            static_rid: static_index,
-        }
+        RegionGraph { inner: graph }
     }
 
     pub fn add_edge_by_region(&mut self, from: ty::Region<'_>, to: ty::Region<'_>) {
         let from = region_to_rid(from);
         let to = region_to_rid(to);
         self.add_edge(from, to);
-    }
-
-    fn static_rid(&self) -> Rid {
-        self.static_rid
     }
 
     fn dfs_find_path(&self, current: NodeIndex, target: NodeIndex, visited: &mut [bool]) -> bool {
@@ -170,7 +159,7 @@ impl RegionGraph {
 
         for pattern in patterns.patterns() {
             let get_index = |node: &PatternNode| match node {
-                PatternNode::Static => self.static_rid(),
+                PatternNode::Static => Rid::static_(),
                 PatternNode::Named(i) => subst[*i],
                 PatternNode::Temp(i) => temp[*i],
             };
@@ -189,11 +178,32 @@ impl RegionGraph {
     }
 
     pub fn register_ty<'tcx>(&mut self, ty: Ty<'tcx>, tcx: TyCtxt<'tcx>) -> Ty<'tcx> {
-        let mut folder = FreeVarFolder::new(tcx, self);
+        struct FreeVarFolder<'tcx, 'a> {
+            tcx: TyCtxt<'tcx>,
+            graph: &'a mut RegionGraph,
+        }
+
+        impl<'tcx, 'a> ty::TypeFolder<TyCtxt<'tcx>> for FreeVarFolder<'tcx, 'a> {
+            fn cx(&self) -> TyCtxt<'tcx> {
+                self.tcx
+            }
+            fn fold_region(&mut self, region: ty::Region<'tcx>) -> ty::Region<'tcx> {
+                match region.kind() {
+                    ty::ReVar(_) => region,
+                    ty::ReStatic => ty::Region::new_var(self.cx(), Rid::static_().into()),
+                    _ => ty::Region::new_var(self.cx(), self.graph.next_anon_node_index().into()),
+                }
+            }
+        }
+
+        let mut folder = FreeVarFolder { tcx, graph: self };
         ty.fold_with(&mut folder)
     }
 
     pub fn add_edge(&mut self, from: Rid, to: Rid) {
+        if from == to {
+            return;
+        }
         rap_trace!("[region_graph] add edge: {} -> {}", from, to);
         self.inner.update_edge(from.into(), to.into(), ());
     }
@@ -281,6 +291,32 @@ impl RegionGraph {
     }
 }
 
+pub fn extract_rids<'tcx, T: ty::TypeVisitable<TyCtxt<'tcx>>>(ty: T) -> Vec<Rid> {
+    pub struct RegionVisitor {
+        rids: Vec<Rid>,
+    }
+
+    impl<'tcx> ty::TypeVisitor<TyCtxt<'tcx>> for RegionVisitor {
+        fn visit_region(&mut self, region: ty::Region<'tcx>) {
+            match region.kind() {
+                ty::RegionKind::ReVar(vid) => {
+                    self.rids.push(vid.into());
+                }
+                ty::RegionKind::ReStatic => {
+                    self.rids.push(Rid::static_());
+                }
+                _ => {
+                    panic!("unexpected region kind: {:?}", region);
+                }
+            }
+        }
+    }
+
+    let mut visitor = RegionVisitor { rids: Vec::new() };
+    ty.visit_with(&mut visitor);
+    visitor.rids
+}
+
 pub fn visit_ty_region_with<'tcx, F: FnMut(ty::Region<'tcx>, ty::Region<'tcx>)>(
     ty: ty::Ty<'tcx>,
     prev: Option<ty::Region<'tcx>>,
@@ -323,29 +359,5 @@ pub fn visit_ty_region_with<'tcx, F: FnMut(ty::Region<'tcx>, ty::Region<'tcx>)>(
             }
         }
         _ => {}
-    }
-}
-
-pub struct FreeVarFolder<'tcx, 'a> {
-    tcx: TyCtxt<'tcx>,
-    graph: &'a mut RegionGraph,
-}
-
-impl<'tcx, 'a> FreeVarFolder<'tcx, 'a> {
-    pub fn new(tcx: TyCtxt<'tcx>, graph: &'a mut RegionGraph) -> FreeVarFolder<'tcx, 'a> {
-        FreeVarFolder { tcx, graph }
-    }
-}
-
-impl<'tcx, 'a> ty::TypeFolder<TyCtxt<'tcx>> for FreeVarFolder<'tcx, 'a> {
-    fn cx(&self) -> TyCtxt<'tcx> {
-        self.tcx
-    }
-    fn fold_region(&mut self, region: ty::Region<'tcx>) -> ty::Region<'tcx> {
-        match region.kind() {
-            ty::ReVar(_) => region,
-            ty::ReStatic => ty::Region::new_var(self.cx(), self.graph.static_rid().into()),
-            _ => ty::Region::new_var(self.cx(), self.graph.next_anon_node_index().into()),
-        }
     }
 }

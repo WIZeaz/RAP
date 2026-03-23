@@ -1,5 +1,4 @@
-use super::folder::RidExtractFolder;
-use super::lifetime::{RegionNode, Rid};
+use super::lifetime::{RegionNode, Rid, extract_rids};
 use crate::analysis::testgen::context::{
     ApiCall, DUMMY_INPUT_VAR, DUMMY_UNIT_VAR, ExploitKind, StmtKind,
 };
@@ -8,8 +7,7 @@ use crate::analysis::testgen::context_builder::{ContextBuilder, is_ty_move_on_ca
 use crate::analysis::testgen::utils;
 use itertools::Itertools;
 use rustc_hir::LangItem;
-use rustc_hir::def_id::DefId;
-use rustc_middle::ty::{self, Ty, TyCtxt, TyKind, TypeFoldable};
+use rustc_middle::ty::{self, Ty, TyCtxt, TyKind};
 use rustc_span::sym::{self};
 use std::collections::VecDeque;
 
@@ -81,7 +79,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
                 }
             })
             .join(", ");
-        self.add_stmt(Stmt::comment(comment));
+        self.add_comment_stmt(comment);
     }
 
     pub fn add_exploit_stmt(&mut self, var: Var, use_kind: ExploitKind) -> Var {
@@ -102,12 +100,12 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
         var
     }
 
-    pub fn try_add_input_stmts_for_std_item(
-        &mut self,
-        ty: Ty<'tcx>,
-        item_did: DefId,
-        args: ty::GenericArgsRef<'tcx>,
-    ) -> Option<Var> {
+    pub fn try_add_input_stmts_for_std_item(&mut self, ty: Ty<'tcx>) -> Option<Var> {
+        let TyKind::Adt(adt_def, args) = ty.kind() else {
+            return None;
+        };
+        let item_did = adt_def.did();
+
         if self.tcx.is_lang_item(item_did, LangItem::String) {
             let inner_var =
                 self.try_add_input_stmts(str_ref(self.tcx.lifetimes.re_static, self.tcx), true);
@@ -156,42 +154,19 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
     /// if must_instantiate is true, this function will always return a var
     /// representing the instance of ty.
     pub fn try_add_input_stmts(&mut self, ty: Ty<'tcx>, must_instantiate: bool) -> Var {
+        if ty.is_unit() {
+            return DUMMY_UNIT_VAR;
+        }
+
+        if let Some(var) = self.try_add_input_stmts_for_std_item(ty) {
+            return var;
+        }
+
         let var;
         match ty.kind() {
-            ty::Adt(adt_def, args) => {
-                if let Some(var) = self.try_add_input_stmts_for_std_item(ty, adt_def.did(), args) {
-                    return var;
-                }
-
-                var = DUMMY_INPUT_VAR;
+            ty::Adt(..) => {
                 // TODO: Add Ctor Support
-                // // we need to make var first to register region inside the type of var
-                // var = self.mk_var(ty, false);
-                // let place_ty = self.cx.type_of(var);
-                // let args = match place_ty.kind() {
-                //     TyKind::Adt(_, args) => args,
-                //     _ => panic!(),
-                // };
-
-                // let mut rng = rand::rng();
-                // let variant_idx = adt_def.variants().indices().choose(&mut rng).unwrap();
-                // let variant_def = adt_def.variant(variant_idx);
-                // let mut field_vars = Vec::new();
-
-                // for field in variant_def.fields.iter() {
-                //     let field_name = field.name.to_string();
-                //     let field_type = field.ty(self.tcx, args);
-                //     let field_var = self.try_add_input_stmts(field_type, false);
-                //     field_vars.push((field_name, field_var));
-                // }
-
-                // let dict = CtorDict {
-                //     adt_def: *adt_def,
-                //     variant_idx,
-                //     field_vars,
-                // };
-
-                // self.add_stmt(Stmt::ctor(var, dict));
+                var = DUMMY_INPUT_VAR;
             }
             ty::Ref(region, inner_ty, mutability) => {
                 match (region.kind(), inner_ty.kind(), mutability) {
@@ -316,16 +291,14 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
         rap_trace!("stmt: {:?}", stmt);
         rap_trace!("real_fn_sig: {:?}", real_fn_sig);
 
-        let mut folder = RidExtractFolder::new(self.tcx);
-        real_fn_sig.fold_with(&mut folder);
+        let rids = extract_rids(real_fn_sig);
 
         self.pat_provider
             .get_patterns_with(fn_did, &stmt.as_apicall().generic_args, |patterns| {
                 rap_debug!("patterns: {:?}", patterns);
-                rap_debug!("regions: {:?}", folder.rids());
+                rap_debug!("regions: {:?}", rids);
 
-                self.region_graph
-                    .add_edges_by_patterns(patterns, folder.rids());
+                self.region_graph.add_edges_by_patterns(patterns, &rids);
             });
 
         // maintain context

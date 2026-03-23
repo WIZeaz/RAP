@@ -12,6 +12,7 @@ use anyhow::Result;
 use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_middle::ty::TyCtxt;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 use std::{fs, io};
@@ -190,6 +191,7 @@ pub fn driver_main(tcx: TyCtxt<'_>) -> Result<()> {
     let package_dir = std::env::var("CARGO_MANIFEST_DIR")?;
 
     let resolver = get_path_resolver(tcx);
+    let mut eval_map: HashMap<EvalResult, usize> = HashMap::new();
 
     while config.max_run == 0 || run_count < config.max_run {
         // 1. generate context
@@ -221,22 +223,24 @@ pub fn driver_main(tcx: TyCtxt<'_>) -> Result<()> {
         let mut file = std::fs::File::create(debug_path)?;
         cx.region_graph().dump(&mut file).unwrap();
 
-        // 4. run cargo check
-        // 5. evaluate with miri & asan
         let delimeter = "=".repeat(40);
         writeln!(&mut report_file, "{}", delimeter)?;
 
+        // 4. exec `cargo check` and `cargo miri run` to evaluate the generated program
         match check_and_evaluate(&project, &mut report_file, &config) {
-            Ok(EvalResult::UBDetected) => {
-                let new_project = project.copy_to(&poc_path)?;
-                rap_warn!(
-                    "copy project to {} and reduce",
-                    new_project.option().project_path.display()
-                );
-                new_project.reduce()?;
-                if config.terminate_on_ub {
-                    rap_info!("terminate on first UB detection");
-                    break;
+            Ok(eval_result) => {
+                *eval_map.entry(eval_result).or_default() += 1;
+                if let EvalResult::UBDetected = eval_result {
+                    let new_project = project.copy_to(&poc_path)?;
+                    rap_warn!(
+                        "copy project to {} and reduce",
+                        new_project.option().project_path.display()
+                    );
+                    new_project.reduce()?;
+                    if config.terminate_on_ub {
+                        rap_info!("terminate on first UB detection");
+                        break;
+                    }
                 }
             }
             Err(err) => {
@@ -248,8 +252,9 @@ pub fn driver_main(tcx: TyCtxt<'_>) -> Result<()> {
                     err
                 )?;
             }
-            _ => {}
         }
+
+        rap_info!("eval result count: {:?}", eval_map);
 
         writeln!(&mut report_file, "{}", delimeter)?;
 
@@ -274,6 +279,7 @@ pub fn driver_main(tcx: TyCtxt<'_>) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub enum EvalResult {
     Success,
     UBDetected,

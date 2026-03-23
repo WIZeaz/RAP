@@ -86,7 +86,7 @@ fn get_initial_drop_prob() -> f64 {
 }
 
 struct GlobalState<'tcx> {
-    covered_api: HashSet<DefId>,
+    // covered_api: HashSet<DefId>,
     reach_map: HashMap<DepNode<'tcx>, usize>,
     drop_prob: HashMap<DepNode<'tcx>, f64>,
     estimated_covered_api: usize,
@@ -97,12 +97,21 @@ impl<'tcx> GlobalState<'tcx> {
     pub fn new(api_graph: &ApiDependencyGraph<'tcx>) -> Self {
         let (estimated, total) = api_graph.estimate_coverage();
         Self {
-            covered_api: HashSet::new(),
+            // covered_api: HashSet::new(),
             reach_map: HashMap::new(),
             drop_prob: HashMap::new(),
             estimated_covered_api: estimated,
             total_api: total,
         }
+    }
+
+    pub fn covered_apis(&self) -> impl Iterator<Item = (DefId, ty::GenericArgsRef<'tcx>)> + '_ {
+        self.reach_map
+            .iter()
+            .filter_map(|(node, count)| match node {
+                DepNode::Api(did, args) if *count > 0 => Some((*did, *args)),
+                _ => None,
+            })
     }
 
     pub fn num_global_covered_api(&self) -> usize {
@@ -190,6 +199,7 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
                 break;
             }
 
+            // 1. generate next call action
             let Some(action) = self.next(&mut builder) else {
                 rap_info!("no eligable action, generation terminate");
                 break;
@@ -204,8 +214,8 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
                     .def_path_str_with_args(call.fn_did(), self.tcx.mk_args(call.generic_args()))
             );
 
+            // 2. build stmts for this call action
             // first build transform stmts for vars
-
             for (var, transforms) in call.args_mut().iter_mut().zip(action.transforms()) {
                 rap_trace!("var = {}, transforms = {:?}", var, transforms);
                 if *var == DUMMY_INPUT_VAR {
@@ -223,12 +233,13 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
                     }
                 }
             }
+            let place = builder.add_call_stmt(call);
 
+            // 3. update global state
             self.global.reach(action.node());
             current_reach.insert(action.node());
 
-            let place = builder.add_call_stmt(call);
-
+            // 4. test drop injection and exploit generation
             let drop_prob = self
                 .global
                 .drop_prob
@@ -247,11 +258,11 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
                 );
             }
 
-            // try exploit
             if builder.try_add_exploit_stmt_for(place) {
                 rap_info!("add exploit stmt for {place}");
             }
 
+            // 5. log statistics
             let current = current_reach.len();
             let global = self.global.num_global_covered_api();
             let total = self.global.total_api;
@@ -302,14 +313,13 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
         s.push_str(&format!("# APIs = {}\n", self.api_graph.num_api()));
         s.push_str(&format!(
             "# covered APIs = {}\n",
-            self.global.covered_api.len()
+            self.global.covered_apis().count()
         ));
         s.push_str("covered APIs:\n");
         s.push_str(
             &self
                 .global
-                .covered_api
-                .iter()
+                .covered_apis()
                 .map(|did| format!("{:?}", did))
                 .join(", "),
         );

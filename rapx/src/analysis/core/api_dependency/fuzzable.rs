@@ -1,6 +1,7 @@
 use rustc_hir::LangItem;
 use rustc_middle::ty::{self, Ty, TyCtxt, TyKind};
 use rustc_span::sym;
+use rustc_type_ir::TypeVisitable;
 
 fn is_fuzzable_std_ty<'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'tcx>, depth: usize) -> bool {
     match ty.kind() {
@@ -31,6 +32,22 @@ fn is_non_fuzzable_std_ty<'tcx>(ty: Ty<'tcx>, _tcx: TyCtxt<'tcx>) -> bool {
         _ => {}
     }
     false
+}
+
+fn ty_contains_region<'tcx>(ty: Ty<'tcx>) -> bool {
+    struct Visitor {
+        contains_region: bool,
+    }
+    impl<'tcx> ty::TypeVisitor<TyCtxt<'tcx>> for Visitor {
+        fn visit_region(&mut self, _: ty::Region<'tcx>) -> Self::Result {
+            self.contains_region = true;
+        }
+    }
+    let mut visitor = Visitor {
+        contains_region: false,
+    };
+    ty.visit_with(&mut visitor);
+    visitor.contains_region
 }
 
 const MAX_DEPTH: usize = 64;
@@ -92,7 +109,7 @@ pub fn is_fuzzable_ty<'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'tcx>, depth: usize) -> bo
             }
 
             // if adt contain region, then we consider it non-fuzzable
-            if args.iter().any(|arg| arg.as_region().is_some()) {
+            if ty_contains_region(ty) {
                 return false;
             }
 

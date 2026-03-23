@@ -1,7 +1,6 @@
 use super::super::utils;
 use super::ContextBuilder;
-use super::folder::extract_rids;
-use super::lifetime::Rid;
+use super::lifetime::{Rid, extract_rids};
 use crate::analysis::core::alias_analysis::AliasPair;
 use crate::analysis::testgen::context::{Stmt, Var};
 use rand::seq::IndexedRandom;
@@ -100,6 +99,7 @@ fn ty_can_be_owned<'tcx>(ty: Ty<'tcx>) -> bool {
 }
 
 impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
+    /// return a map from variable to the set of vulnerable regions that variable should be contrainted with
     pub fn detect_vulnerable_paths(&self, stmt: &Stmt<'tcx>) -> Option<HashMap<Var, HashSet<Rid>>> {
         let mut ret = HashMap::new();
         let tcx = self.tcx;
@@ -121,7 +121,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
                 rhs_ty
             );
 
-            let mut rhs_ty_rids = extract_rids(rhs_ty, tcx);
+            let mut rhs_ty_rids = extract_rids(rhs_ty);
             rap_debug!("rhs rids: {:?}", rhs_ty_rids);
 
             // if rhs_ty does not bind with any lifetime,
@@ -156,9 +156,9 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
             });
 
         for fact in facts {
-            rap_debug!("alias fact: {}", fact);
+            rap_trace!("alias fact: {}", fact);
             if fact.right_local() == 0 {
-                rap_debug!("filter this fact (rhs is return value)");
+                rap_trace!("filter this fact (rhs is return value)");
                 continue;
             }
 
@@ -232,7 +232,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
             let mut rng = rand::rng();
 
             if let Some(index) = rid_nodes.choose(&mut rng) {
-                success |= self.drop_source_from_rids(index.index().into());
+                success |= self.drop_source_from_rids((*index).into());
             }
         }
 

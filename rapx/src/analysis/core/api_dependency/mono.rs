@@ -518,11 +518,8 @@ pub fn resolve_mono_apis<'tcx>(
     let ret = ret.filter(|mono| {
         is_args_fit_trait_bound(fn_did, &mono.value, tcx)
             && mono.value.iter().all(|arg| {
-                if let Some(ty) = arg.as_type() {
-                    !utils::is_ty_unstable(ty, tcx)
-                } else {
-                    true
-                }
+                arg.as_type()
+                    .map_or(true, |ty| !utils::is_ty_unstable(ty, tcx))
             })
     });
 

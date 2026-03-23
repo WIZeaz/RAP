@@ -1,9 +1,10 @@
 use super::lifetime;
 use super::lifetime::visit_ty_region_with;
-use crate::analysis::testgen::context_builder::folder::InfcxVarFolder;
+use crate::analysis::testgen::context_builder::lifetime::extract_rids;
 use crate::analysis::testgen::utils;
 use rustc_hir::def_id::DefId;
 use rustc_infer::infer;
+use rustc_infer::infer::{InferCtxt, RegionVariableOrigin};
 use rustc_infer::{infer::TyCtxtInferExt as _, traits::ObligationCause};
 use rustc_middle::ty::{self, TyCtxt, TypeFoldable as _};
 use rustc_span::DUMMY_SP;
@@ -83,6 +84,21 @@ pub fn extract_constraints<'tcx>(
     generic_args: &[ty::GenericArg<'tcx>],
     tcx: TyCtxt<'tcx>,
 ) -> EdgePatterns {
+    struct InfcxVarFolder<'tcx, 'a> {
+        infcx: &'a InferCtxt<'tcx>,
+        tcx: TyCtxt<'tcx>,
+    }
+
+    impl<'tcx, 'a> ty::TypeFolder<TyCtxt<'tcx>> for InfcxVarFolder<'tcx, 'a> {
+        fn cx(&self) -> TyCtxt<'tcx> {
+            self.tcx
+        }
+        fn fold_region(&mut self, _: ty::Region<'tcx>) -> ty::Region<'tcx> {
+            self.infcx
+                .next_region_var(RegionVariableOrigin::Misc(DUMMY_SP))
+        }
+    }
+
     rap_trace!(
         "[extract_constraints] fn_did: {:?}, generic_args: {:?}",
         fn_did,
@@ -90,17 +106,16 @@ pub fn extract_constraints<'tcx>(
     );
 
     let infcx = tcx.infer_ctxt().build(ty::TypingMode::PostAnalysis);
-    let mut folder = InfcxVarFolder::new(&infcx, tcx);
+    let mut folder = InfcxVarFolder { infcx: &infcx, tcx };
 
-    let early_fn_sig = tcx.fn_sig(fn_did);
-    rap_debug!("[extract_contraints] early_fn_sig = {:?}", early_fn_sig);
-
+    // instantiate generic args with fresh inference variables
     let fresh_args =
         tcx.mk_args_from_iter(generic_args.iter().map(|arg| arg.fold_with(&mut folder)));
-    rap_debug!("[extract_contraints] fresh_args = {:?}", fresh_args);
+    rap_trace!("[extract_contraints] fresh_args = {:?}", fresh_args);
 
-    // formal fn_sig
-    let fn_binder = early_fn_sig.instantiate(tcx, fresh_args);
+    let generic_fn_sig = tcx.fn_sig(fn_did);
+    // instantiate the generic fn_sig with fresh generic args
+    let fn_binder = generic_fn_sig.instantiate(tcx, fresh_args);
     let fn_sig = infcx.instantiate_binder_with_fresh_vars(
         DUMMY_SP,
         infer::BoundRegionConversionTime::FnCall,
@@ -110,11 +125,15 @@ pub fn extract_constraints<'tcx>(
     let temp_cnt = infcx.num_region_vars();
     assert!(infcx.num_ty_vars() == 0);
 
-    // outer universe fn_sig
+    // this fn_sig indicates an aribtary instantiation of the fn
     let free_fn_sig = fn_sig.fold_with(&mut folder);
+    let rids = extract_rids(free_fn_sig);
+    rap_trace!("[extract_contraints] rids = {:?}", rids);
+    // assert rids should be in ascending order
+    assert!(rids.windows(2).all(|w| w[0].index() < w[1].index()));
 
-    rap_debug!("[extract_contraints] fn_sig = {:?}", fn_sig);
-    rap_debug!("[extract_contraints] free_fn_sig = {:?}", free_fn_sig);
+    rap_trace!("[extract_contraints] fn_sig = {:?}", fn_sig);
+    rap_trace!("[extract_contraints] free_fn_sig = {:?}", free_fn_sig);
 
     let param_env = tcx.param_env(fn_did);
 
@@ -170,7 +189,7 @@ pub fn extract_constraints<'tcx>(
             ty::ClauseKind::TypeOutlives(pred) => {
                 let ty = pred.0;
                 let region = pred.1;
-                rap_debug!("pred: {:?} {:?}", ty, region);
+                rap_trace!("pred: {:?} {:?}", ty, region);
                 visit_ty_region_with(ty, Some(region), tcx, &mut |prev, current| {
                     subgraph.patterns.push(EdgePattern(
                         get_pattern_node(prev),

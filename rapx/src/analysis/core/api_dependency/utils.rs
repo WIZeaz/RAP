@@ -82,5 +82,5 @@ pub fn ty_complexity<'tcx>(ty: Ty<'tcx>) -> usize {
 }
 
 pub fn is_ty_unstable<'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'tcx>) -> bool {
-    ty == tcx.types.f16
+    ty == tcx.types.f16 || ty == tcx.types.f128 || ty == tcx.types.never
 }
