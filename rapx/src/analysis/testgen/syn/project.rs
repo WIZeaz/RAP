@@ -67,7 +67,9 @@ impl CargoProjectBuilder {
             file,
             "{} = {{ path = \"{}\" }}",
             self.option.tested_crate_name,
-            self.option.tested_crate_path.display()
+            pathdiff::diff_paths(&self.option.tested_crate_path, project_path)
+                .unwrap()
+                .display()
         )?;
 
         if false {

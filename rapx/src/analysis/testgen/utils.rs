@@ -1,24 +1,9 @@
-pub use crate::analysis::core::api_dependency::{is_def_id_public, is_fuzzable_ty};
+pub use crate::analysis::core::api_dependency::{is_def_id_directly_public, is_fuzzable_ty};
 use rustc_hir::{BodyOwnerKind, def_id::DefId};
 use rustc_infer::infer::TyCtxtInferExt as _;
 use rustc_middle::ty::{self, FnSig, ParamEnv, Ty, TyCtxt, TyKind};
 use rustc_span::STDLIB_STABLE_CRATES;
 use rustc_trait_selection::infer::InferCtxtExt;
-
-/// return all DefId of all pub APIs
-pub fn get_all_pub_apis(tcx: TyCtxt<'_>) -> Vec<DefId> {
-    let mut apis = Vec::new();
-
-    for local_def_id in tcx.hir_body_owners() {
-        if matches!(tcx.hir_body_owner_kind(local_def_id), BodyOwnerKind::Fn)
-            && is_def_id_public(local_def_id, tcx)
-        {
-            // tcx.hir().
-            apis.push(local_def_id.to_def_id());
-        }
-    }
-    apis
-}
 
 pub fn fn_requires_monomorphization<'tcx>(fn_did: DefId, tcx: TyCtxt<'_>) -> bool {
     tcx.generics_of(fn_did).requires_monomorphization(tcx)

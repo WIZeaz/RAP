@@ -95,7 +95,10 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
     pub fn add_box_stmt(&mut self, boxed: Var) -> Var {
         self.move_var(boxed);
         let ty = self.cx.type_of(boxed);
-        let var = self.mk_var(Ty::new_box(self.tcx, ty), false);
+        // NOTE: we use ty instead of Box<ty> because we cannot
+        // get DefId of `Box` on no-std environment.
+        // this is sound for building lifetime contraints.
+        let var = self.mk_var(ty, false);
         self.add_stmt(Stmt::box_(var, boxed));
         var
     }
@@ -178,13 +181,26 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
                         var = DUMMY_INPUT_VAR;
                     }
                     // Handle &str/&mut str
-                    (_, TyKind::Str, _) => {
-                        let inner_var = self.try_add_input_stmts(
-                            Ty::new_lang_item(self.tcx, self.tcx.types.unit, LangItem::String)
-                                .unwrap(),
-                            true,
-                        );
-                        var = self.add_ref_stmt(inner_var, *mutability, Some(self.tcx.types.str_));
+                    (_, TyKind::Str, mutability) => {
+                        match Ty::new_lang_item(self.tcx, self.tcx.types.unit, LangItem::String) {
+                            Some(string_ty) => {
+                                let inner_var = self.try_add_input_stmts(string_ty, true);
+                                var = self.add_ref_stmt(
+                                    inner_var,
+                                    *mutability,
+                                    Some(self.tcx.types.str_),
+                                );
+                            }
+                            None => {
+                                assert!(
+                                    mutability.is_not(),
+                                    "String is required to generate &mut str"
+                                );
+                                // if String is not available, we cannot generate &str by making string,
+                                // so we fallback to the default implementation which generates &str from input
+                                var = DUMMY_INPUT_VAR;
+                            }
+                        }
                     }
                     // handle &[T]/&mut [T]
                     (_, TyKind::Slice(slice_ty), _) => {

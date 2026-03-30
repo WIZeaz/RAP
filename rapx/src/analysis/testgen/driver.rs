@@ -11,7 +11,7 @@ use crate::analysis::utils::path::get_path_resolver;
 use anyhow::Result;
 use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_middle::ty::TyCtxt;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
@@ -55,6 +55,15 @@ fn default_timeout() -> usize {
 
 fn default_mode() -> Mode {
     Mode::Normal
+}
+
+#[derive(Clone, Serialize, Default, Debug)]
+#[serde(rename_all = "snake_case")]
+struct Stats {
+    results: HashMap<EvalResult, usize>,
+    num_total: usize,
+    num_estimated: usize,
+    num_covered: usize,
 }
 
 impl Config {
@@ -180,6 +189,7 @@ pub fn driver_main(tcx: TyCtxt<'_>) -> Result<()> {
     ltgen.log_depth_map();
 
     let report_path = workspace_dir.join("miri_report.txt");
+    let stats_path = workspace_dir.join("stats.yaml");
 
     let mut report_file = std::fs::OpenOptions::new()
         .create(true)
@@ -191,7 +201,7 @@ pub fn driver_main(tcx: TyCtxt<'_>) -> Result<()> {
     let package_dir = std::env::var("CARGO_MANIFEST_DIR")?;
 
     let resolver = get_path_resolver(tcx);
-    let mut eval_map: HashMap<EvalResult, usize> = HashMap::new();
+    let mut global_stats = Stats::default();
 
     while config.max_run == 0 || run_count < config.max_run {
         // 1. generate context
@@ -229,18 +239,14 @@ pub fn driver_main(tcx: TyCtxt<'_>) -> Result<()> {
         // 4. exec `cargo check` and `cargo miri run` to evaluate the generated program
         match check_and_evaluate(&project, &mut report_file, &config) {
             Ok(eval_result) => {
-                *eval_map.entry(eval_result).or_default() += 1;
-                if let EvalResult::UBDetected = eval_result {
+                *global_stats.results.entry(eval_result).or_default() += 1;
+                if let EvalResult::UbDetected = eval_result {
                     let new_project = project.copy_to(&poc_path)?;
                     rap_warn!(
                         "copy project to {} and reduce",
                         new_project.option().project_path.display()
                     );
                     new_project.reduce()?;
-                    if config.terminate_on_ub {
-                        rap_info!("terminate on first UB detection");
-                        break;
-                    }
                 }
             }
             Err(err) => {
@@ -254,7 +260,12 @@ pub fn driver_main(tcx: TyCtxt<'_>) -> Result<()> {
             }
         }
 
-        rap_info!("eval result count: {:?}", eval_map);
+        global_stats.num_total = ltgen.state().num_total_api();
+        global_stats.num_estimated = ltgen.state().num_estimate_covered_api();
+        global_stats.num_covered = ltgen.state().num_global_covered_api();
+
+        rap_info!("current stats: {:?}", global_stats);
+        serde_yaml::to_writer(&mut std::fs::File::create(&stats_path)?, &global_stats)?;
 
         writeln!(&mut report_file, "{}", delimeter)?;
 
@@ -271,6 +282,18 @@ pub fn driver_main(tcx: TyCtxt<'_>) -> Result<()> {
         }
 
         run_count += 1;
+
+        if config.terminate_on_ub
+            && global_stats
+                .results
+                .get(&EvalResult::UbDetected)
+                .copied()
+                .unwrap_or_default()
+                > 0
+        {
+            rap_info!("terminate on first UB detection");
+            break;
+        }
     }
 
     writeln!(&mut report_file, "{}", ltgen.statistic_str())?;
@@ -279,10 +302,11 @@ pub fn driver_main(tcx: TyCtxt<'_>) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EvalResult {
     Success,
-    UBDetected,
+    UbDetected,
     Timeout,
     CompileFailed,
     Other,
@@ -323,7 +347,7 @@ fn check_and_evaluate(
         let stderr_str = String::from_utf8_lossy(&result.stderr);
         match result.retcode {
             Some(1) if stderr_str.contains("error: Undefined Behavior:") => {
-                eval_result = EvalResult::UBDetected;
+                eval_result = EvalResult::UbDetected;
                 rap_warn!("this may indicate a UB bug detected");
             }
             Some(_) => {

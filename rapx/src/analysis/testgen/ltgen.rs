@@ -85,12 +85,12 @@ fn get_initial_drop_prob() -> f64 {
     }
 }
 
-struct GlobalState<'tcx> {
+pub struct GlobalState<'tcx> {
     // covered_api: HashSet<DefId>,
     reach_map: HashMap<DepNode<'tcx>, usize>,
     drop_prob: HashMap<DepNode<'tcx>, f64>,
-    estimated_covered_api: usize,
-    total_api: usize,
+    num_estimated: usize,
+    num_total: usize,
 }
 
 impl<'tcx> GlobalState<'tcx> {
@@ -100,8 +100,8 @@ impl<'tcx> GlobalState<'tcx> {
             // covered_api: HashSet::new(),
             reach_map: HashMap::new(),
             drop_prob: HashMap::new(),
-            estimated_covered_api: estimated,
-            total_api: total,
+            num_estimated: estimated,
+            num_total: total,
         }
     }
 
@@ -115,7 +115,15 @@ impl<'tcx> GlobalState<'tcx> {
     }
 
     pub fn num_global_covered_api(&self) -> usize {
-        self.reach_map.len()
+        self.covered_apis().count()
+    }
+
+    pub fn num_estimate_covered_api(&self) -> usize {
+        self.num_estimated
+    }
+
+    pub fn num_total_api(&self) -> usize {
+        self.num_total
     }
 
     pub fn reach(&mut self, node: DepNode<'tcx>) {
@@ -166,6 +174,10 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
             depth_map,
             global,
         }
+    }
+
+    pub fn state(&self) -> &GlobalState<'tcx> {
+        &self.global
     }
 
     fn cx_complexity(&self, builder: &ContextBuilder<'tcx, 'a>) -> usize {
@@ -265,8 +277,8 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
             // 5. log statistics
             let current = current_reach.len();
             let global = self.global.num_global_covered_api();
-            let total = self.global.total_api;
-            let estimate = self.global.estimated_covered_api;
+            let total = self.global.num_total_api();
+            let estimate = self.global.num_estimated;
             rap_info!(
                 "num_stmt={}, complexity={}, num_drop_inject={}, covered_api(current/global/estimate/total)={}/{}/{}/{}",
                 builder.cx().num_stmt(),

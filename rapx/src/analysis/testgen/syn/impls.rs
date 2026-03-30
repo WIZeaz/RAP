@@ -186,7 +186,7 @@ impl<'a, 'tcx, I: InputGen> FuzzDriverSynImpl<'a, 'tcx, I> {
 
     fn header_str(&self) -> String {
         format!(
-            "#![feature(allocator_api)]\nuse {}::*;",
+            "#![feature(allocator_api)]\nextern crate alloc;\nuse {}::*;",
             self.option.crate_name
         )
     }

@@ -1,6 +1,7 @@
 #![allow(clippy::bool_assert_comparison)]
 use fs4::fs_std::FileExt;
 use insta::assert_snapshot;
+use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -34,12 +35,15 @@ fn run_with_args(dir: &str, args: &[&str]) -> String {
 
     let lock_path = project_path.join(".rapx-test.lock");
     let lock_file = File::create(&lock_path).expect("Failed to create lock file");
+    let cargo_rapx_path = Path::new(env!("CARGO_BIN_EXE_cargo-rapx"));
+    let rapx_path = Path::new(env!("CARGO_BIN_EXE_rapx"));
     lock_file.lock_exclusive().expect("Failed to acquire lock");
 
-    let output = Command::new("cargo")
+    let output = Command::new(cargo_rapx_path)
         .arg("rapx")
         .args(args)
         .current_dir(project_path)
+        .env("RAP_EXE_PATH", rapx_path)
         .output()
         .expect("Failed to execute cargo rapx");
 
@@ -77,6 +81,7 @@ const ANALYZE_RANGE_CMD: &[&str] = &["analyze", "range"];
 const ANALYZE_CALLGRAPH_CMD: &[&str] = &["analyze", "callgraph"];
 const AUDIT_UNSAFE_APIS_CMD: &[&str] = &["extract", "unsafe-apis"];
 const ANALYZE_ADG_CMD: &[&str] = &["analyze", "adg", "--dump", "api_graph.yml"];
+const TESTGEN_CMD: &[&str] = &["test"];
 
 // ================Dangling Pointer Detection Test=====================
 #[test]
@@ -585,4 +590,32 @@ fn test_adg_doc_graph() {
     let graph_str = std::fs::read_to_string(project_path("adg/doc-graph").join("api_graph.yml"))
         .expect("read api_graph.yml fail");
     assert_snapshot!(graph_str);
+}
+
+#[test]
+fn test_lifesonar_no_std() {
+    let _ = run_with_args("testgen/no-std", TESTGEN_CMD);
+    let str = std::fs::read_to_string(project_path("testgen/no-std/testgen").join("stats.yaml"))
+        .expect("read stats.yaml fail");
+    let stats: HashMap<String, i32> = serde_yaml::from_str(&str).expect("parse stats.yaml fail");
+    assert_eq!(stats.get("success"), Some(&1));
+}
+
+#[test]
+fn test_lifesonar_opaque_type() {
+    let _ = run_with_args("testgen/opaque-type", TESTGEN_CMD);
+    let str =
+        std::fs::read_to_string(project_path("testgen/opaque-type/testgen").join("stats.yaml"))
+            .expect("read stats.yaml fail");
+    let stats: HashMap<String, i32> = serde_yaml::from_str(&str).expect("parse stats.yaml fail");
+    assert_eq!(stats.get("success"), Some(&1));
+}
+
+#[test]
+fn test_lifesonar_reexport() {
+    let _ = run_with_args("testgen/reexport", TESTGEN_CMD);
+    let str = std::fs::read_to_string(project_path("testgen/reexport/testgen").join("stats.yaml"))
+        .expect("read stats.yaml fail");
+    let stats: HashMap<String, i32> = serde_yaml::from_str(&str).expect("parse stats.yaml fail");
+    assert_eq!(stats.get("success"), Some(&1));
 }

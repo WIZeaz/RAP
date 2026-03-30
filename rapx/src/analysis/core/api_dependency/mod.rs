@@ -17,7 +17,7 @@ use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_middle::ty::TyCtxt;
 use serde::Serialize;
 use std::path::PathBuf;
-pub use utils::{is_def_id_public, is_fuzzable_ty};
+pub use utils::{is_def_id_directly_public, is_fuzzable_ty};
 pub use visit::Config as VisitConfig;
 
 #[derive(Debug, Clone, Serialize)]

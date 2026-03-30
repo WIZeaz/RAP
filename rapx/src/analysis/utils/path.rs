@@ -41,7 +41,7 @@ impl<'tcx> PathResolver<'tcx> {
         };
 
         for child in childs {
-            if !child.vis.is_public() {
+            if !child.vis.is_public() || child.ident.as_str() == "_" {
                 continue;
             }
             if let Some(did) = child.res.opt_def_id() {
@@ -69,6 +69,41 @@ impl<'tcx> PathResolver<'tcx> {
                 self.tcx.def_path_str(def_id)
             }
         }
+    }
+
+    fn non_assoc_path_str_with_args(
+        &self,
+        def_id: DefId,
+        args: ty::GenericArgsRef<'tcx>,
+    ) -> String {
+        let path = self.non_assoc_path_str(def_id);
+        let generic = self.tcx.generics_of(def_id);
+        assert!(generic.own_params.len() == args.len());
+
+        let args = args
+            .iter()
+            .zip(generic.own_params.iter())
+            .filter_map(|(arg, param)| {
+                if param.kind.is_synthetic() {
+                    None
+                } else {
+                    Some(arg)
+                }
+            })
+            .join(", ");
+        if args.is_empty() {
+            path
+        } else {
+            format!("{}::<{}>", path, args)
+        }
+    }
+
+    pub fn paths(&self) -> impl Iterator<Item = (DefId, &str)> {
+        self.path_map.iter().map(|(did, s)| (*did, s.as_str()))
+    }
+
+    pub fn exist_path(&self, did: DefId) -> bool {
+        self.path_map.contains_key(&did)
     }
 
     pub fn ty_str(&self, ty: Ty<'tcx>) -> String {
@@ -178,15 +213,8 @@ impl<'tcx> PathResolver<'tcx> {
                 format!("{}::{}", parent_path_str, self.tcx.item_name(def_id))
             }
         } else {
-            if args.len() > 0 {
-                format!(
-                    "{}::{}",
-                    self.non_assoc_path_str(def_id),
-                    self.generic_args_str(args)
-                )
-            } else {
-                format!("{}", self.non_assoc_path_str(def_id))
-            }
+            // non assoc item
+            self.non_assoc_path_str_with_args(def_id, args)
         }
     }
 
@@ -203,7 +231,7 @@ impl<'tcx> PathResolver<'tcx> {
             "<{}>",
             generic_args
                 .iter()
-                .map(|arg| self.generic_arg_str(*arg))
+                .map(|arg| { self.generic_arg_str(*arg) })
                 .join(", ")
         )
     }

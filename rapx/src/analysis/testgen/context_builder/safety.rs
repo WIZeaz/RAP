@@ -19,7 +19,7 @@ fn ty_project_to<'tcx>(mut ty: Ty<'tcx>, proj: &[usize], tcx: TyCtxt<'tcx>) -> T
                 tcx.type_of(did).instantiate(tcx, args)
             }
             _ => {
-                panic!("not a struct type");
+                panic!("unexpected type: {:?}", ty);
             }
         }
     }

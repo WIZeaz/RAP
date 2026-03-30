@@ -5,18 +5,17 @@ use rustc_hir::def_id::DefId;
 use rustc_middle::ty::{self, FnSig, GenericArgsRef, Ty, TyCtxt, TyKind};
 use rustc_span::sym;
 
-pub fn is_def_id_public(fn_def_id: impl Into<DefId>, tcx: TyCtxt<'_>) -> bool {
-    let fn_def_id: DefId = fn_def_id.into();
-    let local_id = fn_def_id.expect_local();
+pub fn is_def_id_directly_public(def_id: impl Into<DefId>, tcx: TyCtxt<'_>) -> bool {
+    let def_id: DefId = def_id.into();
+    let local_id = def_id.expect_local();
     rap_trace!(
         "vis: {:?} (path: {}) => {:?}",
-        fn_def_id,
-        tcx.def_path_str(fn_def_id),
+        def_id,
+        tcx.def_path_str(def_id),
         tcx.effective_visibilities(()).effective_vis(local_id)
     );
 
     tcx.effective_visibilities(()).is_directly_public(local_id)
-        || tcx.effective_visibilities(()).is_exported(local_id)
 }
 
 pub fn is_fuzzable_ty<'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'tcx>) -> bool {

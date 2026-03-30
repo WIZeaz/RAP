@@ -45,9 +45,9 @@ impl<'tcx> Statistics<'tcx> {
 
 impl CrateSafetyInfo {
     pub fn print_log(&self) {
-        rap_info!("# total api    = {}", self.num_total_api);
-        rap_info!("# generic api  = {}", self.num_generic_api);
-        rap_info!("# unsafe api   = {}", self.num_unsafe_api);
+        rap_info!("# total APIs   = {}", self.num_total_api);
+        rap_info!("# generic APIs = {}", self.num_generic_api);
+        rap_info!("# unsafe APIs  = {}", self.num_unsafe_api);
         rap_info!("# unsafe block = {}", self.num_unsafe_block);
     }
 }

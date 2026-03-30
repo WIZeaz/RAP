@@ -1,7 +1,8 @@
 use super::graph::ApiDependencyGraph;
 use super::graph::{DepEdge, DepNode};
-use super::is_def_id_public;
+use super::is_def_id_directly_public;
 use crate::analysis::core::api_dependency::mono;
+use crate::analysis::utils::path::{PathResolver, get_path_resolver};
 use crate::{rap_debug, rap_trace};
 use rustc_hir::LangItem;
 use rustc_hir::{
@@ -39,15 +40,18 @@ pub struct FnVisitor<'tcx> {
     apis: Vec<DefId>,
     generic_apis: Vec<DefId>,
     config: Config,
+    resolver: PathResolver<'tcx>,
 }
 
 impl<'tcx> FnVisitor<'tcx> {
     pub fn new(config: Config, tcx: TyCtxt<'tcx>) -> FnVisitor<'tcx> {
+        let resolver = get_path_resolver(tcx);
         FnVisitor {
             tcx,
             apis: Vec::new(),
             generic_apis: Vec::new(),
             config,
+            resolver,
         }
     }
 
@@ -126,7 +130,11 @@ impl<'tcx> Visitor<'tcx> for FnVisitor<'tcx> {
             return;
         }
 
-        if self.config.pub_only && !is_def_id_public(fn_did, self.tcx) {
+        // determine whether this DefId can be visited from crate outside
+        let can_visit =
+            is_def_id_directly_public(fn_did, self.tcx) || self.resolver.exist_path(fn_did);
+
+        if self.config.pub_only && !can_visit {
             rap_trace!("skip for non-public");
             return;
         }

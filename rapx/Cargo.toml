@@ -58,6 +58,7 @@ indexmap = "2.13.0"
 serde_yaml = "0.9.34"
 anyhow = "1.0.102"
 insta = { version = "1.46.3", features = ["yaml"] }
+pathdiff = "0.2.3"
 [features]
 backtraces = ["snafu/backtraces", "snafu/backtraces-impl-backtrace-crate"]
 
