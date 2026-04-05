@@ -197,7 +197,10 @@ fn range_for_uint_ty(uint_ty: UintTy) -> Range<u64> {
 
 fn gen_random_utf8_seq<R: Rng>(rng: &mut R, min_len: usize, max_len: usize) -> String {
     let len = rng.random_range(min_len..=max_len);
-    rng.random_iter::<char>().take(len).collect()
+    rng.random_iter::<char>()
+        .take(len)
+        .map(|c| c.escape_default().to_string())
+        .collect()
 }
 
 impl<R: Rng> InputGen for RandomGen<R> {
