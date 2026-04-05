@@ -132,8 +132,20 @@ impl Callbacks for RapCallback {
             .as_deref()
             .map(|s| matches!(s, "core" | "std"))
             .unwrap_or(false);
-        preprocess::dummy_fns::create_dummy_fns(krate, build_std);
-        preprocess::ssa_preprocess::create_ssa_struct(krate, build_std);
+        match self.args.command {
+            Commands::Analyze {
+                kind: AnalysisKind::UpgStd | AnalysisKind::Upg,
+            } => {
+                preprocess::dummy_fns::create_dummy_fns(krate, build_std);
+            }
+            Commands::Analyze {
+                kind: AnalysisKind::Ssa | AnalysisKind::Pathcond | AnalysisKind::Range { .. },
+            } => {
+                preprocess::ssa_preprocess::create_ssa_struct(krate, build_std);
+            }
+            _ => {}
+        }
+
         Compilation::Continue
     }
     fn after_analysis<'tcx>(&mut self, _compiler: &Compiler, tcx: TyCtxt<'tcx>) -> Compilation {
