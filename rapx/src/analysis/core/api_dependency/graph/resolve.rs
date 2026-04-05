@@ -32,6 +32,7 @@ use std::path::Path;
 use std::time;
 
 const MAX_TY_COMPLX: usize = 5;
+const RESOLVE_DEBUG: bool = false;
 
 fn add_return_type_if_reachable<'tcx>(
     fn_did: DefId,
@@ -218,7 +219,10 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
 
         rap_info!("finish resolving generic APIs");
         self.statistics().info();
-        self.dump_to_file(Path::new("api_graph_unpruned.dot"));
+
+        if RESOLVE_DEBUG {
+            self.dump_to_file(Path::new("api_graph_unpruned.dot"));
+        }
 
         let reserved = self.prune_by_similarity(generic_map);
 
@@ -254,9 +258,12 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
             );
 
             // dump all reachable types to files, each line output a type
-            let mut file = rap_create_file(Path::new("reachable_types.txt"), "create file fail");
-            for ty in all_reachable_tys.iter() {
-                writeln!(file, "{}", ty.ty()).unwrap();
+            if RESOLVE_DEBUG {
+                let mut file =
+                    rap_create_file(Path::new("reachable_types.txt"), "create file fail");
+                for ty in all_reachable_tys.iter() {
+                    writeln!(file, "{}", ty.ty()).unwrap();
+                }
             }
 
             let mut current_tys = HashSet::new();
