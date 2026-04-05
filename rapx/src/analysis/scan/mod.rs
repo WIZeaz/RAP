@@ -32,10 +32,15 @@ impl<'tcx> Analysis for ScanAnalysis<'tcx> {
         self.tcx.hir_visit_all_item_likes_in_crate(&mut fn_visitor);
         let stats = fn_visitor.statistic();
         stats.info().print_log();
-        rap_info!("============================");
+        rap_info!("======== Path Info =========");
         let resolver = get_path_resolver(self.tcx);
         for (did, path_str) in resolver.paths() {
-            rap_info!("{:?} => {}", did, path_str);
+            rap_info!(
+                "kind: {}, actual: {}, public: {}",
+                self.tcx.def_descr(did),
+                self.tcx.def_path_str(did),
+                path_str
+            );
         }
     }
 
