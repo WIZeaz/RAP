@@ -1,4 +1,4 @@
-use crate::{rap_info, rap_warn};
+use crate::rap_warn;
 use chrono::Local;
 use fern::colors::{Color, ColoredLevelConfig};
 use fern::{self, Dispatch};

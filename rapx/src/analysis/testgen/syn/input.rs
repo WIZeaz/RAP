@@ -46,7 +46,7 @@ pub trait InputGen {
         match ty.kind() {
             TyKind::Ref(_, inner_ty, mutability) => {
                 if inner_ty.is_str() && mutability.is_not() {
-                    return format!("\"{}\"", self.gen_str());
+                    return format!("\"{}\"", self.gen_str().escape_debug());
                 }
                 format!(
                     "{}{}",
@@ -68,7 +68,9 @@ pub trait InputGen {
             TyKind::Float(float_ty) => {
                 format!("{}{}", self.gen_float().to_string(), float_ty.name_str())
             }
-            TyKind::Char => format!("'{}'", self.gen_char()),
+            TyKind::Char => {
+                format!("'{}'", self.gen_char().escape_debug())
+            }
             TyKind::Str => {
                 unreachable!("str should be referenced as &str");
             }
@@ -197,10 +199,7 @@ fn range_for_uint_ty(uint_ty: UintTy) -> Range<u64> {
 
 fn gen_random_utf8_seq<R: Rng>(rng: &mut R, min_len: usize, max_len: usize) -> String {
     let len = rng.random_range(min_len..=max_len);
-    rng.random_iter::<char>()
-        .take(len)
-        .map(|c| c.escape_default().to_string())
-        .collect()
+    rng.random_iter::<char>().take(len).collect()
 }
 
 impl<R: Rng> InputGen for RandomGen<R> {
@@ -240,7 +239,10 @@ impl<R: Rng> InputGen for RandomGen<R> {
         if let TyKind::Adt(adt_def, args) = ty.kind() {
             let did = adt_def.did();
             if tcx.is_lang_item(did, LangItem::String) {
-                return Some(format!("String::from(\"{}\")", self.gen_str()));
+                return Some(format!(
+                    "String::from(\"{}\")",
+                    self.gen_str().escape_debug()
+                ));
             }
             if tcx.is_diagnostic_item(sym::Vec, did) {
                 let mut rng = rand::rng();

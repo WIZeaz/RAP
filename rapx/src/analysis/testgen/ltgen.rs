@@ -4,6 +4,7 @@ use super::context_builder::ContextBuilder;
 use crate::analysis::core::alias_analysis::FnAliasMap;
 use crate::analysis::core::api_dependency::{ApiDependencyGraph, DepNode, graph::TransformKind};
 use crate::analysis::testgen::context::DUMMY_INPUT_VAR;
+use crate::analysis::testgen::driver;
 use crate::analysis::testgen::utils::{self};
 use itertools::Itertools;
 use rand::rngs::ThreadRng;
@@ -251,25 +252,28 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
             self.global.reach(action.node());
             current_reach.insert(action.node());
 
-            // 4. test drop injection and exploit generation
-            let drop_prob = self
-                .global
-                .drop_prob
-                .entry(action.node())
-                .or_insert(self.config.initial_drop_prob);
+            // 4. test drop injection
+            if !driver::disable_alias() {
+                let drop_prob = self
+                    .global
+                    .drop_prob
+                    .entry(action.node())
+                    .or_insert(self.config.initial_drop_prob);
 
-            rap_info!("test drop prob: {:.2}", drop_prob);
-            if !self.rng.borrow_mut().random_bool(*drop_prob) {
-                rap_info!("skip drop injection");
-            } else if builder.try_inject_drop() {
-                num_drop_inject += 1;
-                drop_prob.mul_assign(self.config.alpha);
-                rap_info!(
-                    "successfully inject drop, drop_prob update to {}",
-                    drop_prob
-                );
+                rap_info!("test drop prob: {:.2}", drop_prob);
+                if !self.rng.borrow_mut().random_bool(*drop_prob) {
+                    rap_info!("skip drop injection");
+                } else if builder.try_inject_drop() {
+                    num_drop_inject += 1;
+                    drop_prob.mul_assign(self.config.alpha);
+                    rap_info!(
+                        "successfully inject drop, drop_prob update to {}",
+                        drop_prob
+                    );
+                }
             }
 
+            // 5. try add exploit stmt
             if builder.try_add_exploit_stmt_for(place) {
                 rap_info!("add exploit stmt for {place}");
             }

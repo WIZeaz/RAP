@@ -9,7 +9,8 @@ use crate::analysis::testgen::syn::project::{CargoProjectBuilder, PocProject, Rs
 use crate::analysis::testgen::syn::{SynOption, Synthesizer};
 use crate::analysis::utils::path::get_path_resolver;
 use anyhow::Result;
-use rustc_hir::def_id::LOCAL_CRATE;
+use core::slice::SlicePattern;
+use rustc_hir::def_id::{DefId, LOCAL_CRATE};
 use rustc_middle::ty::TyCtxt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -31,6 +32,8 @@ struct Config {
     pub timeout: usize,
     #[serde(default)]
     pub terminate_on_ub: bool,
+    #[serde(default = "default_skip_thresh")]
+    pub skip_thresh: usize,
 }
 
 #[derive(Copy, Clone, Debug, Deserialize)]
@@ -57,7 +60,15 @@ fn default_mode() -> Mode {
     Mode::Normal
 }
 
-#[derive(Clone, Serialize, Default, Debug)]
+fn default_skip_thresh() -> usize {
+    5
+}
+
+pub fn disable_alias() -> bool {
+    true
+}
+
+#[derive(Clone, Serialize, Deserialize, Default, Debug)]
 #[serde(rename_all = "snake_case")]
 struct Stats {
     results: HashMap<EvalResult, usize>,
@@ -127,6 +138,24 @@ fn asan_env_vars() -> &'static [(&'static str, &'static str)] {
     &[("RUSTFLAGS", "-Awarnings -Zsanitizer=address")]
 }
 
+fn dep_crates_for_synthesis(def_ids: &[DefId], tcx: TyCtxt) -> Vec<String> {
+    let mut deps = Vec::new();
+
+    for def_id in def_ids {
+        if !deps.contains(&def_id.krate) {
+            let crate_name = tcx.crate_name(def_id.krate);
+            deps.push(def_id.krate);
+            rap_warn!(
+                "crate {} is used in synthesis, adding it to dependencies",
+                crate_name
+            );
+        }
+    }
+    deps.into_iter()
+        .map(|krate| tcx.crate_name(krate).to_string())
+        .collect()
+}
+
 pub fn driver_main(tcx: TyCtxt<'_>) -> Result<()> {
     let config = Config::load()?;
     let local_crate_name = tcx.crate_name(LOCAL_CRATE);
@@ -169,8 +198,23 @@ pub fn driver_main(tcx: TyCtxt<'_>) -> Result<()> {
 
     api_dep_graph.dump_to_file(workspace_dir.join("api_graph.dot"))?;
 
+    let (num_estimated, _) = api_dep_graph.estimate_coverage();
+
+    if num_estimated <= config.skip_thresh {
+        rap_warn!(
+            "estimated covered API is {}, which is smaller than the skip_threshold {}. Skipping testgen",
+            num_estimated,
+            config.skip_thresh
+        );
+        return Ok(());
+    }
+
     let mut alias_analyzer = alias_analysis::default::AliasAnalyzer::new(tcx);
-    alias_analyzer.run();
+    if disable_alias() {
+        rap_info!("alias analysis is disabled, all functions will be treated as non-alias");
+    } else {
+        alias_analyzer.run();
+    }
     let alias_map = alias_analyzer.get_all_fn_alias();
 
     let alias_file = std::fs::OpenOptions::new()
@@ -214,6 +258,9 @@ pub fn driver_main(tcx: TyCtxt<'_>) -> Result<()> {
         let mut syn = FuzzDriverSynImpl::new(RandomGen::new(), option, tcx, &resolver);
         let rs_str = syn.syn(cx.cx(), tcx);
 
+        let non_local_def_ids = resolver.non_local_def_ids();
+        let deps = dep_crates_for_synthesis(non_local_def_ids.as_slice(), tcx);
+
         // 3. Build cargo project
         let project_name = format!("case{}", run_count);
         let project_path = workspace_dir.join("tests").join(&project_name);
@@ -226,7 +273,7 @@ pub fn driver_main(tcx: TyCtxt<'_>) -> Result<()> {
             project_path: project_path.clone(),
         };
 
-        let project_builder = CargoProjectBuilder::new(project_option);
+        let project_builder = CargoProjectBuilder::new(project_option).deps(deps);
         let project = project_builder.build()?;
         project.create_src_file("main.rs", &rs_str)?;
         // output debug file
@@ -302,7 +349,7 @@ pub fn driver_main(tcx: TyCtxt<'_>) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Serialize)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvalResult {
     Success,

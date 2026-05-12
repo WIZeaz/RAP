@@ -1,3 +1,4 @@
+use itertools::Itertools;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -16,6 +17,7 @@ pub struct RsProjectOption {
 /// Generator for fuzz driver projects.
 pub struct CargoProjectBuilder {
     option: RsProjectOption,
+    deps: Vec<String>,
 }
 
 pub struct PocProject {
@@ -24,7 +26,15 @@ pub struct PocProject {
 
 impl CargoProjectBuilder {
     pub fn new(option: RsProjectOption) -> Self {
-        Self { option }
+        Self {
+            option,
+            deps: Vec::new(),
+        }
+    }
+
+    pub fn deps(mut self, deps: Vec<String>) -> Self {
+        self.deps = deps;
+        self
     }
 
     pub fn build(self) -> io::Result<PocProject> {
@@ -37,7 +47,7 @@ impl CargoProjectBuilder {
         fs::create_dir_all(project_path.join("src"))?;
 
         // add dependencies to Cargo.toml
-        self.update_cargo_toml(&project_path)?;
+        self.update_cargo_toml()?;
 
         rap_info!(
             "Successfully created fuzz driver project at: {}",
@@ -48,7 +58,23 @@ impl CargoProjectBuilder {
         })
     }
 
-    fn update_cargo_toml(&self, project_path: &Path) -> io::Result<()> {
+    fn dependencies_str(&self) -> String {
+        let this_dep = format!(
+            "{} = {{ path = \"{}\" }}",
+            self.option.tested_crate_name,
+            pathdiff::diff_paths(&self.option.tested_crate_path, &self.option.project_path)
+                .unwrap()
+                .display()
+        );
+        self.deps
+            .iter()
+            .map(|dep| format!("{} = \"*\"", dep))
+            .chain(std::iter::once(this_dep))
+            .join("\n")
+    }
+
+    fn update_cargo_toml(&self) -> io::Result<()> {
+        let project_path = self.option.project_path.as_path();
         let cargo_toml_path = project_path.join("Cargo.toml");
         let mut file = fs::OpenOptions::new()
             .create(true)
@@ -63,26 +89,8 @@ impl CargoProjectBuilder {
         )?;
 
         writeln!(file, "[dependencies]")?;
-        writeln!(
-            file,
-            "{} = {{ path = \"{}\" }}",
-            self.option.tested_crate_name,
-            pathdiff::diff_paths(&self.option.tested_crate_path, project_path)
-                .unwrap()
-                .display()
-        )?;
-
-        if false {
-            let features = ["default"];
-            writeln!(
-                file,
-                "{} = {{ path = \"{}\" , features = {:?}}}",
-                self.option.tested_crate_name,
-                self.option.tested_crate_path.display(),
-                features,
-            )?;
-        }
-        writeln!(file, "\n[workspace]")?;
+        writeln!(file, "{}", self.dependencies_str())?;
+        writeln!(file, "\n[workspace]")?; // add workspace to avoid cargo warning about multiple packages in the same directory
 
         Ok(())
     }

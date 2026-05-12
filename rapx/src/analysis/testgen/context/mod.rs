@@ -4,6 +4,7 @@ mod var_set;
 
 use super::utils::{self};
 use itertools::Itertools;
+use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_middle::ty::{self, Ty, TyCtxt};
 use std::collections::HashMap;
 pub use stmt::{ApiCall, ExploitKind, Stmt, StmtKind};
@@ -46,9 +47,10 @@ impl<'tcx> Context<'tcx> {
     }
 
     pub fn add_stmt(&mut self, stmt: Stmt<'tcx>) -> &Stmt<'tcx> {
-        if stmt.kind().is_call() {
+        if let StmtKind::Call(_) = stmt.kind() {
             self.num_apicall += 1;
         }
+
         self.stmts.push(stmt);
         self.stmts.last().unwrap()
     }

@@ -19,6 +19,7 @@ impl<'a, 'tcx, I: InputGen> FuzzDriverSynImpl<'a, 'tcx, I> {
         tcx: TyCtxt<'tcx>,
         resolver: &'a PathResolver<'tcx>,
     ) -> Self {
+        resolver.reset_non_local_def_ids();
         Self {
             input_gen,
             option,

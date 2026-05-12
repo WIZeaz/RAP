@@ -1,5 +1,5 @@
-pub use crate::analysis::core::api_dependency::{is_def_id_directly_public, is_fuzzable_ty};
-use rustc_hir::{BodyOwnerKind, def_id::DefId};
+pub use crate::analysis::core::api_dependency::is_fuzzable_ty;
+use rustc_hir::def_id::DefId;
 use rustc_infer::infer::TyCtxtInferExt as _;
 use rustc_middle::ty::{self, FnSig, ParamEnv, Ty, TyCtxt, TyKind};
 use rustc_span::STDLIB_STABLE_CRATES;

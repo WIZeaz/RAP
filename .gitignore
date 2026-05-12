@@ -3,7 +3,7 @@
 target/
 UPG/
 **/*.txt
-tests/**/Cargo.lock
+rapx/tests/**/Cargo.lock
 **/*.dot
 **/*.png
 .rapx-test.lock

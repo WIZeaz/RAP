@@ -2,12 +2,16 @@ use itertools::Itertools;
 use rustc_hir::def::DefKind;
 use rustc_hir::def_id::{DefId, LOCAL_CRATE};
 use rustc_middle::ty::{self, Ty, TyCtxt, TyKind};
+use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 
 /// A utility to resolve the actual visible path for re-export items.
 pub struct PathResolver<'tcx> {
     tcx: TyCtxt<'tcx>,
     path_map: HashMap<DefId, String>,
+    ///  `non_local_def_ids` is used to record the def_ids that are not from local crate, but printed by [PathResolver].
+    ///  This is used for testgen to create neccessary dep info for these def_ids.
+    non_local_def_ids: RefCell<Vec<DefId>>,
 }
 
 pub fn get_path_resolver<'tcx>(tcx: TyCtxt<'tcx>) -> PathResolver<'tcx> {
@@ -20,11 +24,17 @@ fn join_path_with_double_colon(parts: &[&str]) -> String {
     parts.iter().filter(|s| !s.is_empty()).join("::")
 }
 
+fn is_std_def_id(def_id: DefId, tcx: TyCtxt) -> bool {
+    let krate_name = tcx.crate_name(def_id.krate);
+    krate_name.as_str() == "std" || krate_name.as_str() == "core" || krate_name.as_str() == "alloc"
+}
+
 impl<'tcx> PathResolver<'tcx> {
     fn new(tcx: TyCtxt<'tcx>) -> Self {
         PathResolver {
             tcx,
             path_map: HashMap::new(),
+            non_local_def_ids: RefCell::new(Vec::new()),
         }
     }
 
@@ -55,6 +65,15 @@ impl<'tcx> PathResolver<'tcx> {
         }
     }
 
+    pub fn non_local_def_ids(&self) -> Ref<[DefId]> {
+        let ref_ = self.non_local_def_ids.borrow();
+        Ref::map(ref_, |v| v.as_slice())
+    }
+
+    pub fn reset_non_local_def_ids(&self) {
+        self.non_local_def_ids.borrow_mut().clear();
+    }
+
     fn non_assoc_path_str(&self, def_id: DefId) -> String {
         match self.path_map.get(&def_id) {
             Some(path) => path.clone(),
@@ -66,6 +85,8 @@ impl<'tcx> PathResolver<'tcx> {
                         "[PathResolver] cannot find path for {:?}, fallback to self.tcx.def_path_str",
                         def_id
                     );
+                } else if !is_std_def_id(def_id, self.tcx) {
+                    self.non_local_def_ids.borrow_mut().push(def_id);
                 }
                 self.tcx.def_path_str(def_id)
             }

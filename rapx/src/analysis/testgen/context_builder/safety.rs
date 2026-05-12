@@ -102,7 +102,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
     /// return a map from variable to the set of vulnerable regions that variable should be contrainted with
     pub fn detect_vulnerable_paths(&self, stmt: &Stmt<'tcx>) -> Option<HashMap<Var, HashSet<Rid>>> {
         let mut ret = HashMap::new();
-        let tcx = self.tcx;
+        let _tcx = self.tcx;
 
         let call = stmt.as_apicall();
 

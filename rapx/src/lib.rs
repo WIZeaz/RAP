@@ -1,6 +1,7 @@
 #![feature(rustc_private)]
 #![feature(box_patterns)]
 #![feature(macro_metavar_expr_concat)]
+#![feature(slice_pattern)]
 
 #[macro_use]
 pub mod utils;
@@ -208,15 +209,6 @@ pub fn start_analyzer(tcx: TyCtxt, callback: &RapCallback) {
                 // SenryxCheck::new(tcx, 2).generate_uig_by_def_id();
             }
         }
-
-        &Commands::Extract { kind } => match kind {
-            ExtractKind::UnsafeApis => {
-                ExtractUnsafeApis::new(tcx).run_local();
-            }
-            ExtractKind::StdUnsafeApis => {
-                ExtractUnsafeApis::new(tcx).run_std();
-            }
-        },
 
         &Commands::Extract { kind } => match kind {
             ExtractKind::UnsafeApis => {

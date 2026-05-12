@@ -79,7 +79,9 @@ fn cargo_clean(dir: &Utf8Path, really: bool) {
         rap_trace!("cargo clean in package folder {dir}");
         if let Err(err) = Command::new("cargo")
             .arg("clean")
-            .arg("--workspace") // use --workspace to clean all members of the workspace, which may be more thorough but also more time-consuming to rebuild
+            // use --workspace to clean all members of the workspace, which
+            // may be more thorough but also more time-consuming to rebuild
+            .arg("--workspace")
             .current_dir(dir)
             .output()
         {
