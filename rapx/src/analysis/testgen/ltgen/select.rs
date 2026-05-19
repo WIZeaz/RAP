@@ -1,7 +1,7 @@
 use crate::analysis::core::api_dependency::DepNode;
 use crate::analysis::core::api_dependency::graph::{TransformKind, TyWrapper};
 use crate::analysis::testgen::context::{ApiCall, Var};
-use crate::analysis::testgen::context_builder::{ContextBuilder, is_ty_move_on_call};
+use crate::analysis::testgen::context_builder::{ContextBuilder, is_ty_moved_on_call};
 use crate::analysis::testgen::ltgen::LtGen;
 use crate::analysis::testgen::utils;
 use itertools::Itertools;
@@ -73,9 +73,9 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
             }
 
             for _ in 0..MAX_FAIL_COUNT {
-                rap_trace!("select provider: {providers:?}");
                 let idx = self.rng.borrow_mut().random_range(0..providers.len());
                 let provider = &providers[idx];
+                rap_trace!("select provider: {providers:?} -> {provider}");
 
                 // the provider is moved by another arg, try again
                 if !provider.is_from_input() && is_move && moved_vars.contains(provider) {
@@ -196,7 +196,7 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
             let providers = transform_map.keys().copied().collect_vec();
             list_of_providers.push(providers);
             list_of_transform_map.push(transform_map);
-            is_ty_move.push(is_ty_move_on_call(input_ty, tcx));
+            is_ty_move.push(is_ty_moved_on_call(input_ty, tcx));
         }
         rap_trace!("list_of_providers: {:?}", list_of_providers);
         for _ in 0..num_samples {
@@ -310,8 +310,6 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
                 .map(|var| { format!("{} -> {}", var, builder.var_state(var)) })
                 .join(", ")
         );
-
-        rap_debug!("live state: {:?}", builder.live_state());
 
         let mut weights;
 

@@ -1,7 +1,7 @@
 pub use crate::analysis::core::api_dependency::is_fuzzable_ty;
 use rustc_hir::def_id::DefId;
 use rustc_infer::infer::TyCtxtInferExt as _;
-use rustc_middle::ty::{self, FnSig, ParamEnv, Ty, TyCtxt, TyKind};
+use rustc_middle::ty::{self, FnSig, ParamEnv, Ty, TyCtxt, TyKind, TypingEnv};
 use rustc_span::STDLIB_STABLE_CRATES;
 use rustc_trait_selection::infer::InferCtxtExt;
 
@@ -12,12 +12,9 @@ pub fn fn_requires_monomorphization<'tcx>(fn_did: DefId, tcx: TyCtxt<'_>) -> boo
 pub fn is_ty_impl_copy<'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'tcx>) -> bool {
     let infcx = tcx.infer_ctxt().build(ty::TypingMode::PostAnalysis);
     let param_env = ParamEnv::empty();
-    infcx.type_is_copy_modulo_regions(param_env, ty)
-    // let copy_trait = tcx.require_lang_item(rustc_hir::LangItem::Copy, None);
-    // let copy_pred = ty::TraitRef::new(tcx, copy_trait, vec![ty]);
-    // let obligation = Obligation::new(tcx, ObligationCause::dummy(), param_env, copy_pred);
-    // infcx.predicate_must_hold_modulo_regions(&obligation)
-    // tcx.type_is_copy_modulo_regions(ty::TypingMode::PostAnalysis, ty)
+    let ret = infcx.type_is_copy_modulo_regions(param_env, ty);
+    rap_trace!("[is_ty_impl_copy] ty: {}, is_copy: {}", ty, ret);
+    ret
 }
 
 pub fn is_ty_eq<'tcx>(ty1: Ty<'tcx>, ty2: Ty<'tcx>, tcx: TyCtxt<'tcx>) -> bool {

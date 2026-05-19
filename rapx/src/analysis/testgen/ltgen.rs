@@ -222,9 +222,10 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
             let mut call = action.call().clone();
 
             rap_debug!(
-                "[next] select API call: {}",
+                "[next] select API call: {}, args: {}",
                 self.tcx
-                    .def_path_str_with_args(call.fn_did(), self.tcx.mk_args(call.generic_args()))
+                    .def_path_str_with_args(call.fn_did(), self.tcx.mk_args(call.generic_args())),
+                call.args().iter().map(|var| format!("{}", var)).join(", ")
             );
 
             // 2. build stmts for this call action
@@ -238,7 +239,7 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
                 for transform in transforms {
                     match transform {
                         TransformKind::Ref(mutability) => {
-                            *var = builder.add_ref_stmt(*var, *mutability, None);
+                            *var = builder.get_or_borrow(*var, *mutability)
                         }
                         _ => {
                             unimplemented!();

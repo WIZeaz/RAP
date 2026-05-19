@@ -57,12 +57,12 @@ pub struct CtorDict<'tcx> {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum StmtKind<'tcx> {
     Input,
-    Tuple(Vec<Var>),               // place = (..)
-    Array(Vec<Var>),               // place = [..]
-    SliceRef(Var, ty::Mutability), // place = &[..]
+    Tuple(Vec<Var>), // place = (..)
+    Array(Vec<Var>), // place = [..]
     Call(ApiCall<'tcx>),
     SpecialCall(String, Vec<Var>),
     Ref(Var, ty::Mutability), // a -> &(mut) b
+    AsRef(Var),
     Ctor(CtorDict<'tcx>),
     Comment(String),
     // Deref(Box<Var>, ty::Mutability), // &T -> &U
@@ -135,6 +135,13 @@ impl<'tcx> Stmt<'tcx> {
         }
     }
 
+    pub fn as_ref_(place: Var, ref_place: Var) -> Stmt<'tcx> {
+        Stmt {
+            kind: StmtKind::AsRef(ref_place),
+            place,
+        }
+    }
+
     pub fn box_(place: Var, boxed: Var) -> Stmt<'tcx> {
         Self::special_call("Box::new", vec![boxed], place)
     }
@@ -153,13 +160,6 @@ impl<'tcx> Stmt<'tcx> {
     pub fn array(place: Var, elems: Vec<Var>) -> Stmt<'tcx> {
         Stmt {
             kind: StmtKind::Array(elems),
-            place,
-        }
-    }
-
-    pub fn slice_ref(place: Var, slice: Var, mutability: ty::Mutability) -> Stmt<'tcx> {
-        Stmt {
-            kind: StmtKind::SliceRef(slice, mutability),
             place,
         }
     }

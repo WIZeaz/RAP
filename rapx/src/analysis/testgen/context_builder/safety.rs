@@ -253,7 +253,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
         });
 
         for var in dropped_var.iter() {
-            self.drop_var(*var);
+            self.move_var(*var);
         }
 
         !dropped_var.is_empty()

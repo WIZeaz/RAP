@@ -6,6 +6,7 @@ mod var_state;
 
 use crate::analysis::core::alias_analysis::FnAliasMap;
 use crate::analysis::testgen::context::{Context, DUMMY_UNIT_VAR, ExploitKind, Var};
+use crate::analysis::testgen::context_builder::var_state::VarState;
 use crate::analysis::testgen::utils;
 use bit_set::BitSet;
 use lifetime::visit_ty_region_with;
@@ -17,16 +18,15 @@ use rustc_middle::ty::{self, ParamEnv, Ty, TyCtxt, TypingMode};
 use rustc_trait_selection::infer::InferCtxtExt;
 use std::collections::HashMap;
 
-pub fn is_ty_move_on_call<'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'tcx>) -> bool {
-    !utils::is_ty_impl_copy(ty, tcx) || ty.is_ref()
+pub fn is_ty_moved_on_call<'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'tcx>) -> bool {
+    !utils::is_ty_impl_copy(ty, tcx)
 }
 pub struct ContextBuilder<'tcx, 'a> {
     tcx: TyCtxt<'tcx>,
     cx: Context<'tcx>,
     var_rid: HashMap<Var, Rid>,
-    var_borrow: HashMap<Var, BitSet>,
+    state: HashMap<Var, VarState>,
     var_steps: HashMap<Var, usize>,
-    live_state: BitSet,
     region_graph: RegionGraph,
     pat_provider: PatternProvider<'tcx>,
     alias_map: &'a FnAliasMap,
@@ -41,9 +41,8 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
             cx: Context::new(tcx),
             var_rid: HashMap::new(),
             region_graph: RegionGraph::new(),
-            var_borrow: HashMap::new(),
+            state: HashMap::new(),
             var_steps: HashMap::new(),
-            live_state: BitSet::new(),
             pat_provider: PatternProvider::new(tcx),
             alias_map,
             explicit_droped_cnt: 0,
@@ -53,10 +52,6 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
 
     pub fn cx(&self) -> &Context<'tcx> {
         &self.cx
-    }
-
-    pub fn live_state(&self) -> &BitSet {
-        &self.live_state
     }
 
     pub fn region_graph(&self) -> &RegionGraph {
@@ -103,8 +98,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
         );
 
         self.var_rid.insert(next_var, rid);
-        self.live_state.insert(next_var.index());
-        self.var_borrow.insert(next_var, BitSet::new());
+        self.set_var_state(next_var, VarState::live());
 
         // add structural constraint between 'var and 'a where carry by the type of var
         visit_ty_region_with(
@@ -119,7 +113,9 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
     }
 
     pub fn try_add_exploit_stmt_for(&mut self, var: Var) -> bool {
-        if !self.var_state(var).is_live() {
+        let ty = self.cx.type_of(var);
+
+        if ty.is_unit() || !self.var_state(var).is_live() {
             return false;
         }
         let debug_def_id = self
@@ -128,10 +124,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
             .unwrap();
         let infcx = self.tcx.infer_ctxt().build(TypingMode::PostAnalysis);
         let param_env = ParamEnv::empty();
-        let ty = self.cx.type_of(var);
-        if ty.is_unit() {
-            return false;
-        }
+
         if infcx
             .type_implements_trait(debug_def_id, [ty], param_env)
             .must_apply_modulo_regions()

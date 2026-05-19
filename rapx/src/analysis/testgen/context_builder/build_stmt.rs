@@ -3,7 +3,8 @@ use crate::analysis::testgen::context::{
     ApiCall, DUMMY_INPUT_VAR, DUMMY_UNIT_VAR, ExploitKind, StmtKind,
 };
 use crate::analysis::testgen::context::{Stmt, Var};
-use crate::analysis::testgen::context_builder::{ContextBuilder, is_ty_move_on_call};
+use crate::analysis::testgen::context_builder::var_state::VarState;
+use crate::analysis::testgen::context_builder::{ContextBuilder, is_ty_moved_on_call};
 use crate::analysis::testgen::utils;
 use itertools::Itertools;
 use rustc_hir::LangItem;
@@ -20,31 +21,14 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
         let place = stmt.place();
 
         if place != DUMMY_UNIT_VAR {
-            let rid = self.rid_of(place);
-            // maintain borrow relation
-            self.region_graph
-                .for_each_var_from(rid, &mut |borrowed_var| {
-                    self.var_borrow
-                        .get_mut(&borrowed_var)
-                        .unwrap()
-                        .insert(place.index());
-                });
-            rap_debug!(
-                "var {} borrows: {}",
-                place,
-                self.var_borrow[&place]
-                    .iter()
-                    .map(|x| format! {"v{x}"})
-                    .join(", ")
-            );
-
             // update step_of(var)
             let num_steps = match stmt.kind() {
                 StmtKind::Input => 0,
                 StmtKind::Tuple(vars) | StmtKind::Array(vars) | StmtKind::SpecialCall(_, vars) => {
                     vars.iter().fold(0, |acc, &var| acc + self.step_of(var))
                 }
-                StmtKind::SliceRef(var, _) | StmtKind::Ref(var, _) => self.step_of(*var),
+                StmtKind::Ref(var, _) => self.step_of(*var),
+                StmtKind::AsRef(var) => self.step_of(*var),
                 StmtKind::Call(api_call) => {
                     api_call
                         .args()
@@ -185,7 +169,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
                         match Ty::new_lang_item(self.tcx, self.tcx.types.unit, LangItem::String) {
                             Some(string_ty) => {
                                 let inner_var = self.try_add_input_stmts(string_ty, true);
-                                var = self.add_ref_stmt(
+                                var = self.add_as_ref_stmt(
                                     inner_var,
                                     *mutability,
                                     Some(self.tcx.types.str_),
@@ -214,7 +198,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
                     _ => {
                         let inner_var = self.try_add_input_stmts(*inner_ty, true);
                         let box_var = self.add_box_stmt(inner_var);
-                        var = self.add_ref_stmt(
+                        var = self.add_as_ref_stmt(
                             box_var,
                             *mutability,
                             Some(self.cx.type_of(inner_var)),
@@ -294,7 +278,8 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
             }
             let arg = call.args[idx];
 
-            if is_ty_move_on_call(input_ty, tcx) || arg.is_from_input() {
+            if is_ty_moved_on_call(input_ty, tcx) || arg.is_from_input() {
+                rap_trace!("var {}:{} is moved on call", arg, input_ty);
                 self.move_var(arg);
             }
         }
@@ -322,13 +307,45 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
         var
     }
 
-    pub fn add_ref_stmt(
+    pub fn get_or_borrow(&mut self, var: Var, mutability: ty::Mutability) -> Var {
+        if let VarState::Borrowed(mutbl, borrowed_var) = self.var_state(var) {
+            if mutbl == mutability {
+                return borrowed_var;
+            }
+            // if the mutability does not match, we need to borrow from the original var again with the desired mutability
+            self.drop_var_from(var, true);
+        }
+
+        self.cx.lift_mutability(var, mutability);
+        let ref_ty = Ty::new_ref(
+            self.tcx,
+            self.region_of(var),
+            self.cx.type_of(var),
+            mutability,
+        );
+        let new_var = self.mk_var(ref_ty, false);
+        self.set_var_state(var, VarState::borrowed(mutability, new_var));
+        rap_trace!(
+            "var {} is borrowed as {} with mutability {:?}",
+            var,
+            new_var,
+            mutability
+        );
+        self.add_stmt(Stmt::ref_(new_var, var, mutability));
+        new_var
+    }
+
+    pub fn add_as_ref_stmt(
         &mut self,
         var: Var,
         mutability: ty::Mutability,
         as_ref_ty: Option<Ty<'tcx>>, // None represent the type of var
     ) -> Var {
-        self.cx.lift_mutability(var, mutability);
+        let ref_var = self.get_or_borrow(var, mutability);
+
+        if as_ref_ty.is_none() {
+            return ref_var;
+        }
 
         let ref_ty = Ty::new_ref(
             self.tcx,
@@ -338,7 +355,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
         );
 
         let new_var = self.mk_var(ref_ty, false);
-        self.add_stmt(Stmt::ref_(new_var, var, mutability));
+        self.add_stmt(Stmt::as_ref_(new_var, ref_var));
         new_var
     }
 
@@ -348,8 +365,6 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
         mutability: ty::Mutability,
         slice_ty: Ty<'tcx>,
     ) -> Var {
-        self.cx.lift_mutability(var, mutability);
-
         let ref_slice_ty = ty::Ty::new_ref(
             self.tcx,
             self.region_of(var),
@@ -357,18 +372,16 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
             mutability,
         );
 
-        let new_var = self.mk_var(ref_slice_ty, false);
-        self.add_stmt(Stmt::slice_ref(new_var, var, mutability));
-        new_var
+        self.add_as_ref_stmt(var, mutability, Some(ref_slice_ty))
     }
 }
 
 /// VarState maintain implementation
 ///
 impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
-    /// drop all vars depended on `from`, including `from`
-    fn drop_var_from(&mut self, from: Var) {
-        let from_rid = self.rid_of(from).into();
+    /// drop all vars depended on `source` and `source` itself if `exclude_source` is false.
+    fn drop_var_from(&mut self, source: Var, exclude_source: bool) {
+        let from_rid = self.rid_of(source).into();
         let mut visited = vec![false; self.region_graph.total_node_count()];
         let mut q: VecDeque<Rid> = VecDeque::from([from_rid]);
         visited[from_rid.index()] = true;
@@ -393,6 +406,13 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
                 }
             }
         }
+
+        let drop_vars = if exclude_source {
+            drop_vars.into_iter().filter(|&var| var != source).collect()
+        } else {
+            drop_vars
+        };
+
         rap_debug!(
             "drop vars: {}",
             drop_vars
@@ -403,20 +423,30 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
                 .join(", ")
         );
         for var in drop_vars.into_iter().rev() {
-            self.live_state.remove(var.index());
-            self.add_stmt(Stmt::drop_(DUMMY_UNIT_VAR, var));
+            self.move_var(var);
+            // if the type of var is not reference,
+            // we need to add an explicit drop stmt to make it dropped immediately,
+            // which is important for later statement generation.
+            if !self.cx.type_of(var).is_ref() {
+                self.add_drop_stmt(var);
+            }
         }
     }
 
-    pub fn drop_var(&mut self, dropped: Var) {
-        rap_debug!("drop from: {dropped}");
-        if !self.var_state(dropped).is_dropped() {
-            self.drop_var_from(dropped);
-            self.explicit_droped_cnt += 1;
-        }
+    pub fn add_drop_stmt(&mut self, var: Var) {
+        self.add_stmt(Stmt::drop_(DUMMY_UNIT_VAR, var));
+        self.explicit_droped_cnt += 1;
     }
+
+    // pub fn drop_var(&mut self, dropped: Var) {
+    //     rap_debug!("drop from: {dropped}");
+    //     if !self.var_state(dropped).is_dropped() {
+    //         self.drop_var_from(dropped);
+    //         self.explicit_droped_cnt += 1;
+    //     }
+    // }
 
     pub fn move_var(&mut self, var: Var) {
-        self.live_state.remove(var.index());
+        self.set_var_state(var, VarState::moved());
     }
 }

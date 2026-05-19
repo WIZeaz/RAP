@@ -9,37 +9,32 @@ use std::fmt::{self, Display};
 pub enum VarState {
     Live,
     Moved,
-    Borrowed,
-    BorrowedMut,
-    Dropped,
+    Borrowed(ty::Mutability, Var),
 }
 
 impl VarState {
-    pub fn is_dropped(&self) -> bool {
-        matches!(self, VarState::Dropped)
-    }
-
     pub fn is_live(&self) -> bool {
         matches!(self, VarState::Live)
     }
 
     pub fn is_dead(&self) -> bool {
-        matches!(self, VarState::Dropped | VarState::Moved)
+        matches!(self, VarState::Moved)
     }
 
     pub fn is_borrowed(&self) -> bool {
-        matches!(self, VarState::Borrowed | VarState::BorrowedMut)
+        matches!(self, VarState::Borrowed(..))
     }
 
-    pub fn is_borrowed_mut(&self) -> bool {
-        matches!(self, VarState::BorrowedMut)
+    pub fn live() -> Self {
+        VarState::Live
     }
 
-    pub fn borrowed(mutability: ty::Mutability) -> Self {
-        match mutability {
-            ty::Mutability::Not => VarState::Borrowed,
-            ty::Mutability::Mut => VarState::BorrowedMut,
-        }
+    pub fn moved() -> Self {
+        VarState::Moved
+    }
+
+    pub fn borrowed(mutability: ty::Mutability, borrowed_by: Var) -> Self {
+        VarState::Borrowed(mutability, borrowed_by)
     }
 }
 
@@ -48,37 +43,33 @@ impl Display for VarState {
         match self {
             VarState::Live => write!(f, "Live"),
             VarState::Moved => write!(f, "Moved"),
-            VarState::Borrowed => write!(f, "Borrowed"),
-            VarState::BorrowedMut => write!(f, "BorrowedMut"),
-            VarState::Dropped => write!(f, "Dropped"),
+            VarState::Borrowed(mutability, borrowed_by) => {
+                write!(
+                    f,
+                    "{}Borrowed({})",
+                    if mutability.is_mut() { "Mut" } else { "" },
+                    borrowed_by
+                )
+            }
         }
     }
 }
 
 impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
-    pub fn is_borrowed(&self, var: Var) -> bool {
-        self.var_borrow[&var].intersection(&self.live_state).count() > 0
-    }
-
-    pub fn is_live(&self, var: Var) -> bool {
-        self.live_state.contains(var.index())
+    pub fn set_var_state(&mut self, var: Var, state: VarState) {
+        self.state.insert(var, state);
     }
 
     pub fn var_state(&self, var: Var) -> VarState {
-        if !self.is_live(var) {
-            return VarState::Moved;
-        }
-
-        if self.is_borrowed(var) {
-            return VarState::Borrowed;
-        }
-
-        VarState::Live
+        self.state
+            .get(&var)
+            .cloned()
+            .expect(&format!("var {} does not exist", var))
     }
 
     pub fn available_vars<'b>(&'b self) -> impl Iterator<Item = Var> + use<'b, 'tcx> {
         let iter = self.cx.vars().filter_map(|var| match self.var_state(var) {
-            VarState::Live => Some(var),
+            VarState::Live | VarState::Borrowed(..) => Some(var),
             _ => None,
         });
         iter
@@ -94,6 +85,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
                 ret.push(var.clone());
             }
         }
+        rap_trace!("providers for ty {ty:?}: {ret:?}");
         ret
     }
 }

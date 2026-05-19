@@ -69,6 +69,9 @@ impl<'a, 'tcx, I: InputGen> FuzzDriverSynImpl<'a, 'tcx, I> {
             StmtKind::Ref(var, mutability) => {
                 format!("{}{}", mutability.ref_prefix_str(), self.var_str(*var))
             }
+            StmtKind::AsRef(var) => {
+                format!("{}.as_ref()", self.var_str(*var))
+            }
             // StmtKind::Deref(var, mutability) => {
             //     format!("{}*{}", mutability.ref_prefix_str(), self.var_str(**var))
             // }
@@ -97,13 +100,6 @@ impl<'a, 'tcx, I: InputGen> FuzzDriverSynImpl<'a, 'tcx, I> {
                         .map(|arg| self.var_str(*arg))
                         .collect::<Vec<_>>()
                         .join(", ")
-                )
-            }
-            StmtKind::SliceRef(inner_var, mutability) => {
-                format!(
-                    "{}{}[..]",
-                    mutability.ref_prefix_str(),
-                    self.var_str(*inner_var)
                 )
             }
             StmtKind::Comment(comment) => {
@@ -151,7 +147,7 @@ impl<'a, 'tcx, I: InputGen> FuzzDriverSynImpl<'a, 'tcx, I> {
 
     fn need_explicit_type_annotation(&self, stmt: &Stmt<'_>) -> bool {
         match stmt.kind() {
-            StmtKind::Ref(_, _) => true,
+            StmtKind::AsRef(_) => true,
             _ => false,
         }
     }
