@@ -1,6 +1,8 @@
 #![allow(clippy::bool_assert_comparison)]
 use fs4::fs_std::FileExt;
 use insta::assert_snapshot;
+use serde::Serialize;
+use serde_value::Value;
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -592,30 +594,36 @@ fn test_adg_doc_graph() {
     assert_snapshot!(graph_str);
 }
 
+fn assert_lifesonar_result(project_path: impl AsRef<Path>) {
+    let str = std::fs::read_to_string(project_path.as_ref().join("testgen").join("stats.yaml"))
+        .expect("read stats.yaml fail");
+    let Value::Map(map) = serde_yaml::from_str(&str).expect("parse stats.yaml fail") else {
+        panic!("Expected 'results' to be a map in stats.yaml");
+    };
+    let key = Value::String("results".to_string());
+    let results: HashMap<String, usize> = map
+        .get(&key)
+        .expect("cannot find `results` entry")
+        .clone()
+        .deserialize_into()
+        .expect("deserialize `results` fail");
+    assert_eq!(results.get("success"), Some(&1));
+}
+
 #[test]
 fn test_lifesonar_no_std() {
     let _ = run_with_args("testgen/no-std", TESTGEN_CMD);
-    let str = std::fs::read_to_string(project_path("testgen/no-std/testgen").join("stats.yaml"))
-        .expect("read stats.yaml fail");
-    let stats: HashMap<String, i32> = serde_yaml::from_str(&str).expect("parse stats.yaml fail");
-    assert_eq!(stats.get("success"), Some(&1));
+    assert_lifesonar_result(project_path("testgen/no-std"));
 }
 
 #[test]
 fn test_lifesonar_opaque_type() {
     let _ = run_with_args("testgen/opaque-type", TESTGEN_CMD);
-    let str =
-        std::fs::read_to_string(project_path("testgen/opaque-type/testgen").join("stats.yaml"))
-            .expect("read stats.yaml fail");
-    let stats: HashMap<String, i32> = serde_yaml::from_str(&str).expect("parse stats.yaml fail");
-    assert_eq!(stats.get("success"), Some(&1));
+    assert_lifesonar_result(project_path("testgen/opaque-type"));
 }
 
 #[test]
 fn test_lifesonar_reexport() {
     let _ = run_with_args("testgen/reexport", TESTGEN_CMD);
-    let str = std::fs::read_to_string(project_path("testgen/reexport/testgen").join("stats.yaml"))
-        .expect("read stats.yaml fail");
-    let stats: HashMap<String, i32> = serde_yaml::from_str(&str).expect("parse stats.yaml fail");
-    assert_eq!(stats.get("success"), Some(&1));
+    assert_lifesonar_result(project_path("testgen/reexport"));
 }

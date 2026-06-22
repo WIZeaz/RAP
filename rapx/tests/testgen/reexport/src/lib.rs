@@ -9,11 +9,22 @@ mod a {
     }
 }
 
+mod b {
+    pub struct B;
+    pub trait OnlyB {}
+    impl OnlyB for B {}
+
+    pub fn foob<T: OnlyB>() {}
+}
 struct A;
 
 pub use a::Foo as _; // A::foo is visitable
 pub use a::bar; // bar is visitable
 pub use a::foo as _; // foo can not be visited
+// foob::<B>
+pub use b::*;
+
+
 
 #[cfg(test)]
 mod test {
@@ -21,5 +32,6 @@ mod test {
     #[test]
     fn test_visibility() {
         A::foo();
+        foob::<B>();
     }
 }
