@@ -9,6 +9,7 @@ use crate::analysis::testgen::context::{Context, DUMMY_UNIT_VAR, ExploitKind, Va
 use crate::analysis::testgen::context_builder::var_state::VarState;
 use crate::analysis::testgen::utils;
 use bit_set::BitSet;
+use itertools::Itertools;
 use lifetime::visit_ty_region_with;
 use lifetime::{RegionGraph, Rid};
 use pattern::PatternProvider;
@@ -135,17 +136,17 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
         false
     }
 
-    /// try to add exploit stmt for all live vars    
-    pub fn try_add_exploit_stmts(&mut self) {
-        let vars: Vec<Var> = self.available_vars().collect();
+    /// try to add exploit stmt for all live vars
+    pub fn finally_exploit_vars(&mut self) {
         let debug_def_id = self
             .tcx
             .get_diagnostic_item(rustc_span::sym::Debug)
             .unwrap();
         let infcx = self.tcx.infer_ctxt().build(TypingMode::PostAnalysis);
         let param_env = ParamEnv::empty();
+        let live_vars = self.live_vars().collect_vec();
 
-        for var in vars {
+        for var in live_vars {
             let ty = self.cx.type_of(var);
             if ty != self.tcx.types.unit
                 && infcx

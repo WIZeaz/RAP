@@ -132,7 +132,7 @@ impl<'tcx> Visitor<'tcx> for FnVisitor<'tcx> {
 
         // determine whether this DefId can be visited from crate outside
         let can_visit =
-            is_def_id_directly_public(fn_did, self.tcx) || self.resolver.exist_path(fn_did);
+            is_def_id_directly_public(fn_did, self.tcx) || self.resolver.path_exists(fn_did);
 
         if self.config.pub_only && !can_visit {
             rap_trace!("skip for non-public");

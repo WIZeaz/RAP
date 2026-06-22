@@ -8,8 +8,8 @@ use rustc_middle::ty::{self, AdtDef, GenericArgsRef, TyCtxt};
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub struct ApiCall<'tcx> {
     pub fn_did: DefId,
-    pub args: Vec<Var>,
     pub generic_args: ty::GenericArgsRef<'tcx>,
+    pub args: Vec<Var>,
 }
 
 impl<'tcx> ApiCall<'tcx> {
@@ -62,7 +62,8 @@ pub enum StmtKind<'tcx> {
     Call(ApiCall<'tcx>),
     SpecialCall(String, Vec<Var>),
     Ref(Var, ty::Mutability), // a -> &(mut) b
-    AsRef(Var),
+    AsRef(Var),               // as_ref
+    AsMut(Var),               // as_mut
     Ctor(CtorDict<'tcx>),
     Comment(String),
     // Deref(Box<Var>, ty::Mutability), // &T -> &U
@@ -138,6 +139,13 @@ impl<'tcx> Stmt<'tcx> {
     pub fn as_ref_(place: Var, ref_place: Var) -> Stmt<'tcx> {
         Stmt {
             kind: StmtKind::AsRef(ref_place),
+            place,
+        }
+    }
+
+    pub fn as_mut_(place: Var, ref_place: Var) -> Stmt<'tcx> {
+        Stmt {
+            kind: StmtKind::AsMut(ref_place),
             place,
         }
     }

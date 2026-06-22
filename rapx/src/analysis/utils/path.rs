@@ -17,6 +17,9 @@ pub struct PathResolver<'tcx> {
 pub fn get_path_resolver<'tcx>(tcx: TyCtxt<'tcx>) -> PathResolver<'tcx> {
     let mut resolver = PathResolver::new(tcx);
     resolver.build(LOCAL_CRATE.as_def_id(), String::new());
+    for (DefId, path) in resolver.paths() {
+        rap_trace!("def_id: {:?}, path: {}", DefId, path);
+    }
     resolver
 }
 
@@ -97,8 +100,35 @@ impl<'tcx> PathResolver<'tcx> {
         self.path_map.iter().map(|(did, s)| (*did, s.as_str()))
     }
 
-    pub fn exist_path(&self, did: DefId) -> bool {
-        self.path_map.contains_key(&did)
+    pub fn path_exists(&self, did: DefId) -> bool {
+        let Some((assoc_id, kind)) = self.tcx.assoc_parent(did) else {
+            // check non associated item
+            return did.is_local() && self.path_map.contains_key(&did)
+            // for did from other crate, we rely on tcx.visibility, 
+            // which is not 100% accurate, but should be good enough in most cases.
+                || !did.is_local() && self.tcx.visibility(did).is_public();
+        };
+
+        if !self.tcx.visibility(did).is_public() {
+            return false;
+        }
+
+        match kind {
+            DefKind::Impl { .. } => {
+                let self_ty = self.tcx.type_of(assoc_id).instantiate_identity();
+                match self_ty.kind() {
+                    // Theoretically, we need to check visibility of generic args.
+                    // However, it is a bit complicated and we currently do not consider it.
+                    TyKind::Adt(adt_def, _) => return self.path_exists(adt_def.did()),
+                    _ => return true,
+                }
+            }
+            DefKind::Trait => return self.path_exists(assoc_id),
+            _ => panic!(
+                "unexpected parent kind: {:?} for assoc item: {:?}",
+                kind, did
+            ),
+        }
     }
 
     pub fn ty_str(&self, ty: Ty<'tcx>) -> String {

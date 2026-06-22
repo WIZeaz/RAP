@@ -3,8 +3,9 @@ mod select;
 use super::context_builder::ContextBuilder;
 use crate::analysis::core::alias_analysis::FnAliasMap;
 use crate::analysis::core::api_dependency::{ApiDependencyGraph, DepNode, graph::TransformKind};
-use crate::analysis::testgen::context::DUMMY_INPUT_VAR;
+use crate::analysis::testgen::context::{ApiCall, DUMMY_INPUT_VAR};
 use crate::analysis::testgen::driver;
+use crate::analysis::testgen::ltgen::select::Provider;
 use crate::analysis::testgen::utils::{self};
 use itertools::Itertools;
 use rand::rngs::ThreadRng;
@@ -219,33 +220,44 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
             };
 
             builder.comment_current_state();
-            let mut call = action.call().clone();
 
             rap_debug!(
-                "[next] select API call: {}, args: {}",
+                "[next] select API call: {}({})",
                 self.tcx
-                    .def_path_str_with_args(call.fn_did(), self.tcx.mk_args(call.generic_args())),
-                call.args().iter().map(|var| format!("{}", var)).join(", ")
+                    .def_path_str_with_args(action.fn_did, self.tcx.mk_args(action.generic_args)),
+                action
+                    .providers
+                    .iter()
+                    .map(|provider| format!("{}", provider))
+                    .join(", ")
             );
 
+            let mut call = ApiCall {
+                fn_did: action.fn_did,
+                generic_args: action.generic_args,
+                args: Vec::new(),
+            };
             // 2. build stmts for this call action
             // first build transform stmts for vars
-            for (var, transforms) in call.args_mut().iter_mut().zip(action.transforms()) {
-                rap_trace!("var = {}, transforms = {:?}", var, transforms);
-                if *var == DUMMY_INPUT_VAR {
+            for provider in action.providers.iter() {
+                let mut var = provider.var;
+                rap_trace!("var = {}, transforms = {:?}", var, provider.transforms);
+                if var == DUMMY_INPUT_VAR {
                     rap_trace!("skip DUMMY INPUT");
+                    call.args.push(var);
                     continue;
                 }
-                for transform in transforms {
+                for transform in provider.transforms.iter() {
                     match transform {
                         TransformKind::Ref(mutability) => {
-                            *var = builder.get_or_borrow(*var, *mutability)
+                            var = builder.get_or_borrow(var, *mutability)
                         }
                         _ => {
                             unimplemented!();
                         }
                     }
                 }
+                call.args.push(var);
             }
             let place = builder.add_call_stmt(call);
 
@@ -303,7 +315,8 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
             );
         }
         builder.comment_current_state();
-        builder.try_add_exploit_stmts();
+        builder.finally_exploit_vars();
+        builder.comment_current_state();
         builder
     }
 

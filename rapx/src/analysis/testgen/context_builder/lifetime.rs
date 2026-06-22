@@ -270,6 +270,8 @@ impl RegionGraph {
         }
     }
 
+    /// Iterates through all variable nodes reachable from the given region node.
+    ///
     pub fn for_each_var_from(&self, src_rid: Rid, f: &mut impl FnMut(Var)) {
         let mut visited = BitSet::with_capacity(self.total_node_count());
         let mut q = VecDeque::new();

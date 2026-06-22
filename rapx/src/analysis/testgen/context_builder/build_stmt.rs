@@ -27,8 +27,9 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
                 StmtKind::Tuple(vars) | StmtKind::Array(vars) | StmtKind::SpecialCall(_, vars) => {
                     vars.iter().fold(0, |acc, &var| acc + self.step_of(var))
                 }
-                StmtKind::Ref(var, _) => self.step_of(*var),
-                StmtKind::AsRef(var) => self.step_of(*var),
+                StmtKind::Ref(var, _) | StmtKind::AsRef(var) | StmtKind::AsMut(var) => {
+                    self.step_of(*var)
+                }
                 StmtKind::Call(api_call) => {
                     api_call
                         .args()
@@ -294,6 +295,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
 
         let rids = extract_rids(real_fn_sig);
 
+        // handling call subtyping and lifetime bounds
         self.pat_provider
             .get_patterns_with(fn_did, &stmt.as_apicall().generic_args, |patterns| {
                 rap_debug!("patterns: {:?}", patterns);
@@ -308,11 +310,12 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
     }
 
     pub fn get_or_borrow(&mut self, var: Var, mutability: ty::Mutability) -> Var {
-        if let VarState::Borrowed(mutbl, borrowed_var) = self.var_state(var) {
-            if mutbl == mutability {
-                return borrowed_var;
+        if let VarState::Borrowed(mutbl, borrower) = self.var_state(var) {
+            if mutbl == mutability && mutability.is_not() {
+                return borrower;
             }
-            // if the mutability does not match, we need to borrow from the original var again with the desired mutability
+            // if the mutability does not match, or it is the exclusive mutability,
+            // we need to borrow from the original var again with the desired mutability
             self.drop_var_from(var, true);
         }
 
@@ -355,7 +358,11 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
         );
 
         let new_var = self.mk_var(ref_ty, false);
-        self.add_stmt(Stmt::as_ref_(new_var, ref_var));
+        if mutability.is_not() {
+            self.add_stmt(Stmt::as_ref_(new_var, ref_var));
+        } else {
+            self.add_stmt(Stmt::as_mut_(new_var, ref_var));
+        }
         new_var
     }
 
@@ -365,14 +372,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
         mutability: ty::Mutability,
         slice_ty: Ty<'tcx>,
     ) -> Var {
-        let ref_slice_ty = ty::Ty::new_ref(
-            self.tcx,
-            self.region_of(var),
-            Ty::new_slice(self.tcx, slice_ty),
-            mutability,
-        );
-
-        self.add_as_ref_stmt(var, mutability, Some(ref_slice_ty))
+        self.add_as_ref_stmt(var, mutability, Some(Ty::new_slice(self.tcx, slice_ty)))
     }
 }
 

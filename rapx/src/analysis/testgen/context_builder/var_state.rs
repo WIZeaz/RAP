@@ -21,8 +21,8 @@ impl VarState {
         matches!(self, VarState::Moved)
     }
 
-    pub fn is_borrowed(&self) -> bool {
-        matches!(self, VarState::Borrowed(..))
+    pub fn is_mut_borrowed(&self) -> bool {
+        matches!(self, VarState::Borrowed(ty::Mutability::Mut, _))
     }
 
     pub fn live() -> Self {
@@ -75,7 +75,15 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
         iter
     }
 
-    pub fn providers_for(&self, ty: Ty<'tcx>) -> Vec<Var> {
+    pub fn live_vars<'b>(&'b self) -> impl Iterator<Item = Var> + use<'b, 'tcx> {
+        let iter = self.cx.vars().filter_map(|var| match self.var_state(var) {
+            VarState::Live => Some(var),
+            _ => None,
+        });
+        iter
+    }
+
+    pub fn vars_with_ty(&self, ty: Ty<'tcx>) -> Vec<Var> {
         let mut ret = Vec::new();
         if utils::is_fuzzable_ty(ty, self.tcx) {
             ret.push(DUMMY_INPUT_VAR);

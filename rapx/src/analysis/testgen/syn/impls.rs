@@ -72,6 +72,9 @@ impl<'a, 'tcx, I: InputGen> FuzzDriverSynImpl<'a, 'tcx, I> {
             StmtKind::AsRef(var) => {
                 format!("{}.as_ref()", self.var_str(*var))
             }
+            StmtKind::AsMut(var) => {
+                format!("{}.as_mut()", self.var_str(*var))
+            }
             // StmtKind::Deref(var, mutability) => {
             //     format!("{}*{}", mutability.ref_prefix_str(), self.var_str(**var))
             // }
@@ -148,6 +151,7 @@ impl<'a, 'tcx, I: InputGen> FuzzDriverSynImpl<'a, 'tcx, I> {
     fn need_explicit_type_annotation(&self, stmt: &Stmt<'_>) -> bool {
         match stmt.kind() {
             StmtKind::AsRef(_) => true,
+            StmtKind::AsMut(_) => true,
             _ => false,
         }
     }
@@ -188,6 +192,15 @@ impl<'a, 'tcx, I: InputGen> FuzzDriverSynImpl<'a, 'tcx, I> {
         )
     }
 
+    fn comment_var_tys(&mut self, cx: &Context<'tcx>) -> String {
+        let mut ret = String::new();
+        cx.vars().for_each(|var| {
+            let ty = cx.type_of(var);
+            ret.push_str(&format!("// {}: {}\n", var, self.resolver.ty_str(ty)));
+        });
+        ret
+    }
+
     fn main_str(&mut self, cx: &Context<'tcx>) -> String {
         let mut ret = String::new();
         ret.push_str("fn main() {\n");
@@ -197,7 +210,9 @@ impl<'a, 'tcx, I: InputGen> FuzzDriverSynImpl<'a, 'tcx, I> {
             ret.push_str(&self.stmt_str(stmt.clone(), cx));
             ret.push_str("\n");
         }
+        ret.push_str(&self.comment_var_tys(cx));
         ret.push_str("}\n");
+
         ret
     }
 }
