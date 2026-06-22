@@ -1,6 +1,7 @@
 pub mod core;
 pub mod extract;
 pub mod graphs;
+pub mod naive_check;
 pub mod opt;
 pub mod rcanary;
 pub mod safedrop;

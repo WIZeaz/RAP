@@ -30,18 +30,25 @@ impl<'tcx> Analysis for ScanAnalysis<'tcx> {
         rap_info!("========= API Info =========");
         let mut fn_visitor = FnVisitor::new(self.tcx);
         self.tcx.hir_visit_all_item_likes_in_crate(&mut fn_visitor);
-        let stats = fn_visitor.statistic();
-        stats.info().print_log();
-        rap_info!("======== Path Info =========");
-        let resolver = get_path_resolver(self.tcx);
-        for (did, path_str) in resolver.paths() {
-            rap_info!(
-                "kind: {}, actual: {}, public: {}",
-                self.tcx.def_descr(did),
-                self.tcx.def_path_str(did),
-                path_str
-            );
-        }
+
+        let mut file = std::fs::File::create("lifetime_info.json")
+            .expect("Failed to create lifetime_info.json");
+        fn_visitor
+            .dump_lifetime_info(&mut file)
+            .expect("Failed to write lifetime info to file");
+
+        // let stats = fn_visitor.statistic();
+        // stats.info().print_log();
+        // rap_info!("======== Path Info =========");
+        // let resolver = get_path_resolver(self.tcx);
+        // for (did, path_str) in resolver.paths() {
+        //     rap_info!(
+        //         "kind: {}, actual: {}, public: {}",
+        //         self.tcx.def_descr(did),
+        //         self.tcx.def_path_str(did),
+        //         path_str
+        //     );
+        // }
     }
 
     fn reset(&mut self) {}

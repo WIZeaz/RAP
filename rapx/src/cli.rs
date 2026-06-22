@@ -61,7 +61,13 @@ pub enum Commands {
         kind: ExtractKind,
     },
     /// test the crate with automatically generated test cases
-    Test,
+    Test {
+        #[arg(long, default_value = "false")]
+        naive_check: bool,
+
+        #[arg(long)]
+        glob: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

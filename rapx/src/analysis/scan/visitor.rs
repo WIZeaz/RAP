@@ -10,11 +10,21 @@ use rustc_middle::{
     ty::{self, FnSig, ParamEnv, Ty, TyCtxt, TyKind},
 };
 use rustc_span::Span;
+use serde::Serialize;
 use std::io::Write;
 
 pub struct FnVisitor<'tcx> {
     tcx: TyCtxt<'tcx>,
     stats: Statistics<'tcx>,
+    lifetime_info: Vec<ApiLifetimeInfo>,
+}
+
+#[derive(Serialize)]
+pub struct ApiLifetimeInfo {
+    pub path: String,
+    pub num_lifetime_params: usize,
+    pub has_outlive_pred: bool,
+    pub has_compound_type: bool,
 }
 
 fn is_api_public(fn_def_id: impl Into<DefId>, tcx: TyCtxt<'_>) -> bool {
@@ -30,11 +40,79 @@ fn is_api_public(fn_def_id: impl Into<DefId>, tcx: TyCtxt<'_>) -> bool {
         || tcx.effective_visibilities(()).is_exported(local_id)
 }
 
+fn num_lifetime_params(did: impl Into<DefId>, tcx: TyCtxt<'_>) -> usize {
+    let fn_def_id: DefId = did.into();
+    let generics = tcx.generics_of(fn_def_id);
+
+    let parent_count = if let Some(parent) = generics.parent {
+        num_lifetime_params(parent, tcx)
+    } else {
+        0
+    };
+
+    let own_count = generics
+        .own_params
+        .iter()
+        .filter(|p| matches!(p.kind, ty::GenericParamDefKind::Lifetime { .. }))
+        .count();
+
+    own_count + parent_count
+}
+
+fn num_late_bound_lifetime_params(did: impl Into<DefId>, tcx: TyCtxt<'_>) -> usize {
+    let fn_def_id: DefId = did.into();
+    tcx.fn_sig(fn_def_id)
+        .skip_binder()
+        .bound_vars()
+        .iter()
+        .filter(|kind| matches!(kind, ty::BoundVariableKind::Region(_)))
+        .count()
+}
+
+fn is_api_has_multi_lifetime_params(fn_def_id: impl Into<DefId>, tcx: TyCtxt<'_>) -> bool {
+    let fn_def_id: DefId = fn_def_id.into();
+    let generics = tcx.generics_of(fn_def_id);
+
+    let early_count = num_lifetime_params(fn_def_id, tcx);
+    let late_count = num_late_bound_lifetime_params(fn_def_id, tcx);
+    rap_debug!("num of lifetime params = {}", early_count + late_count);
+    early_count + late_count > 1
+}
+
+fn has_outlive_pred(fn_def_id: impl Into<DefId>, tcx: TyCtxt<'_>) -> bool {
+    let fn_def_id: DefId = fn_def_id.into();
+    let generics = tcx.generics_of(fn_def_id);
+    let predicates = tcx.explicit_predicates_of(fn_def_id);
+    predicates
+        .predicates
+        .iter()
+        .any(|(pred, _)| match pred.kind().skip_binder() {
+            ty::ClauseKind::RegionOutlives(_) | ty::ClauseKind::TypeOutlives(..) => true,
+            _ => false,
+        })
+}
+
+fn has_compound_type(fn_def_id: impl Into<DefId>, tcx: TyCtxt<'_>) -> bool {
+    let fn_def_id: DefId = fn_def_id.into();
+    let fn_sig = tcx.fn_sig(fn_def_id);
+    fn_sig
+        .instantiate_identity()
+        .inputs_and_output()
+        .iter()
+        .any(|ty| match ty.skip_binder().kind() {
+            TyKind::Adt(adt_def, args) => {
+                args.iter().filter(|arg| arg.as_region().is_some()).count() > 1
+            }
+            _ => false,
+        })
+}
+
 impl<'tcx> FnVisitor<'tcx> {
     pub fn new(tcx: TyCtxt<'tcx>) -> FnVisitor<'tcx> {
         FnVisitor {
             tcx,
             stats: Statistics::default(),
+            lifetime_info: Vec::new(),
         }
     }
     pub fn statistic(self) -> Statistics<'tcx> {
@@ -59,7 +137,6 @@ impl<'tcx> FnVisitor<'tcx> {
             self.tcx
                 .effective_visibilities(())
                 .effective_vis(fn_did.as_local().unwrap())
-                .unwrap()
         );
 
         if !is_api_public(fn_did, self.tcx) {
@@ -67,12 +144,29 @@ impl<'tcx> FnVisitor<'tcx> {
             return;
         }
 
-        let is_generic = self
+        let is_api_has_multi_lifetime_params = is_api_has_multi_lifetime_params(fn_did, self.tcx);
+        let is_api_has_outlive_pred = has_outlive_pred(fn_did, self.tcx);
+        let is_api_has_compound_type = has_compound_type(fn_did, self.tcx);
+        rap_debug!(
+            "is_api_has_multi_lifetime_params: {}, is_api_has_outlive_pred: {}, is_api_has_compound_type: {}",
+            is_api_has_multi_lifetime_params,
+            is_api_has_outlive_pred,
+            is_api_has_compound_type
+        );
+
+        self.lifetime_info.push(ApiLifetimeInfo {
+            path: self.tcx.def_path_str(fn_did),
+            num_lifetime_params: num_lifetime_params(fn_did, self.tcx)
+                + num_late_bound_lifetime_params(fn_did, self.tcx),
+            has_outlive_pred: is_api_has_outlive_pred,
+            has_compound_type: is_api_has_compound_type,
+        });
+
+        let is_type_generic = self
             .tcx
             .generics_of(fn_did)
             .requires_monomorphization(self.tcx);
         let fn_sig = self.tcx.fn_sig(fn_did);
-        rap_debug!("fn_sig: {}", fn_sig.instantiate_identity());
         for input in fn_sig.instantiate_identity().inputs_and_output().iter() {
             rap_debug!("param: {:?}", input);
             let input_ty = input.skip_binder();
@@ -97,7 +191,7 @@ impl<'tcx> FnVisitor<'tcx> {
             .liberate_late_bound_regions(fn_did, fn_sig.instantiate_identity());
         rap_debug!("late_fn_sig: {:?}", late_fn_sig);
 
-        if is_generic {
+        if is_type_generic {
             self.stats.pub_generic_api.insert(fn_did);
         } else {
             self.stats.pub_non_generic_api.insert(fn_did);
@@ -106,6 +200,11 @@ impl<'tcx> FnVisitor<'tcx> {
         if fk.header().map_or(false, |header| header.is_unsafe()) {
             self.stats.pub_unsafe_api.insert(fn_did);
         }
+    }
+
+    pub fn dump_lifetime_info(&self, mut writer: impl Write) -> std::io::Result<()> {
+        serde_json::to_writer_pretty(&mut writer, &self.lifetime_info)?;
+        Ok(())
     }
 }
 

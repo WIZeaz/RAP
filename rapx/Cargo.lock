@@ -927,6 +927,7 @@ dependencies = [
  "fern",
  "fs4",
  "fs_extra",
+ "glob",
  "if_chain",
  "indexmap",
  "insta",

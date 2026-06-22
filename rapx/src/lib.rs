@@ -36,10 +36,12 @@ extern crate thin_vec;
 use crate::{
     analysis::{
         core::{alias_analysis::mfp::MfpAliasAnalyzer, api_dependency},
+        naive_check,
         scan::ScanAnalysis,
         testgen::Testgen,
     },
     cli::{AliasStrategyKind, AnalysisKind, Commands, ExtractKind, OptLevel, RapxArgs},
+    utils::log::rap_error_and_exit,
 };
 use analysis::{
     Analysis,
@@ -314,8 +316,16 @@ pub fn start_analyzer(tcx: TyCtxt, callback: &RapCallback) {
                 SSATrans::new(tcx, false).start();
             }
         },
-        Commands::Test => {
-            Testgen::new(tcx).start();
+        Commands::Test { naive_check, glob } => {
+            if *naive_check {
+                let mut analyzer = naive_check::NaiveSynAnalysis::new(tcx, glob.clone());
+                analyzer.run();
+                if !analyzer.is_valid() {
+                    rap_error_and_exit("naive check fail");
+                }
+            } else {
+                Testgen::new(tcx).start();
+            }
         }
     }
 }
