@@ -1,16 +1,11 @@
-use annotate_snippets::{Annotation, Level, Renderer, Snippet};
 use itertools::Itertools;
-use rustc_ast::{BindingMode, Mutability};
-use rustc_hir::{
-    BodyId, Expr, ExprKind, FnDecl, HirId, Path, QPath,
-    def_id::{DefId, LOCAL_CRATE, LocalDefId},
-    intravisit::FnKind,
-};
+use rustc_ast::{BindingMode, Mutability, UnOp};
+use rustc_hir::{Expr, ExprKind, HirId, QPath, def_id::LocalDefId};
 use rustc_hir::{LetStmt, Pat, PatKind, Stmt, StmtKind};
 use rustc_infer::infer::TyCtxtInferExt;
+use rustc_middle::ty::ParamEnv;
 use rustc_middle::ty::{self, Ty, TyCtxt};
-use rustc_middle::{query::Key, ty::ParamEnv};
-use rustc_span::{Ident, Span, sym::panic};
+use rustc_span::{Ident, Span};
 use rustc_trait_selection::infer::InferCtxtExt as _;
 use std::collections::HashMap;
 
@@ -42,6 +37,9 @@ impl VarState {
     }
     fn is_moved(&self) -> bool {
         matches!(self, VarState::Moved)
+    }
+    fn is_live(&self) -> bool {
+        matches!(self, VarState::Live)
     }
 }
 
@@ -125,12 +123,15 @@ impl<'tcx> SynValidator<'tcx> {
         self.tcx.typeck(self.fn_did).node_type(hid)
     }
 
-    fn hir_debug_str(&self, hid: HirId) -> String {
-        let ident = self
-            .ident_map
+    fn hir_ident(&self, hid: HirId) -> String {
+        self.ident_map
             .get(&hid)
             .map(|i| i.to_string())
-            .unwrap_or("UNKNOWN".to_string());
+            .unwrap_or("UNKNOWN".to_string())
+    }
+
+    fn hir_debug_str(&self, hid: HirId) -> String {
+        let ident = self.hir_ident(hid);
         format!("{}({:?})", ident, hid)
     }
 
@@ -138,7 +139,7 @@ impl<'tcx> SynValidator<'tcx> {
         let span = stmt.span;
         match stmt.kind {
             StmtKind::Let(LetStmt { pat, init, .. }) => {
-                let (mode, hid, ident) = self.as_let_binding(*pat)?;
+                let (_, hid, ident) = self.as_let_binding(*pat)?;
                 if let Some(expr) = init {
                     let hids = self.validate_expr(expr)?;
                     let ret_ty = self.hir_type(hid);
@@ -188,7 +189,7 @@ impl<'tcx> SynValidator<'tcx> {
         }
     }
 
-    pub fn expect_path(&self, expr: &Expr<'tcx>) -> ValidateResult<HirId> {
+    pub fn expect_path(&mut self, expr: &Expr<'tcx>) -> ValidateResult<HirId> {
         match expr.kind {
             ExprKind::Path(QPath::Resolved(_, path)) => match path.res {
                 rustc_hir::def::Res::Local(hid) => Ok(hid),
@@ -198,6 +199,14 @@ impl<'tcx> SynValidator<'tcx> {
                 }),
             },
             ExprKind::Index(expr, _, _) => self.expect_path(expr),
+            ExprKind::Unary(UnOp::Deref, expr) => {
+                // reborrow
+                let hid = self.expect_path(expr)?;
+
+                let borrowed_hid = self.reborrow_var(hid, expr.span)?;
+
+                return Ok(borrowed_hid);
+            }
             _ => {
                 rap_error!("Unexpected Expr Kind: {:?}", expr.kind);
                 Err(ValidateError {
@@ -308,6 +317,8 @@ impl<'tcx> SynValidator<'tcx> {
         }
     }
 
+    // move_var does not return var, we just mark the variable as moved.
+    // The caller stmt is responsible for returning the variable if needed.
     fn move_var(&mut self, hid: HirId, span: Span) -> ValidateResult {
         rap_info!("Moving variable {} at {:?}", self.hir_debug_str(hid), span);
         if let Some(prev_state) = self.state_map.insert(hid, VarState::Moved) {
@@ -317,16 +328,38 @@ impl<'tcx> SynValidator<'tcx> {
                     kind: ValidateErrorKind::InvalidVarStateTrans(prev_state, VarState::Moved),
                 });
             }
-
-            // move_var does not return var, we just mark the variable as moved.
-            // The caller stmt is responsible for returning the variable if needed.
-            // if let Some(hids) = self.borrow_map.get(&hid) {
-            //     for borrower in hids.clone() {
-            //         self.return_var(borrower);
-            //     }
-            // };
         }
         Ok(())
+    }
+
+    fn reborrow_var(&mut self, hid: HirId, span: Span) -> ValidateResult<HirId> {
+        rap_info!(
+            "Reborrowing variable {} at {:?}",
+            self.hir_debug_str(hid),
+            span
+        );
+
+        let borrowed_hids = self.borrow_map.get(&hid).cloned().unwrap_or_default();
+        if borrowed_hids.len() != 1 {
+            panic!(
+                "Dereferencing a variable with multiple borrows: {}",
+                self.hir_debug_str(hid)
+            );
+        }
+        let borrowed_hid = borrowed_hids[0];
+
+        let Some(hir_state) = self.state_map.get(&hid) else {
+            panic!("variable {} is not in state map", self.hir_debug_str(hid));
+        };
+
+        // This is first time hir be reborrwed,
+        // we return the borrower and move this variable
+        if hir_state.is_live() {
+            self.move_var(hid, span)?;
+            self.return_var(borrowed_hid);
+        }
+
+        Ok(borrowed_hid)
     }
 
     pub fn validate_call_arg_expr(&mut self, expr: &Expr<'tcx>) -> ValidateResult<Vec<HirId>> {
@@ -363,8 +396,22 @@ impl<'tcx> SynValidator<'tcx> {
                     });
                 }
             },
+            ExprKind::Call(_, exprs) => {
+                if exprs.len() != 1 {
+                    rap_error!(
+                        "Unexpected number of arguments in call expression: {}",
+                        exprs.len()
+                    );
+                    return Err(ValidateError {
+                        span: expr.span,
+                        kind: ValidateErrorKind::InvalidExprKind,
+                    });
+                }
+                self.validate_call_arg_expr(&exprs[0])?;
+            }
             ExprKind::Lit(..) => {} // nothing happens for literal expressions
             _ => {
+                rap_error!("Other expression: {:?}", expr.kind);
                 return Err(ValidateError {
                     span: expr.span,
                     kind: ValidateErrorKind::InvalidExprKind,
@@ -388,10 +435,22 @@ impl<'tcx> SynValidator<'tcx> {
                     expr.span
                 );
             }
-            // `ExprKind::If` happens in `let x = if Some(x) = ... {..} else {..}`
-            // We currently ignore this expr, this should not threat validity
-            // of our validator
-            ExprKind::If(..) => {}
+            // `ExprKind::If` happens in `let x = if Some(x) = f(..) {x} else {return;} ;`
+            // We currently only validate the condition expression, this should not threat validity
+            // of our validator because this kind of expr only occurs in certain circumstances.
+            ExprKind::If(cond_expr, ..) => match cond_expr.kind {
+                ExprKind::Let(let_expr) => {
+                    let cond_hids = self.validate_expr(let_expr.init)?;
+                    hids.extend(cond_hids);
+                }
+                _ => {
+                    rap_error!("Invalid if condition expression: {:?}", cond_expr.kind);
+                    return Err(ValidateError {
+                        span: cond_expr.span,
+                        kind: ValidateErrorKind::InvalidExprKind,
+                    });
+                }
+            },
             ExprKind::Call(_, exprs) => {
                 for (i, expr) in exprs.iter().enumerate() {
                     rap_debug!("call expr #{}: {:?}", i, expr.kind);
@@ -402,6 +461,7 @@ impl<'tcx> SynValidator<'tcx> {
             ExprKind::MethodCall(_, receiver, exprs, _) => {
                 rap_debug!("method call receiver: {:?}", receiver.kind);
                 let receiver_hid = self.expect_path(receiver)?;
+
                 let method_did = self
                     .tcx
                     .typeck(self.fn_did)
@@ -413,7 +473,8 @@ impl<'tcx> SynValidator<'tcx> {
                 let self_ty = fn_sig.inputs().first().unwrap();
                 rap_info!("method call self arg type: {}", self_ty);
 
-                if self_ty.is_ref() {
+                // adhoc for FRIES's `fr`
+                if self_ty.is_ref() && self.hir_ident(receiver_hid) != "fr" {
                     self.borrow_var(
                         receiver_hid,
                         self_ty.ref_mutability().unwrap(),
