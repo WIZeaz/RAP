@@ -2,6 +2,7 @@ use super::pattern::EdgePatterns;
 use super::pattern::PatternNode;
 use crate::analysis::testgen::context::Var;
 use bit_set::BitSet;
+use petgraph::Direction;
 use petgraph::dot::{Config, Dot};
 use petgraph::graph::NodeIndex;
 use rustc_middle::ty::{self, Ty, TyCtxt, TypeFoldable};
@@ -288,6 +289,31 @@ impl RegionGraph {
                 if visited.insert(next_idx.index()) {
                     q.push_back(next_idx.into());
                 }
+            }
+        }
+    }
+
+    fn topo_dfs(
+        &self,
+        current: NodeIndex,
+        visited: &mut BitSet,
+        f: &mut impl FnMut(Rid, &RegionNode),
+    ) {
+        let current_rid: Rid = current.into();
+        let current_node = self.get_node(current_rid);
+        for neighbor in self.inner.neighbors_directed(current, Direction::Incoming) {
+            if visited.insert(neighbor.index()) {
+                self.topo_dfs(neighbor, visited, f);
+            }
+        }
+        f(current_rid, &current_node);
+    }
+
+    pub fn topo_visit(&self, mut f: impl FnMut(Rid, &RegionNode)) {
+        let mut visited = BitSet::with_capacity(self.total_node_count());
+        for idx in self.inner.node_indices() {
+            if visited.insert(idx.index()) {
+                self.topo_dfs(idx, &mut visited, &mut f);
             }
         }
     }

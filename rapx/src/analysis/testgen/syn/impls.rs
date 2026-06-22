@@ -192,11 +192,16 @@ impl<'a, 'tcx, I: InputGen> FuzzDriverSynImpl<'a, 'tcx, I> {
         )
     }
 
-    fn comment_var_tys(&mut self, cx: &Context<'tcx>) -> String {
+    fn comment_var_tys(&mut self, cx: &Context<'tcx>, indent: &str) -> String {
         let mut ret = String::new();
         cx.vars().for_each(|var| {
             let ty = cx.type_of(var);
-            ret.push_str(&format!("// {}: {}\n", var, self.resolver.ty_str(ty)));
+            ret.push_str(&format!(
+                "{}// {}: {}\n",
+                indent,
+                var,
+                self.resolver.ty_str(ty)
+            ));
         });
         ret
     }
@@ -210,7 +215,7 @@ impl<'a, 'tcx, I: InputGen> FuzzDriverSynImpl<'a, 'tcx, I> {
             ret.push_str(&self.stmt_str(stmt.clone(), cx));
             ret.push_str("\n");
         }
-        ret.push_str(&self.comment_var_tys(cx));
+        ret.push_str(&self.comment_var_tys(cx, indent));
         ret.push_str("}\n");
 
         ret

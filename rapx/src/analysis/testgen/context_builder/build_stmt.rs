@@ -447,6 +447,8 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
     // }
 
     pub fn move_var(&mut self, var: Var) {
+        // if var is already borrowed, we need to drop all its borrowers before moving it
+        self.drop_var_from(var, true);
         self.set_var_state(var, VarState::moved());
     }
 }

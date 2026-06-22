@@ -6,6 +6,7 @@ mod var_state;
 
 use crate::analysis::core::alias_analysis::FnAliasMap;
 use crate::analysis::testgen::context::{Context, DUMMY_UNIT_VAR, ExploitKind, Var};
+use crate::analysis::testgen::context_builder::lifetime::RegionNode;
 use crate::analysis::testgen::context_builder::var_state::VarState;
 use crate::analysis::testgen::utils;
 use bit_set::BitSet;
@@ -144,9 +145,19 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
             .unwrap();
         let infcx = self.tcx.infer_ctxt().build(TypingMode::PostAnalysis);
         let param_env = ParamEnv::empty();
-        let live_vars = self.live_vars().collect_vec();
+        // let live_vars = self.live_vars().collect_vec();
+        let mut vars = Vec::new();
 
-        for var in live_vars {
+        self.region_graph.topo_visit(|_, rnode| {
+            if let RegionNode::Named(var) = rnode {
+                vars.push(*var);
+            }
+        });
+
+        for var in vars {
+            if self.var_state(var).is_dead() {
+                continue;
+            }
             let ty = self.cx.type_of(var);
             if ty != self.tcx.types.unit
                 && infcx
