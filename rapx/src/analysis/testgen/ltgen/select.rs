@@ -1,7 +1,7 @@
 use crate::analysis::core::api_dependency::DepNode;
 use crate::analysis::core::api_dependency::graph::{TransformKind, TyWrapper};
 use crate::analysis::testgen::context::{ApiCall, Var};
-use crate::analysis::testgen::context_builder::{ContextBuilder, is_ty_moved_on_call};
+use crate::analysis::testgen::context_builder::{ContextBuilder, VarState, is_ty_moved_on_call};
 use crate::analysis::testgen::ltgen::LtGen;
 use crate::analysis::testgen::utils;
 use itertools::Itertools;
@@ -44,14 +44,6 @@ impl std::fmt::Display for Provider {
     }
 }
 
-impl Provider {
-    fn has_mutref_transform(&self) -> bool {
-        self.transforms
-            .iter()
-            .any(|kind| matches!(TransformKind::Ref(ty::Mutability::Mut), kind))
-    }
-}
-
 impl<'tcx> CallAction<'tcx> {
     pub fn node(&self) -> DepNode<'tcx> {
         self.node
@@ -75,15 +67,19 @@ fn top_k_idx_by_weight(actions: &[CallAction], weights: &[f32], top_k: usize) ->
 }
 
 impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
-    fn mut_borrowed_by(&self, var: Var, builder: &ContextBuilder<'tcx, 'a>) -> Vec<Var> {
+    fn borrow_from(&self, var: Var, builder: &ContextBuilder<'tcx, 'a>) -> (Vec<Var>, Vec<Var>) {
         let src_rid = builder.rid_of(var);
-        let mut res = Vec::new();
-        builder.region_graph().for_each_var_from(src_rid, &mut |v| {
-            if builder.var_state(v).is_mut_borrowed() {
-                res.push(v)
-            }
-        });
-        res
+        let mut mut_borrowed = Vec::new();
+        let mut borrowed = Vec::new();
+        builder
+            .region_graph()
+            .for_each_var_from(src_rid, &mut |v| match builder.var_state(v) {
+                VarState::Borrowed(ty::Mutability::Mut, _) => mut_borrowed.push(v),
+                VarState::Borrowed(ty::Mutability::Not, _) => borrowed.push(v),
+                _ => {}
+            });
+
+        (borrowed, mut_borrowed)
     }
 
     fn sample_eligable_calls(
@@ -93,9 +89,9 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
         builder: &ContextBuilder<'tcx, 'a>,
     ) -> Option<Vec<Provider>> {
         let mut moved_vars = Vec::with_capacity(16);
-        let mut used_mut_ref_var = Vec::with_capacity(16);
-
-        let mut args = Vec::with_capacity(16);
+        let mut mut_borrowed_vars = Vec::with_capacity(16);
+        let mut borrowed_vars = Vec::with_capacity(16);
+        let mut args = Vec::with_capacity(8);
 
         let mut select_provider = |providers: &[Provider], is_move| -> bool {
             const MAX_FAIL_COUNT: usize = 10;
@@ -116,26 +112,42 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
                     return true;
                 }
 
-                let mut_borrowed = self.mut_borrowed_by(var, builder);
-
                 // the provider is moved before, or this is a used mut reference, try again
-                if moved_vars.contains(&var)
-                    || mut_borrowed.iter().any(|v| used_mut_ref_var.contains(v))
-                    || used_mut_ref_var.contains(&var)
+                if moved_vars.contains(&var) {
+                    continue;
+                }
+
+                let (mut borrowed, mut mut_borrowed) = self.borrow_from(var, builder);
+
+                match provider.transforms.first() {
+                    Some(TransformKind::Ref(ty::Mutability::Mut)) => {
+                        mut_borrowed.push(var);
+                    }
+                    Some(TransformKind::Ref(ty::Mutability::Not)) => {
+                        borrowed.push(var);
+                    }
+                    _ => {}
+                }
+
+                if borrowed
+                    .iter()
+                    .any(|v| moved_vars.contains(v) || mut_borrowed_vars.contains(v))
+                    || mut_borrowed.iter().any(|v| {
+                        moved_vars.contains(v)
+                            || borrowed_vars.contains(v)
+                            || mut_borrowed_vars.contains(v)
+                    })
                 {
                     continue;
                 }
 
                 args.push(provider.clone());
 
-                if !var.is_from_input() && is_move {
+                if is_move {
                     moved_vars.push(var);
                 }
-
-                used_mut_ref_var.extend(mut_borrowed);
-                if provider.has_mutref_transform() {
-                    used_mut_ref_var.push(var);
-                }
+                mut_borrowed_vars.extend(mut_borrowed);
+                borrowed_vars.extend(borrowed);
 
                 return true;
             }

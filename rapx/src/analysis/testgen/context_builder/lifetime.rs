@@ -386,6 +386,23 @@ pub fn visit_ty_region_with<'tcx, F: FnMut(ty::Region<'tcx>, ty::Region<'tcx>)>(
                 }
             }
         }
+
+        // opaque type, associated type
+        ty::TyKind::Alias(_, alias_ty) => {
+            for arg in alias_ty.args.iter() {
+                match arg.kind() {
+                    ty::GenericArgKind::Lifetime(region) => {
+                        if let Some(prev_region) = prev {
+                            f(prev_region, region);
+                        }
+                    }
+                    ty::GenericArgKind::Type(inner_ty) => {
+                        visit_ty_region_with(inner_ty, prev, tcx, f);
+                    }
+                    _ => {}
+                }
+            }
+        }
         _ => {}
     }
 }

@@ -7,7 +7,6 @@ mod var_state;
 use crate::analysis::core::alias_analysis::FnAliasMap;
 use crate::analysis::testgen::context::{Context, DUMMY_UNIT_VAR, ExploitKind, Var};
 use crate::analysis::testgen::context_builder::lifetime::RegionNode;
-use crate::analysis::testgen::context_builder::var_state::VarState;
 use crate::analysis::testgen::utils;
 use bit_set::BitSet;
 use itertools::Itertools;
@@ -19,6 +18,7 @@ use rustc_infer::infer::TyCtxtInferExt;
 use rustc_middle::ty::{self, ParamEnv, Ty, TyCtxt, TypingMode};
 use rustc_trait_selection::infer::InferCtxtExt;
 use std::collections::HashMap;
+pub use var_state::VarState;
 
 pub fn is_ty_moved_on_call<'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'tcx>) -> bool {
     !utils::is_ty_impl_copy(ty, tcx)
