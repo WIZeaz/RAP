@@ -1,5 +1,6 @@
 use itertools::Itertools;
 use rustc_ast::{BindingMode, Mutability, UnOp};
+use rustc_hir::def::Res;
 use rustc_hir::{Expr, ExprKind, HirId, QPath, def_id::LocalDefId};
 use rustc_hir::{LetStmt, Pat, PatKind, Stmt, StmtKind};
 use rustc_infer::infer::TyCtxtInferExt;
@@ -193,10 +194,13 @@ impl<'tcx> SynValidator<'tcx> {
         match expr.kind {
             ExprKind::Path(QPath::Resolved(_, path)) => match path.res {
                 rustc_hir::def::Res::Local(hid) => Ok(hid),
-                _ => Err(ValidateError {
-                    span: expr.span,
-                    kind: ValidateErrorKind::InvalidPathRes,
-                }),
+                _ => {
+                    rap_error!("Unexpected path resolution: {:?}", path.res);
+                    Err(ValidateError {
+                        span: expr.span,
+                        kind: ValidateErrorKind::InvalidPathRes,
+                    })
+                }
             },
             ExprKind::Index(expr, _, _) => self.expect_path(expr),
             ExprKind::Unary(UnOp::Deref, expr) => {
@@ -369,64 +373,69 @@ impl<'tcx> SynValidator<'tcx> {
         Ok(borrowed_hid)
     }
 
-    pub fn validate_call_arg_expr(&mut self, expr: &Expr<'tcx>) -> ValidateResult<Vec<HirId>> {
-        let mut hids = Vec::new();
-        match expr.kind {
-            ExprKind::AddrOf(_, mutability, this_expr) => {
-                let hid = self.expect_path(this_expr)?;
-                hids.push(hid);
-                self.borrow_var(hid, mutability, expr.span)?;
-                rap_info!(
-                    "Borrowing variable with {} at {:?}",
-                    self.hir_debug_str(hid),
-                    expr.span
-                );
-            }
-
-            // hid moved after function call
-            ExprKind::Path(QPath::Resolved(_, path)) => match path.res {
-                rustc_hir::def::Res::Local(hid) => {
-                    let ty = self.hir_type(hid);
-                    if let Some(borrowers) = self.borrow_map.get(&hid) {
-                        hids.extend(borrowers);
-                    }
-                    if !is_ty_impl_copy(ty, self.tcx) {
-                        self.move_var(hid, expr.span)?;
-                    } else {
-                        rap_info!("Variable {} is Copy", self.hir_debug_str(hid));
-                    }
-                }
-                _ => {
-                    return Err(ValidateError {
-                        span: expr.span,
-                        kind: ValidateErrorKind::InvalidPathRes,
-                    });
-                }
-            },
-            ExprKind::Call(_, exprs) => {
-                if exprs.len() != 1 {
-                    rap_error!(
-                        "Unexpected number of arguments in call expression: {}",
-                        exprs.len()
-                    );
-                    return Err(ValidateError {
-                        span: expr.span,
-                        kind: ValidateErrorKind::InvalidExprKind,
-                    });
-                }
-                self.validate_call_arg_expr(&exprs[0])?;
-            }
-            ExprKind::Lit(..) => {} // nothing happens for literal expressions
-            _ => {
-                rap_error!("Other expression: {:?}", expr.kind);
-                return Err(ValidateError {
-                    span: expr.span,
-                    kind: ValidateErrorKind::InvalidExprKind,
-                });
-            }
-        }
-        Ok(hids)
-    }
+    // pub fn validate_call_arg_expr(&mut self, expr: &Expr<'tcx>) -> ValidateResult<Vec<HirId>> {
+    //     let mut hids = Vec::new();
+    //     match expr.kind {
+    //         ExprKind::AddrOf(_, mutability, this_expr) => {
+    //             let hid = self.expect_path(this_expr)?;
+    //             hids.push(hid);
+    //             self.borrow_var(hid, mutability, expr.span)?;
+    //             rap_info!(
+    //                 "Borrowing variable with {} at {:?}",
+    //                 self.hir_debug_str(hid),
+    //                 expr.span
+    //             );
+    //         }
+    //         // hid moved after function call
+    //         ExprKind::Path(QPath::Resolved(_, path)) => match path.res {
+    //             rustc_hir::def::Res::Local(hid) => {
+    //                 let ty = self.hir_type(hid);
+    //                 if let Some(borrowers) = self.borrow_map.get(&hid) {
+    //                     hids.extend(borrowers);
+    //                 }
+    //                 if !is_ty_impl_copy(ty, self.tcx) {
+    //                     self.move_var(hid, expr.span)?;
+    //                 } else {
+    //                     rap_info!("Variable {} is Copy", self.hir_debug_str(hid));
+    //                 }
+    //             }
+    //             _ => {
+    //                 return Err(ValidateError {
+    //                     span: expr.span,
+    //                     kind: ValidateErrorKind::InvalidPathRes,
+    //                 });
+    //             }
+    //         },
+    //         ExprKind::Call(_, exprs) => {
+    //             if exprs.len() != 1 {
+    //                 rap_error!(
+    //                     "Unexpected number of arguments in call expression: {}",
+    //                     exprs.len()
+    //                 );
+    //                 return Err(ValidateError {
+    //                     span: expr.span,
+    //                     kind: ValidateErrorKind::InvalidExprKind,
+    //                 });
+    //             }
+    //             self.validate_call_arg_expr(&exprs[0])?;
+    //         }
+    //         ExprKind::Array(exprs) => {
+    //             for expr in exprs.iter() {
+    //                 let expr_hids = self.validate_call_arg_expr(expr)?;
+    //                 hids.extend(expr_hids);
+    //             }
+    //         }
+    //         ExprKind::Lit(..) => {} // nothing happens for literal expressions
+    //         _ => {
+    //             rap_error!("[Validate_call_arg_expr] Other expression: {:?}", expr.kind);
+    //             return Err(ValidateError {
+    //                 span: expr.span,
+    //                 kind: ValidateErrorKind::InvalidExprKind,
+    //             });
+    //         }
+    //     }
+    //     Ok(hids)
+    // }
 
     /// validate the expression and return the variables (HirId) that are borrowed in the expression.
     pub fn validate_expr(&mut self, expr: &Expr<'tcx>) -> ValidateResult<Vec<HirId>> {
@@ -461,7 +470,7 @@ impl<'tcx> SynValidator<'tcx> {
             ExprKind::Call(_, exprs) => {
                 for (i, expr) in exprs.iter().enumerate() {
                     rap_debug!("call expr #{}: {:?}", i, expr.kind);
-                    let expr_hids = self.validate_call_arg_expr(expr)?;
+                    let expr_hids = self.validate_expr(expr)?;
                     hids.extend(expr_hids);
                 }
             }
@@ -492,7 +501,7 @@ impl<'tcx> SynValidator<'tcx> {
 
                 for (i, expr) in exprs.iter().enumerate() {
                     rap_debug!("method call arg #{}: {:?}", i, expr.kind);
-                    let expr_hids = self.validate_call_arg_expr(expr)?;
+                    let expr_hids = self.validate_expr(expr)?;
                     hids.extend(expr_hids);
                 }
             }
@@ -514,10 +523,30 @@ impl<'tcx> SynValidator<'tcx> {
                 let expr_hids = self.validate_expr(expr)?;
                 hids.extend(expr_hids);
             }
+            ExprKind::Path(QPath::Resolved(_, path)) => match path.res {
+                Res::Local(hid) => {
+                    let ty = self.hir_type(hid);
+                    if let Some(borrowers) = self.borrow_map.get(&hid) {
+                        hids.extend(borrowers);
+                    }
+                    if !is_ty_impl_copy(ty, self.tcx) {
+                        self.move_var(hid, expr.span)?;
+                    } else {
+                        rap_info!("Variable {} is Copy", self.hir_debug_str(hid));
+                    }
+                }
+                Res::Def(..) => {}
+                _ => {
+                    rap_error!("Unexpected path resolution: {:?}", path.res);
 
-            ExprKind::Path(_) => {}
+                    return Err(ValidateError {
+                        span: expr.span,
+                        kind: ValidateErrorKind::InvalidPathRes,
+                    });
+                }
+            },
             _ => {
-                rap_error!("Other expression: {:?}", expr.kind);
+                rap_error!("[Validate_expr] Other expression: {:?}", expr.kind);
                 return Err(ValidateError {
                     span: expr.span,
                     kind: ValidateErrorKind::InvalidExprKind,
