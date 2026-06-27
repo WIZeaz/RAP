@@ -207,6 +207,13 @@ impl<'tcx> SynValidator<'tcx> {
 
                 return Ok(borrowed_hid);
             }
+            ExprKind::Array(_) => {
+                // temporary array, create a new variable for it
+                self.state_map.insert(expr.hir_id, VarState::Live);
+                self.ident_map
+                    .insert(expr.hir_id, Ident::from_str("temp_array"));
+                Ok(expr.hir_id)
+            }
             _ => {
                 rap_error!("Unexpected Expr Kind: {:?}", expr.kind);
                 Err(ValidateError {

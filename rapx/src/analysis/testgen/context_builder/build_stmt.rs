@@ -79,11 +79,11 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
 
     pub fn add_box_stmt(&mut self, boxed: Var) -> Var {
         self.move_var(boxed);
-        let ty = self.cx.type_of(boxed);
-        // NOTE: we use ty instead of Box<ty> because we cannot
+        // NOTE: we use () instead of Box<ty> because we cannot
         // get DefId of `Box` on no-std environment.
-        // this is sound for building lifetime contraints.
-        let var = self.mk_var(ty, false);
+        // using `!` to avoid be used.
+        // This is sound for building lifetime contraints.
+        let var = self.mk_var(self.tcx.types.never, false);
         self.add_stmt(Stmt::box_(var, boxed));
         var
     }

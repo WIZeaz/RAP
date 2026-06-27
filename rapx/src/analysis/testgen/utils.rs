@@ -20,6 +20,12 @@ pub fn is_ty_impl_copy<'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'tcx>) -> bool {
 pub fn is_ty_eq<'tcx>(ty1: Ty<'tcx>, ty2: Ty<'tcx>, tcx: TyCtxt<'tcx>) -> bool {
     let ty1 = tcx.erase_and_anonymize_regions(ty1);
     let ty2 = tcx.erase_and_anonymize_regions(ty2);
+    rap_trace!(
+        "[is_ty_eq] ty1: {}, ty2: {}, is_eq: {}",
+        ty1,
+        ty2,
+        ty1 == ty2
+    );
     return ty1 == ty2;
 }
 

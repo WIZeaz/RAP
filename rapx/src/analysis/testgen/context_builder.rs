@@ -8,8 +8,6 @@ use crate::analysis::core::alias_analysis::FnAliasMap;
 use crate::analysis::testgen::context::{Context, DUMMY_UNIT_VAR, ExploitKind, Var};
 use crate::analysis::testgen::context_builder::lifetime::RegionNode;
 use crate::analysis::testgen::utils;
-use bit_set::BitSet;
-use itertools::Itertools;
 use lifetime::visit_ty_region_with;
 use lifetime::{RegionGraph, Rid};
 use pattern::PatternProvider;
@@ -61,7 +59,10 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
     }
 
     pub fn rid_of(&self, var: Var) -> Rid {
-        self.var_rid[&var]
+        self.var_rid
+            .get(&var)
+            .copied()
+            .expect(&format!("var not found in var_rid: {:?}", var))
     }
 
     pub fn region_of(&self, var: Var) -> ty::Region<'tcx> {

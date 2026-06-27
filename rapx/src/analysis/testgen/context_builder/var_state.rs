@@ -84,6 +84,9 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
     }
 
     pub fn vars_with_ty(&self, ty: Ty<'tcx>) -> Vec<Var> {
+        if ty.is_never() {
+            return Vec::new();
+        }
         let mut ret = Vec::new();
         if utils::is_fuzzable_ty(ty, self.tcx) {
             ret.push(DUMMY_INPUT_VAR);

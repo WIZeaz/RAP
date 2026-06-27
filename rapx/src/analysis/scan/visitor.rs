@@ -76,7 +76,7 @@ fn is_api_has_multi_lifetime_params(fn_def_id: impl Into<DefId>, tcx: TyCtxt<'_>
     let early_count = num_lifetime_params(fn_def_id, tcx);
     let late_count = num_late_bound_lifetime_params(fn_def_id, tcx);
     rap_debug!("num of lifetime params = {}", early_count + late_count);
-    early_count + late_count > 1
+    (early_count + late_count) > 1
 }
 
 fn has_outlive_pred(fn_def_id: impl Into<DefId>, tcx: TyCtxt<'_>) -> bool {
@@ -92,7 +92,7 @@ fn has_outlive_pred(fn_def_id: impl Into<DefId>, tcx: TyCtxt<'_>) -> bool {
         })
 }
 
-fn has_compound_type(fn_def_id: impl Into<DefId>, tcx: TyCtxt<'_>) -> bool {
+fn has_complex_type(fn_def_id: impl Into<DefId>, tcx: TyCtxt<'_>) -> bool {
     let fn_def_id: DefId = fn_def_id.into();
     let fn_sig = tcx.fn_sig(fn_def_id);
     fn_sig
@@ -101,7 +101,7 @@ fn has_compound_type(fn_def_id: impl Into<DefId>, tcx: TyCtxt<'_>) -> bool {
         .iter()
         .any(|ty| match ty.skip_binder().kind() {
             TyKind::Adt(adt_def, args) => {
-                args.iter().filter(|arg| arg.as_region().is_some()).count() > 1
+                args.iter().filter(|arg| arg.as_region().is_some()).count() >= 1
             }
             _ => false,
         })
@@ -146,12 +146,13 @@ impl<'tcx> FnVisitor<'tcx> {
 
         let is_api_has_multi_lifetime_params = is_api_has_multi_lifetime_params(fn_did, self.tcx);
         let is_api_has_outlive_pred = has_outlive_pred(fn_did, self.tcx);
-        let is_api_has_compound_type = has_compound_type(fn_did, self.tcx);
+        let is_api_has_complex_type = has_complex_type(fn_did, self.tcx);
+
         rap_debug!(
-            "is_api_has_multi_lifetime_params: {}, is_api_has_outlive_pred: {}, is_api_has_compound_type: {}",
+            "is_api_has_multi_lifetime_params: {}, is_api_has_outlive_pred: {}, is_api_has_complex_type: {}",
             is_api_has_multi_lifetime_params,
             is_api_has_outlive_pred,
-            is_api_has_compound_type
+            is_api_has_complex_type
         );
 
         self.lifetime_info.push(ApiLifetimeInfo {
@@ -159,7 +160,7 @@ impl<'tcx> FnVisitor<'tcx> {
             num_lifetime_params: num_lifetime_params(fn_did, self.tcx)
                 + num_late_bound_lifetime_params(fn_did, self.tcx),
             has_outlive_pred: is_api_has_outlive_pred,
-            has_compound_type: is_api_has_compound_type,
+            has_compound_type: is_api_has_complex_type,
         });
 
         let is_type_generic = self

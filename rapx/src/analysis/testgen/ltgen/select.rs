@@ -306,10 +306,10 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
                     });
 
                     // FIXME: depth_of sometimes return LARGE_ENOUGH
-                    let _api_score = self
-                        .depth_of(action.node)
-                        .expect(&format!("visit unexpected node: {:?}", action.node))
-                        as f32;
+                    // let _api_score = self
+                    //     .depth_of(action.node)
+                    //     .expect(&format!("visit unexpected node: {:?}", action.node))
+                    //     as f32;
 
                     let weight = global_penalty * arg_score;
 
