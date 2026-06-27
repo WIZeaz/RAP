@@ -240,6 +240,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
     }
 
     fn drop_source_from_rids(&mut self, rid: Rid) -> bool {
+        unimplemented!("do not use this function");
         let mut dropped_var = Vec::new();
 
         rap_debug!("drop source from: {rid:?}");

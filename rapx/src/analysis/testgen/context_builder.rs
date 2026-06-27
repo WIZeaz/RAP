@@ -154,7 +154,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
             }
         });
 
-        for var in vars {
+        for var in vars.into_iter().rev() {
             if self.var_state(var).is_dead() {
                 continue;
             }
@@ -164,6 +164,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
                     .type_implements_trait(debug_def_id, [ty], param_env)
                     .must_apply_modulo_regions()
             {
+                self.drop_uses(var);
                 self.add_exploit_stmt(var, ExploitKind::Debug);
             }
         }

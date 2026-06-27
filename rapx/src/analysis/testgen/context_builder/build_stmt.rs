@@ -316,7 +316,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
             }
             // if the mutability does not match, or it is the exclusive mutability,
             // we need to borrow from the original var again with the desired mutability
-            self.drop_var_from(var, true);
+            self.drop_uses(var);
         }
 
         self.cx.lift_mutability(var, mutability);
@@ -379,21 +379,23 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
 /// VarState maintain implementation
 ///
 impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
-    /// drop all vars depended on `source` and `source` itself if `exclude_source` is false.
-    fn drop_var_from(&mut self, source: Var, exclude_source: bool) {
-        let from_rid = self.rid_of(source).into();
+    /// drop all vars depended on `source`. If `include_source` is true, `source` itself will also be dropped.
+    pub fn drop_uses(&mut self, def: Var) {
+        let source_rid = self.rid_of(def).into();
         let mut visited = vec![false; self.region_graph.total_node_count()];
-        let mut q: VecDeque<Rid> = VecDeque::from([from_rid]);
-        visited[from_rid.index()] = true;
+        let mut q: VecDeque<Rid> = VecDeque::from([source_rid]);
+        visited[source_rid.index()] = true;
 
-        let mut drop_vars = Vec::new();
+        let mut move_vars = Vec::new();
 
         while let Some(rid) = q.pop_front() {
             if let RegionNode::Named(var) = self.region_graph.get_node(rid) {
                 if self.var_state(var).is_dead() {
                     continue;
                 }
-                drop_vars.push(var);
+                if var != def {
+                    move_vars.push(var);
+                }
             }
             for next_idx in self
                 .region_graph
@@ -403,27 +405,22 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
                 if !visited[next_idx.index()] {
                     visited[next_idx.index()] = true;
                     q.push_back(next_idx.into());
+                    rap_debug!("add {:?}", rid);
                 }
             }
         }
 
-        let drop_vars = if exclude_source {
-            drop_vars.into_iter().filter(|&var| var != source).collect()
-        } else {
-            drop_vars
-        };
-
         rap_debug!(
-            "drop vars: {}",
-            drop_vars
+            "move vars: {}",
+            move_vars
                 .iter()
                 .rev()
                 .map(|var| var.to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        for var in drop_vars.into_iter().rev() {
-            self.move_var(var);
+        for var in move_vars.into_iter().rev() {
+            self.set_var_state(var, VarState::moved());
             // if the type of var is not reference,
             // we need to add an explicit drop stmt to make it dropped immediately,
             // which is important for later statement generation.
@@ -438,17 +435,10 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
         self.explicit_droped_cnt += 1;
     }
 
-    // pub fn drop_var(&mut self, dropped: Var) {
-    //     rap_debug!("drop from: {dropped}");
-    //     if !self.var_state(dropped).is_dropped() {
-    //         self.drop_var_from(dropped);
-    //         self.explicit_droped_cnt += 1;
-    //     }
-    // }
-
+    /// set variable state to moved, does not drop its refered data
     pub fn move_var(&mut self, var: Var) {
-        // if var is already borrowed, we need to drop all its borrowers before moving it
-        self.drop_var_from(var, true);
+        // drop all uses for this var to adher Rust's borrowing rules
+        self.drop_uses(var);
         self.set_var_state(var, VarState::moved());
     }
 }
