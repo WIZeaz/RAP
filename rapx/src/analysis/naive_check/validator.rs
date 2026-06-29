@@ -19,7 +19,14 @@ pub fn is_ty_impl_copy<'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'tcx>) -> bool {
 }
 
 fn ty_contain_lifetime<'tcx>(ty: Ty<'tcx>) -> bool {
-    ty.walk().any(|arg| arg.as_region().is_some())
+    ty.walk().any(|arg| {
+        rap_debug!("walk arg: {:?}", arg);
+        match arg.kind() {
+            ty::GenericArgKind::Lifetime(_) => true,
+            // ty::GenericArgKind::Type(ty) => ty_contain_lifetime(ty),
+            _ => false,
+        }
+    })
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -144,8 +151,10 @@ impl<'tcx> SynValidator<'tcx> {
                 if let Some(expr) = init {
                     let hids = self.validate_expr(expr)?;
                     let ret_ty = self.hir_type(hid);
+                    rap_info!("{}: {}", ident, ret_ty);
 
                     if ty_contain_lifetime(ret_ty) {
+                        rap_info!("Variable {} contains lifetime", ident);
                         self.borrow_map.insert(hid, hids);
                     } else {
                         for hid in hids {
