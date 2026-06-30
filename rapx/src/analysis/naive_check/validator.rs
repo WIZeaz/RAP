@@ -204,7 +204,7 @@ impl<'tcx> SynValidator<'tcx> {
             ExprKind::Path(QPath::Resolved(_, path)) => match path.res {
                 rustc_hir::def::Res::Local(hid) => Ok(hid),
                 _ => {
-                    rap_error!("Unexpected path resolution: {:?}", path.res);
+                    rap_error!("[expect_path] Unexpected path resolution: {:?}", path.res);
                     Err(ValidateError {
                         span: expr.span,
                         kind: ValidateErrorKind::InvalidPathRes,
@@ -220,15 +220,15 @@ impl<'tcx> SynValidator<'tcx> {
 
                 return Ok(borrowed_hid);
             }
-            ExprKind::Array(_) => {
+            ExprKind::Array(_) | ExprKind::Repeat(_, _) => {
                 // temporary array, create a new variable for it
                 self.state_map.insert(expr.hir_id, VarState::Live);
                 self.ident_map
-                    .insert(expr.hir_id, Ident::from_str("temp_array"));
+                    .insert(expr.hir_id, Ident::from_str("temp_array_literal"));
                 Ok(expr.hir_id)
             }
             _ => {
-                rap_error!("Unexpected Expr Kind: {:?}", expr.kind);
+                rap_error!("[expect_path] Unexpected Expr Kind: {:?}", expr.kind);
                 Err(ValidateError {
                     span: expr.span,
                     kind: ValidateErrorKind::InvalidExprKind,
@@ -468,6 +468,7 @@ impl<'tcx> SynValidator<'tcx> {
                     let cond_hids = self.validate_expr(let_expr.init)?;
                     hids.extend(cond_hids);
                 }
+                ExprKind::MethodCall(..) => {}
                 _ => {
                     rap_error!("Invalid if condition expression: {:?}", cond_expr.kind);
                     return Err(ValidateError {
@@ -485,8 +486,6 @@ impl<'tcx> SynValidator<'tcx> {
             }
             ExprKind::MethodCall(_, receiver, exprs, _) => {
                 rap_debug!("method call receiver: {:?}", receiver.kind);
-                let receiver_hid = self.expect_path(receiver)?;
-
                 let method_did = self
                     .tcx
                     .typeck(self.fn_did)
@@ -496,17 +495,28 @@ impl<'tcx> SynValidator<'tcx> {
                 let fn_sig = self.tcx.fn_sig(method_did).skip_binder().skip_binder();
 
                 let self_ty = fn_sig.inputs().first().unwrap();
-                rap_info!("method call self arg type: {}", self_ty);
 
-                // adhoc for FRIES's `fr`
-                if self_ty.is_ref() && self.hir_ident(receiver_hid) != "fr" {
-                    self.borrow_var(
-                        receiver_hid,
-                        self_ty.ref_mutability().unwrap(),
-                        receiver.span,
-                    )?;
-                    hids.push(receiver_hid);
+                match receiver.kind {
+                    ExprKind::Call(..) => {
+                        let receiver_hids = self.validate_expr(receiver)?;
+                        hids.extend(receiver_hids);
+                    }
+                    _ => {
+                        let receiver_hid = self.expect_path(receiver)?;
+
+                        // adhoc for FRIES's `fr`
+                        if self_ty.is_ref() && self.hir_ident(receiver_hid) != "fr" {
+                            self.borrow_var(
+                                receiver_hid,
+                                self_ty.ref_mutability().unwrap(),
+                                receiver.span,
+                            )?;
+                            hids.push(receiver_hid);
+                        }
+                    }
                 }
+
+                rap_info!("method call self arg type: {}", self_ty);
 
                 for (i, expr) in exprs.iter().enumerate() {
                     rap_debug!("method call arg #{}: {:?}", i, expr.kind);
@@ -519,6 +529,10 @@ impl<'tcx> SynValidator<'tcx> {
                     let expr_hids = self.validate_expr(expr)?;
                     hids.extend(expr_hids);
                 }
+            }
+            ExprKind::Repeat(expr, _) => {
+                let expr_hids = self.validate_expr(expr)?;
+                hids.extend(expr_hids);
             }
             ExprKind::Lit(_) => {} // nothing happens for literal expressions
             ExprKind::Block(..) => {} // block is println!
