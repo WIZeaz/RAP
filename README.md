@@ -20,7 +20,9 @@ timeout = 60
 
 For more configuration information, please check `rapx/src/analysis/testgen/driver.rs`. 
 
-Finally, run `cargo run test` on the tested project directory to start LifeSonar. LifeSonar automatically synthesize programs for the tested library, execute them with Miri and report the results.
+Finally, run `cargo rapx test` on the tested project directory to start LifeSonar. LifeSonar automatically synthesize programs for the tested library, execute them with Miri and report the results.
+
+To run the conservative checker, use `cargo rapx test --naive-check`.
 
 # Issue Links
 
