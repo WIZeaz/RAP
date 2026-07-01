@@ -1,0 +1,6 @@
+max_complexity = 16
+max_iteration = 1000
+max_run = 100
+override = true
+timeout = 60
+skip_thresh = 0

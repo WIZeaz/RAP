@@ -24,7 +24,11 @@ Finally, run `cargo rapx test` on the tested project directory to start LifeSona
 
 To run the conservative checker, use `cargo rapx test --naive-check`.
 
-# Issue Links
+## Micro-benchmark
+
+Our micro-benchmark is release at `lifetime-bench`, includes 5 positive tests (prefix with `p`), and 2 negative tests (prefix with `n`).
+
+## Issue Links
 
 | Crate | Status | Link |
 |-------|--------|------|
