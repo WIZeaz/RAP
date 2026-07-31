@@ -250,7 +250,7 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
                 for transform in provider.transforms.iter() {
                     match transform {
                         TransformKind::Ref(mutability) => {
-                            var = builder.get_or_borrow(var, *mutability)
+                            var = builder.borrow_var(var, *mutability)
                         }
                         _ => {
                             unimplemented!();

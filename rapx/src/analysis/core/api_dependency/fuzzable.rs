@@ -1,4 +1,4 @@
-use rustc_hir::LangItem;
+use rustc_hir::{LangItem, attrs::AttributeKind::NonExhaustive, find_attr};
 use rustc_middle::ty::{self, Ty, TyCtxt, TyKind};
 use rustc_span::sym;
 use rustc_type_ir::TypeVisitable;
@@ -48,6 +48,21 @@ fn ty_contains_region<'tcx>(ty: Ty<'tcx>) -> bool {
     };
     ty.visit_with(&mut visitor);
     visitor.contains_region
+}
+
+/// Checks whether the given ADT, or any of its fields/variants, are marked as `#[non_exhaustive]`
+///
+/// This function is copied from Clippy
+pub fn has_non_exhaustive_attr(tcx: TyCtxt<'_>, adt: ty::AdtDef<'_>) -> bool {
+    adt.is_variant_list_non_exhaustive()
+        || find_attr!(tcx.get_all_attrs(adt.did()), NonExhaustive(..))
+        || adt.variants().iter().any(|variant_def| {
+            variant_def.is_field_list_non_exhaustive()
+                || find_attr!(tcx.get_all_attrs(variant_def.def_id), NonExhaustive(..))
+        })
+        || adt
+            .all_fields()
+            .any(|field_def| find_attr!(tcx.get_all_attrs(field_def.did), NonExhaustive(..)))
 }
 
 const MAX_DEPTH: usize = 64;
@@ -100,14 +115,9 @@ pub fn is_fuzzable_ty<'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'tcx>, depth: usize) -> bo
 
         // ADT
         TyKind::Adt(adt_def, args) => {
-            if adt_def.is_union() {
+            if adt_def.is_union() || has_non_exhaustive_attr(tcx, *adt_def) {
                 return false;
             }
-
-            if adt_def.is_variant_list_non_exhaustive() {
-                return false;
-            }
-
             // if adt contain region, then we consider it non-fuzzable
             if ty_contains_region(ty) {
                 return false;

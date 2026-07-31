@@ -11,6 +11,7 @@ use rustc_hir::LangItem;
 use rustc_middle::ty::{self, Ty, TyCtxt, TyKind};
 use rustc_span::sym::{self};
 use std::collections::VecDeque;
+use std::unreachable;
 
 fn str_ref<'tcx>(region: ty::Region<'tcx>, tcx: TyCtxt<'tcx>) -> Ty<'tcx> {
     Ty::new_ref(tcx, region, tcx.types.str_, ty::Mutability::Not)
@@ -291,7 +292,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
         // build call lifetime constraints
         let real_fn_sig = stmt.mk_fn_sig_with_var_tys(&self.cx);
         rap_trace!("stmt: {:?}", stmt);
-        rap_trace!("real_fn_sig: {:?}", real_fn_sig);
+        rap_trace!("apicall fn_sig: {:?}", real_fn_sig);
 
         let rids = extract_rids(real_fn_sig);
 
@@ -309,9 +310,27 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
         var
     }
 
-    pub fn get_or_borrow(&mut self, var: Var, mutability: ty::Mutability) -> Var {
+    /// test whether we can move the `var`.
+    pub fn test_move_var(&self, var: Var) -> bool {
+        self.test_drop_uses(var)
+    }
+
+    /// test whether we can get the reference of `var` with the desired mutability.
+    pub fn test_borrow_var(&self, var: Var, mutability: ty::Mutability) -> bool {
+        if let VarState::Borrowed(mutbl, _) = self.var_state(var) {
+            if mutbl.is_not() && mutability.is_not() {
+                return true;
+            }
+            return self.test_drop_uses(var);
+        }
+
+        // the variable is Live, we can borrow it with the desired mutability
+        true
+    }
+
+    pub fn borrow_var(&mut self, var: Var, mutability: ty::Mutability) -> Var {
         if let VarState::Borrowed(mutbl, borrower) = self.var_state(var) {
-            if mutbl == mutability && mutability.is_not() {
+            if mutbl.is_not() && mutability.is_not() {
                 return borrower;
             }
             // if the mutability does not match, or it is the exclusive mutability,
@@ -344,7 +363,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
         mutability: ty::Mutability,
         as_ref_ty: Option<Ty<'tcx>>, // None represent the type of var
     ) -> Var {
-        let ref_var = self.get_or_borrow(var, mutability);
+        let ref_var = self.borrow_var(var, mutability);
 
         if as_ref_ty.is_none() {
             return ref_var;
@@ -361,6 +380,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
         if mutability.is_not() {
             self.add_stmt(Stmt::as_ref_(new_var, ref_var));
         } else {
+            self.move_var(ref_var);
             self.add_stmt(Stmt::as_mut_(new_var, ref_var));
         }
         new_var
@@ -379,8 +399,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
 /// VarState maintain implementation
 ///
 impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
-    /// drop all vars depended on `source`. If `include_source` is true, `source` itself will also be dropped.
-    pub fn drop_uses(&mut self, def: Var) {
+    fn drop_chain(&self, def: Var) -> Vec<Var> {
         let source_rid = self.rid_of(def).into();
         let mut visited = vec![false; self.region_graph.total_node_count()];
         let mut q: VecDeque<Rid> = VecDeque::from([source_rid]);
@@ -409,7 +428,62 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
                 }
             }
         }
+        move_vars
+    }
 
+    /// Test whether every use of `def` can be dropped, i.e. whether dropping
+    /// `def` (and moving out its dependents) respects Rust's borrowing rules.
+    ///
+    /// Traverses the region graph from `def` along incoming edges to collect the
+    /// rids dropped together with `def`; returns `false` when any of them is a
+    /// `Named` region lying on a cycle (a circular outlive that has no valid drop
+    /// order), and `true` otherwise.
+    pub fn test_drop_uses(&self, def: Var) -> bool {
+        rap_debug!("test drop for {}", def);
+        let graph = self.region_graph.inner();
+        let node_count = self.region_graph.total_node_count();
+
+        // on a cycle == member of an SCC of size >= 2 (this graph has no self-loops).
+        let mut on_cycle = vec![false; node_count];
+        for scc in petgraph::algo::tarjan_scc(graph) {
+            if scc.len() >= 2 {
+                for idx in scc {
+                    on_cycle[idx.index()] = true;
+                }
+            }
+        }
+
+        // BFS over incoming edges: `def`'s transitive dependents are exactly the
+        // regions that must be dropped together with `def`.
+        let source: Rid = self.rid_of(def);
+        let mut visited = vec![false; node_count];
+        visited[source.index()] = true;
+        let mut q: VecDeque<Rid> = VecDeque::from([source]);
+
+        while let Some(rid) = q.pop_front() {
+            if let RegionNode::Named(var) = self.region_graph.get_node(rid) {
+                // an already-moved var is gone: neither dropped nor propagated through.
+                if self.var_state(var).is_dead() {
+                    continue;
+                }
+                if on_cycle[rid.index()] {
+                    rap_debug!("[test_drop_uses] var {} is on a cycle, cannot drop", var);
+                    return false;
+                }
+            }
+            for next in graph.neighbors_directed(rid.into(), petgraph::Direction::Incoming) {
+                if !visited[next.index()] {
+                    visited[next.index()] = true;
+                    q.push_back(next.into());
+                }
+            }
+        }
+        true
+    }
+
+    /// drop all vars depended on `source`. If `include_source` is true, `source` itself will also be dropped.
+    pub fn drop_uses(&mut self, def: Var) {
+        let move_vars = self.drop_chain(def);
         rap_debug!(
             "move vars: {}",
             move_vars
@@ -432,12 +506,14 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
 
     pub fn add_drop_stmt(&mut self, var: Var) {
         self.add_stmt(Stmt::drop_(DUMMY_UNIT_VAR, var));
-        self.explicit_droped_cnt += 1;
+        self.explicit_dropped_cnt += 1;
     }
 
-    /// set variable state to moved, does not drop its refered data
+    /// set variable state to moved, does not drop its referred data.
+    /// `move_var` is a must-success function.
+    /// Make sure that `var`'s uses can be dropped successfully.
     pub fn move_var(&mut self, var: Var) {
-        // drop all uses for this var to adher Rust's borrowing rules
+        // drop all uses for this var to adhere Rust's borrowing rules
         self.drop_uses(var);
         self.set_var_state(var, VarState::moved());
     }

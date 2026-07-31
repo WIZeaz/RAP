@@ -5,9 +5,11 @@ use crate::analysis::testgen::utils;
 use rustc_hir::def_id::DefId;
 use rustc_infer::infer;
 use rustc_infer::infer::{InferCtxt, RegionVariableOrigin};
+use rustc_infer::traits::Obligation;
 use rustc_infer::{infer::TyCtxtInferExt as _, traits::ObligationCause};
 use rustc_middle::ty::{self, TyCtxt, TypeFoldable as _};
 use rustc_span::DUMMY_SP;
+use rustc_trait_selection::traits::ObligationCtxt;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -122,8 +124,45 @@ pub fn extract_constraints<'tcx>(
         fn_binder,
     );
 
+    let param_env = tcx.param_env(fn_did);
+
+    // extract constraints from where clauses of Fn.
+    // The predicates are instantiated with `fresh_args`, so any region appearing
+    // in them is already an inference variable (temp region).
+    let predicates = tcx.predicates_of(fn_did).instantiate(tcx, fresh_args);
+
+    // Register trait bounds as obligations and drive trait selection so that
+    // impl unification (e.g. `impl<'a> Stream<'a> for Buffer<'a>` forcing the
+    // trait's lifetime arg to equal the self type's) emits region constraints
+    // into `infcx`. These are harvested together with the subtyping constraints
+    // below via `take_and_reset_region_constraints`.
+    //
+    // IMPORTANT: this must run *before* `temp_cnt` is measured so that the region
+    // variables trait selection introduces (impl-internal lifetimes) fall into the
+    // temp range and don't pollute the Named region range.
+    let ocx = ObligationCtxt::new(&infcx);
+    for clause in predicates.predicates.iter() {
+        if let ty::ClauseKind::Trait(_) = clause.kind().skip_binder() {
+            ocx.register_obligation(Obligation::new(
+                tcx,
+                ObligationCause::dummy(),
+                param_env,
+                clause.as_predicate(),
+            ));
+        }
+    }
+    // We only care about the region constraints produced during selection, not
+    // whether the obligations are actually satisfiable, so ignore the errors.
+    let _ = ocx.try_evaluate_obligations();
+
     let temp_cnt = infcx.num_region_vars();
-    assert!(infcx.num_ty_vars() == 0);
+    // NOTE: trait selection above may introduce type inference variables
+    // (associated types, impl type params, ...), so we no longer assert
+    // `num_ty_vars() == 0` here.
+    rap_trace!(
+        "[extract_constraints] num_ty_vars = {}",
+        infcx.num_ty_vars()
+    );
 
     // this fn_sig indicates an aribtary instantiation of the fn
     let free_fn_sig = fn_sig.fold_with(&mut folder);
@@ -135,10 +174,9 @@ pub fn extract_constraints<'tcx>(
     rap_trace!("[extract_contraints] fn_sig = {:?}", fn_sig);
     rap_trace!("[extract_contraints] free_fn_sig = {:?}", free_fn_sig);
 
-    let param_env = tcx.param_env(fn_did);
-
     let dummy = ObligationCause::dummy();
 
+    // apicall subtyping
     let res = infcx
         .at(&dummy, param_env)
         .sub(infer::DefineOpaqueTypes::Yes, fn_sig, free_fn_sig)
@@ -146,6 +184,7 @@ pub fn extract_constraints<'tcx>(
 
     rap_trace!("infcx result: {res:?}");
 
+    // strcture subtyping
     let at = infcx.at(&dummy, param_env);
     let mut f = |prev_region, region| {
         let _ = at
@@ -178,11 +217,22 @@ pub fn extract_constraints<'tcx>(
             get_pattern_node(constraint.sub),
             get_pattern_node(constraint.sup),
         );
+        // These include the region constraints emitted by trait selection above
+        // (e.g. equalities forced by `impl<'a> Trait<'a> for Ty<'a>`).
+        rap_trace!(
+            "[extract_constraints] region edge {:?} -> {:?} (sub={:?} sup={:?})",
+            edge.0,
+            edge.1,
+            constraint.sub,
+            constraint.sup
+        );
         subgraph.patterns.push(edge);
     }
 
-    // extract constraints from where clauses of Fn
-    let predicates = tcx.predicates_of(fn_did).instantiate(tcx, fresh_args);
+    // extract lifetime outlives constraints from where clauses of Fn.
+    // (`predicates` was collected and its trait bounds already driven through
+    // trait selection above; here we only turn the explicit outlives clauses
+    // into edges. Trait clauses are intentionally skipped here.)
     predicates.predicates.iter().for_each(|clause| {
         match clause.kind().skip_binder() {
             // T: 'a
@@ -208,6 +258,9 @@ pub fn extract_constraints<'tcx>(
                     .patterns
                     .push(EdgePattern(get_pattern_node(rhs), get_pattern_node(lhs)));
             }
+            // Trait bounds are handled above via trait selection, which lets impl
+            // unification emit the implied region constraints (harvested by
+            // `take_and_reset_region_constraints`). Nothing to do here.
             _ => {}
         }
     });

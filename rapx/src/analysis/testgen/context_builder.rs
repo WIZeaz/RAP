@@ -10,17 +10,30 @@ use crate::analysis::testgen::context_builder::lifetime::RegionNode;
 use crate::analysis::testgen::utils;
 use lifetime::visit_ty_region_with;
 use lifetime::{RegionGraph, Rid};
+use log::debug;
 use pattern::PatternProvider;
 use rustc_hir::def_id::DefId;
-use rustc_infer::infer::TyCtxtInferExt;
+use rustc_infer::infer::{InferCtxt, TyCtxtInferExt};
 use rustc_middle::ty::{self, ParamEnv, Ty, TyCtxt, TypingMode};
 use rustc_trait_selection::infer::InferCtxtExt;
+use rustc_type_ir::TypeVisitableExt;
 use std::collections::HashMap;
 pub use var_state::VarState;
 
 pub fn is_ty_moved_on_call<'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'tcx>) -> bool {
     !utils::is_ty_impl_copy(ty, tcx)
 }
+
+pub fn is_ty_impl_debug<'tcx>(infcx: &InferCtxt<'tcx>, ty: Ty<'tcx>) -> bool {
+    let Some(debug_def_id) = infcx.tcx.get_diagnostic_item(rustc_span::sym::Debug) else {
+        return false;
+    };
+    !ty.has_opaque_types()
+        && infcx
+            .type_implements_trait(debug_def_id, [ty], ParamEnv::empty())
+            .must_apply_modulo_regions()
+}
+
 pub struct ContextBuilder<'tcx, 'a> {
     tcx: TyCtxt<'tcx>,
     cx: Context<'tcx>,
@@ -30,7 +43,7 @@ pub struct ContextBuilder<'tcx, 'a> {
     region_graph: RegionGraph,
     pat_provider: PatternProvider<'tcx>,
     alias_map: &'a FnAliasMap,
-    explicit_droped_cnt: usize,
+    explicit_dropped_cnt: usize,
     lack_of_alias: Vec<DefId>,
 }
 
@@ -45,7 +58,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
             var_steps: HashMap::new(),
             pat_provider: PatternProvider::new(tcx),
             alias_map,
-            explicit_droped_cnt: 0,
+            explicit_dropped_cnt: 0,
             lack_of_alias: Vec::new(),
         }
     }
@@ -81,7 +94,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
     }
 
     pub fn dropped_count(&self) -> usize {
-        self.explicit_droped_cnt
+        self.explicit_dropped_cnt
     }
 
     fn mk_var(&mut self, ty: Ty<'tcx>, is_input: bool) -> Var {
@@ -109,6 +122,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
             Some(self.region_of(next_var)),
             self.tcx,
             &mut |from, to| {
+                rap_trace!("[mk_var] add structural constraint: '{} -> '{}", from, to);
                 self.region_graph.add_edge_by_region(from, to);
             },
         );
@@ -121,17 +135,8 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
         if ty.is_unit() || !self.var_state(var).is_live() {
             return false;
         }
-        let debug_def_id = self
-            .tcx
-            .get_diagnostic_item(rustc_span::sym::Debug)
-            .unwrap();
         let infcx = self.tcx.infer_ctxt().build(TypingMode::PostAnalysis);
-        let param_env = ParamEnv::empty();
-
-        if infcx
-            .type_implements_trait(debug_def_id, [ty], param_env)
-            .must_apply_modulo_regions()
-        {
+        if is_ty_impl_debug(&infcx, ty) {
             self.add_exploit_stmt(var, ExploitKind::Debug);
             return true;
         }
@@ -140,12 +145,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
 
     /// try to add exploit stmt for all live vars
     pub fn finally_exploit_vars(&mut self) {
-        let debug_def_id = self
-            .tcx
-            .get_diagnostic_item(rustc_span::sym::Debug)
-            .unwrap();
         let infcx = self.tcx.infer_ctxt().build(TypingMode::PostAnalysis);
-        let param_env = ParamEnv::empty();
         // let live_vars = self.live_vars().collect_vec();
         let mut vars = Vec::new();
 
@@ -160,10 +160,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
                 continue;
             }
             let ty = self.cx.type_of(var);
-            if ty != self.tcx.types.unit
-                && infcx
-                    .type_implements_trait(debug_def_id, [ty], param_env)
-                    .must_apply_modulo_regions()
+            if ty != self.tcx.types.unit && is_ty_impl_debug(&infcx, ty) && self.test_drop_uses(var)
             {
                 self.drop_uses(var);
                 self.add_exploit_stmt(var, ExploitKind::Debug);

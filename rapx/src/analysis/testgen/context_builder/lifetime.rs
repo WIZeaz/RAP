@@ -9,6 +9,7 @@ use rustc_middle::ty::{self, Ty, TyCtxt, TypeFoldable};
 use std::collections::VecDeque;
 use std::fmt::Display;
 use std::io::Write;
+use std::matches;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegionNode {
@@ -23,6 +24,9 @@ impl RegionNode {
             RegionNode::Named(var) => Some(*var),
             _ => None,
         }
+    }
+    pub fn is_named(&self) -> bool {
+        matches!(self, RegionNode::Named(_))
     }
 }
 
@@ -146,6 +150,46 @@ impl RegionGraph {
 
     pub fn get_node(&self, rid: Rid) -> RegionNode {
         *self.inner.node_weight(rid.into()).unwrap()
+    }
+
+    /// test whether the patterns may violate the static constraint,
+    /// this is because we cannot expand the variable lifetime to 'static
+    pub fn test_edges_by_patterns<'tcx>(&self, patterns: &EdgePatterns, subst: &[Rid]) -> bool {
+        assert!(subst.len() == patterns.named_region_num());
+
+        // 0: static, 1..n: named, n+1..m: temp
+        let mut reach = vec![vec![false; patterns.temp_num()]; patterns.temp_num()];
+
+        for pattern in patterns.patterns() {
+            let get_index = |node: &PatternNode| match node {
+                PatternNode::Static => 0,
+                PatternNode::Named(i) => i + 1, // named nodes are indexed starting from 1
+                PatternNode::Temp(i) => patterns.named_region_num() + 1 + i, // temp nodes are indexed after named nodes
+            };
+            let from = get_index(&pattern.from());
+            let to = get_index(&pattern.to());
+            reach[from][to] = true;
+        }
+
+        // Floyd-Warshall algorithm to compute transitive closure
+        let n = reach.len();
+        for k in 0..n {
+            for i in 0..n {
+                for j in 0..n {
+                    reach[i][j] = reach[i][j] || (reach[i][k] && reach[k][j]);
+                }
+            }
+        }
+
+        // If there is a 'static -> 'named, and 'named is not substituted by 'static
+        // then it violates the static constraint
+        for i in 0..patterns.named_region_num() {
+            if reach[0][i + 1] && subst[i] != STATIC_RID {
+                return false;
+            }
+        }
+
+        true
     }
 
     pub fn add_edges_by_patterns<'tcx>(&mut self, patterns: &EdgePatterns, subst: &[Rid]) {

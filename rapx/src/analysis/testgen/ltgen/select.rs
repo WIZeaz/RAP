@@ -1,6 +1,6 @@
 use crate::analysis::core::api_dependency::DepNode;
 use crate::analysis::core::api_dependency::graph::{TransformKind, TyWrapper};
-use crate::analysis::testgen::context::{ApiCall, Var};
+use crate::analysis::testgen::context::{ApiCall, DUMMY_INPUT_VAR, Var};
 use crate::analysis::testgen::context_builder::{ContextBuilder, VarState, is_ty_moved_on_call};
 use crate::analysis::testgen::ltgen::LtGen;
 use crate::analysis::testgen::utils;
@@ -11,6 +11,7 @@ use rand::distr::weighted::WeightedIndex;
 use rand::{self, Rng};
 use rustc_hir::def_id::DefId;
 use rustc_middle::ty::{self, Ty, TyCtxt};
+use rustc_type_ir::TypeVisitable;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug)]
@@ -66,6 +67,33 @@ fn top_k_idx_by_weight(actions: &[CallAction], weights: &[f32], top_k: usize) ->
     res[..top_k.min(res.len())].to_vec()
 }
 
+// if there is a 'static lifetime, and 'static is not used in &'static str,
+// we regard this API to include complex static constraints
+fn is_ty_include_static<'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'tcx>) -> bool {
+    struct Visitor {
+        res: bool,
+    }
+    impl<'tcx> ty::TypeVisitor<TyCtxt<'tcx>> for Visitor {
+        fn visit_region(&mut self, r: ty::Region) -> Self::Result {
+            if r.is_static() {
+                self.res = true;
+            }
+        }
+    }
+    let mut visitor = Visitor { res: false };
+    ty.visit_with(&mut visitor);
+    visitor.res
+}
+
+fn is_static_str<'tcx>(ty: Ty<'tcx>) -> bool {
+    if let ty::Ref(region, inner_ty, ty::Mutability::Not) = ty.kind() {
+        if region.is_static() && inner_ty.is_str() {
+            return true;
+        }
+    }
+    false
+}
+
 impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
     fn borrow_from(&self, var: Var, builder: &ContextBuilder<'tcx, 'a>) -> (Vec<Var>, Vec<Var>) {
         let src_rid = builder.rid_of(var);
@@ -112,26 +140,32 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
                     return true;
                 }
 
-                // the provider is moved before, or this is a used mut reference, try again
-                if moved_vars.contains(&var) {
+                // if the provider is moved before, or we cannot acquire
+                // the ownership of this var, we cannot use this provider
+                if moved_vars.contains(&var) || !builder.test_move_var(var) {
                     continue;
                 }
 
                 let (mut borrowed, mut mut_borrowed) = self.borrow_from(var, builder);
 
-                match provider.transforms.first() {
-                    Some(TransformKind::Ref(ty::Mutability::Mut)) => {
-                        mut_borrowed.push(var);
+                // If the API call try to borrow the var itself, we have to make sure we
+                // can acquire the ownership of this var.
+                if let Some(TransformKind::Ref(mutability)) = provider.transforms.first() {
+                    if !builder.test_borrow_var(var, *mutability) {
+                        continue;
                     }
-                    Some(TransformKind::Ref(ty::Mutability::Not)) => {
+                    if mutability.is_mut() {
+                        mut_borrowed.push(var);
+                    } else {
                         borrowed.push(var);
                     }
-                    _ => {}
                 }
 
+                // a potential immut borrowed var cannot be moved or mut borrowed
                 if borrowed
                     .iter()
                     .any(|v| moved_vars.contains(v) || mut_borrowed_vars.contains(v))
+                    // a potential mut borrowed var cannot be moved, borrowed or mut borrowed
                     || mut_borrowed.iter().any(|v| {
                         moved_vars.contains(v)
                             || borrowed_vars.contains(v)
@@ -151,6 +185,9 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
 
                 return true;
             }
+
+            // test whether static constraint is satisfied
+
             false
         };
 
@@ -211,6 +248,19 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
         let mut transform_buffer = vec![TransformKind::Unwrap; num_steps];
         let mut visited_ty = HashSet::new();
         let mut res = Vec::new();
+
+        // a simple 'static workaround, we only accept 'static str as a valid provider
+        if is_static_str(ty) {
+            return vec![Provider {
+                var: DUMMY_INPUT_VAR,
+                transforms: vec![],
+            }];
+        }
+
+        if is_ty_include_static(ty, self.tcx) {
+            return vec![];
+        }
+
         let Some(index) = self.api_graph.get_index_by_ty(ty) else {
             return res;
         };
@@ -294,11 +344,12 @@ impl<'tcx, 'a, R: Rng> LtGen<'tcx, 'a, R> {
             let node = self.api_graph.api_node_at(idx);
 
             if let DepNode::Api(fn_did, generic_args) = node {
+                // we currently skip the API with the complex static constraint
+
                 let num_of_reach = self.global.num_reach(node);
                 let global_penalty = 1.0 / (1.0 + num_of_reach as f32);
                 let current_actions =
                     self.sample_k_eligable_actions(node, fn_did, &generic_args, &builder);
-
                 let current_weights = current_actions.iter().map(|action| {
                     // calculate score for each action
                     let arg_score = action.providers.iter().fold(1.0, |acc, provider| {
