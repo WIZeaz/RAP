@@ -154,6 +154,17 @@ impl<'tcx> PathResolver<'tcx> {
             TyKind::Slice(inner_ty) => {
                 format!("[{}]", self.ty_str(*inner_ty))
             }
+            TyKind::Alias(kind, ty) => match kind {
+                ty::AliasTyKind::Projection => self.path_str_with_args(ty.def_id, ty.args),
+                ty::AliasTyKind::Opaque => {
+                    let ty_str = ty.to_string();
+                    rap_warn!("encounter opaque type {}, type string might be private", ty);
+                    ty_str
+                }
+                _ => {
+                    panic!("unexpected alias kind: {:?} for ty: {:?}", kind, ty);
+                }
+            },
             _ => ty.to_string(),
         }
     }
