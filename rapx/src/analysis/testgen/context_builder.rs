@@ -34,6 +34,20 @@ pub fn is_ty_impl_debug<'tcx>(infcx: &InferCtxt<'tcx>, ty: Ty<'tcx>) -> bool {
             .must_apply_modulo_regions()
 }
 
+fn is_ty_should_be_exploited<'tcx>(ty: Ty<'tcx>) -> bool {
+    if ty.is_unit() {
+        return false;
+    }
+    for walk_ty in ty.walk() {
+        if let Some(inner_ty) = walk_ty.as_type()
+            && inner_ty.is_never()
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 pub struct ContextBuilder<'tcx, 'a> {
     tcx: TyCtxt<'tcx>,
     cx: Context<'tcx>,
@@ -132,11 +146,11 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
     pub fn try_add_exploit_stmt_for(&mut self, var: Var) -> bool {
         let ty = self.cx.type_of(var);
 
-        if ty.is_unit() || !self.var_state(var).is_live() {
+        if var.is_dummy() || !self.var_state(var).is_live() {
             return false;
         }
         let infcx = self.tcx.infer_ctxt().build(TypingMode::PostAnalysis);
-        if is_ty_impl_debug(&infcx, ty) {
+        if is_ty_should_be_exploited(ty) && is_ty_impl_debug(&infcx, ty) {
             self.add_exploit_stmt(var, ExploitKind::Debug);
             return true;
         }
@@ -160,7 +174,9 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
                 continue;
             }
             let ty = self.cx.type_of(var);
-            if ty != self.tcx.types.unit && is_ty_impl_debug(&infcx, ty) && self.test_drop_uses(var)
+            if is_ty_should_be_exploited(ty)
+                && is_ty_impl_debug(&infcx, ty)
+                && self.test_drop_uses(var)
             {
                 self.drop_uses(var);
                 self.add_exploit_stmt(var, ExploitKind::Debug);

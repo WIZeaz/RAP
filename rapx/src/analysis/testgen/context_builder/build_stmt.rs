@@ -171,6 +171,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
                         match Ty::new_lang_item(self.tcx, self.tcx.types.unit, LangItem::String) {
                             Some(string_ty) => {
                                 let inner_var = self.try_add_input_stmts(string_ty, true);
+                                self.move_var(inner_var);
                                 var = self.add_as_ref_stmt(
                                     inner_var,
                                     *mutability,
@@ -193,13 +194,17 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
                         //TODO: the length of array is fixed to 3, but should be determined when generated
                         let inner_var =
                             self.try_add_input_stmts(Ty::new_array(self.tcx, *slice_ty, 3), true);
+                        self.move_var(inner_var);
                         let box_var = self.add_box_stmt(inner_var);
+                        self.move_var(box_var);
                         var = self.add_slice_ref_stmt(box_var, *mutability, *slice_ty);
                     }
 
                     _ => {
                         let inner_var = self.try_add_input_stmts(*inner_ty, true);
+                        self.move_var(inner_var);
                         let box_var = self.add_box_stmt(inner_var);
+                        self.move_var(box_var);
                         var = self.add_as_ref_stmt(
                             box_var,
                             *mutability,
@@ -213,6 +218,7 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
                 let mut should_instantiate = false;
                 for inner_ty in tys.iter() {
                     let var = self.try_add_input_stmts(inner_ty, false);
+                    self.move_var(var);
                     vars.push(var);
                     if var != DUMMY_INPUT_VAR {
                         should_instantiate = true;
@@ -232,19 +238,25 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
                 }
             }
             ty::Array(array_ty, array_len) => {
-                let inner_var = self.try_add_input_stmts(*array_ty, false);
-                if inner_var == DUMMY_INPUT_VAR {
+                let len = array_len.try_to_target_usize(self.tcx).unwrap();
+                if len == 0 {
                     var = DUMMY_INPUT_VAR;
                 } else {
-                    let len = array_len.try_to_target_usize(self.tcx).unwrap();
                     let mut vars = Vec::new();
-                    for _ in 0..len {
-                        let inner_var = self.try_add_input_stmts(*array_ty, true);
-                        self.move_var(inner_var);
-                        vars.push(inner_var);
+                    let first_inner_var = self.try_add_input_stmts(*array_ty, false);
+                    self.move_var(first_inner_var);
+                    if first_inner_var == DUMMY_INPUT_VAR {
+                        var = DUMMY_INPUT_VAR;
+                    } else {
+                        vars.push(first_inner_var);
+                        for _ in 1..len {
+                            let inner_var = self.try_add_input_stmts(*array_ty, true);
+                            self.move_var(inner_var);
+                            vars.push(inner_var);
+                        }
+                        var = self.mk_var(ty, false);
+                        self.add_stmt(Stmt::array(var, vars));
                     }
-                    var = self.mk_var(ty, false);
-                    self.add_stmt(Stmt::array(var, vars));
                 }
             }
             _ => {
@@ -272,17 +284,19 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
 
         let output_ty = fn_sig.output();
         for idx in 0..fn_sig.inputs().len() {
-            let input_ty = fn_sig.inputs()[idx];
+            let arg_ty = fn_sig.inputs()[idx];
             let arg = call.args[idx];
             if arg == DUMMY_INPUT_VAR {
-                let var = self.add_input_stmts(input_ty);
+                let var = self.add_input_stmts(arg_ty);
                 call.args[idx] = var;
             }
             let arg = call.args[idx];
 
-            if is_ty_moved_on_call(input_ty, tcx) || arg.is_from_input() {
-                rap_trace!("var {}:{} is moved on call", arg, input_ty);
-                self.move_var(arg);
+            self.drop_uses(arg);
+
+            if is_ty_moved_on_call(arg_ty, tcx) || arg.is_from_input() {
+                rap_trace!("var {}:{} is moved on call", arg, arg_ty);
+                self.set_var_state(arg, VarState::moved());
             }
         }
 
@@ -409,10 +423,10 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
 
         while let Some(rid) = q.pop_front() {
             if let RegionNode::Named(var) = self.region_graph.get_node(rid) {
-                if self.var_state(var).is_dead() {
-                    continue;
-                }
-                if var != def {
+                // if self.var_state(var).is_dead() {
+                //     continue;
+                // }
+                if var != def && !self.var_state(var).is_dead() {
                     move_vars.push(var);
                 }
             }
@@ -513,6 +527,9 @@ impl<'tcx, 'a> ContextBuilder<'tcx, 'a> {
     /// `move_var` is a must-success function.
     /// Make sure that `var`'s uses can be dropped successfully.
     pub fn move_var(&mut self, var: Var) {
+        if var == DUMMY_INPUT_VAR || var == DUMMY_UNIT_VAR {
+            return;
+        }
         // drop all uses for this var to adhere Rust's borrowing rules
         self.drop_uses(var);
         self.set_var_state(var, VarState::moved());

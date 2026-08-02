@@ -22,6 +22,9 @@ impl Var {
     pub fn is_from_input(&self) -> bool {
         self.1
     }
+    pub fn is_dummy(&self) -> bool {
+        self.0 == 0
+    }
 }
 
 pub static DUMMY_INPUT_VAR: Var = Var(0, true);
