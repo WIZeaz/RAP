@@ -697,27 +697,50 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             })
             .collect();
 
-        // If we have a pure field path (only Field projections), look up
-        // in the per-field value map first.
-        if !field_path.is_empty() && field_path.len() == place.projection.len() {
-            if let Some(val) = self.field_values.get(&(place.local, field_path)).cloned() {
+        // If we have a pure field path (only Field / Downcast projections),
+        // look up in the per-field value map first.  For `Option`/`ControlFlow`,
+        // the variant's data is stored under the same field index as the enum
+        // field (the discriminant is tracked separately, not in field_values),
+        // so `(x as Some).0` resolves to `field_values[x][0]`.
+        let is_pure_field = place.projection.iter().all(|p| {
+            matches!(
+                p.kind(),
+                ProjectionElem::Field(..) | ProjectionElem::Downcast(..)
+            )
+        });
+        let has_downcast = place
+            .projection
+            .iter()
+            .any(|p| matches!(p.kind(), ProjectionElem::Downcast(..)));
+        if !field_path.is_empty() && is_pure_field {
+            if let Some(val) = self
+                .field_values
+                .get(&(place.local, field_path.clone()))
+                .cloned()
+            {
                 return Some(val);
             }
-            // Fallback: when the base local has provenance, propagate it
-            // to field accesses. This handles pointer-wrapper types (Box,
-            // Unique, NonNull) where accessing inner pointer fields yields
-            // the same provenance as the container.
-            if let Some(base_val) = self.locals.get(&place.local) {
-                if let Some(ref prov) = base_val.provenance {
-                    return Some(VmValue {
-                        term: base_val.term.clone(),
-                        ty: place.ty(self.body, self.tcx).ty,
-                        provenance: Some(prov.clone()),
-                        invariants: base_val.invariants,
-                    });
+            if !has_downcast {
+                // Fallback: when the base local has provenance, propagate it
+                // to field accesses. This handles pointer-wrapper types (Box,
+                // Unique, NonNull) where accessing inner pointer fields yields
+                // the same provenance as the container.
+                if let Some(base_val) = self.locals.get(&place.local) {
+                    if let Some(ref prov) = base_val.provenance {
+                        return Some(VmValue {
+                            term: base_val.term.clone(),
+                            ty: place.ty(self.body, self.tcx).ty,
+                            provenance: Some(prov.clone()),
+                            invariants: base_val.invariants,
+                        });
+                    }
                 }
+                return None;
             }
-            return None;
+            // A Downcast without a materialized field falls through to the
+            // Deref+Field / multi-element fallback below, which returns the
+            // base local (preserving the pre-Downcast behavior instead of
+            // forcing a fresh value).
         }
 
         // For Deref+Field chains (e.g. (*self).ptr), strip the leading Deref

@@ -23,10 +23,12 @@ use crate::verify::property_checker::{
 use crate::verify::target::get_contract_from_annotation;
 
 use crate::compat::FxHashMap;
+use crate::compat::FxHashSet;
+use rustc_middle::mir::BasicBlock;
 use rustc_middle::ty::TyCtxt;
 
 use super::{
-    contract::{Property, PropertyArg},
+    contract::{PlaceBase, Property, PropertyArg},
     display::{
         dedup_compound_props, emit_results_and_verdict, emit_verify_summary, fmt_contract_expanded,
         fmt_fn_path_with_bounds, fmt_fn_path_with_generics, fmt_fn_with_params,
@@ -42,7 +44,7 @@ use super::{
     },
 };
 
-use crate::helpers::mir_utils::collect_return_block_indices;
+use crate::helpers::mir_utils::{collect_return_block_indices, is_return_block};
 
 use crate::helpers::mir_scan::{Checkpoint, CheckpointLocation};
 
@@ -248,26 +250,22 @@ impl<'target, 'tcx> VerifyDriver<'target, 'tcx> {
         let output = fn_sig.output().skip_binder();
         let returns_self = is_constructor || output.is_param(0);
 
-        let entry_facts: Vec<RelevantItem<'tcx>> = if is_constructor {
-            caller_contracts
-                .iter()
-                .filter(|c| !matches!(c.kind(), Some(PropertyKind::Unknown)))
-                .map(|c| RelevantItem::ContractFact {
-                    property: c.clone(),
-                })
-                .collect()
-        } else {
-            invariants
-                .iter()
-                .map(|inv| RelevantItem::ContractFact {
-                    property: inv.clone(),
-                })
-                .collect()
-        };
+        // Entry facts: the full `caller_requires` (explicit `#[rapx::requires]`
+        // preconditions + the implicit struct invariants).  The preconditions
+        // are needed to re-prove the invariant after a field mutation — e.g.
+        // `set_len` sets `self.len = new_len`, so `len <= cap` only follows
+        // from the `new_len <= self.cap` precondition.
+        let entry_facts: Vec<RelevantItem<'tcx>> = caller_contracts
+            .iter()
+            .filter(|c| !matches!(c.kind(), Some(PropertyKind::Unknown)))
+            .map(|c| RelevantItem::ContractFact {
+                property: c.clone(),
+            })
+            .collect();
 
         report
             .results
-            .extend(self.run_invariant_checks(invariants, &entry_facts, is_constructor, "struct"));
+            .extend(self.run_invariant_checks(invariants, &entry_facts, is_constructor, !is_constructor, "struct"));
 
         // For plain methods, and for "wrapped" constructors (`Result<Self>`,
         // `Option<Self>`, `Box<Self>`), `Unknown` results are benign: methods
@@ -310,7 +308,7 @@ impl<'target, 'tcx> VerifyDriver<'target, 'tcx> {
 
         report
             .results
-            .extend(self.run_invariant_checks(invariants, &entry_facts, false, "type"));
+            .extend(self.run_invariant_checks(invariants, &entry_facts, false, false, "type"));
 
         // A path that returns early without touching the receiver leaves the
         // invariant `Unknown`; keep it only when some path actually `Failed`.
@@ -336,10 +334,11 @@ impl<'target, 'tcx> VerifyDriver<'target, 'tcx> {
         invariants: &[Property<'tcx>],
         entry_facts: &[RelevantItem<'tcx>],
         is_constructor: bool,
+        check_unwind: bool,
         label: &str,
     ) -> Vec<PropertyCheckResult<'tcx>> {
         let mut results = Vec::new();
-        for (checkpoint, tree) in self.build_invariant_trees(is_constructor) {
+        for (checkpoint, tree) in self.build_invariant_trees(is_constructor, check_unwind) {
             rap_debug!(
                 "[rapx::verify] {label} invariant checkpoint bb{}: {} tree node(s)",
                 checkpoint.block.as_usize(),
@@ -348,7 +347,17 @@ impl<'target, 'tcx> VerifyDriver<'target, 'tcx> {
 
             let paths = tree.to_vecs();
 
+            // On a non-`Return` exit (a panic-unwind exit), the return place is
+            // never initialized, so an invariant on the *return value* would
+            // spuriously fail — skip it.  Invariants on the receiver/arguments
+            // are still checked there (the owner drops them on unwind).
+            let is_return =
+                is_return_block(self.tcx, self.target.def_id, checkpoint.block);
+
             for (property_index, invariant) in invariants.iter().enumerate() {
+                if !is_return && targets_return_value(invariant) {
+                    continue;
+                }
                 let check_results = self.engine.check_invariant_from_tree(
                     self.target.def_id,
                     &tree,
@@ -387,6 +396,7 @@ impl<'target, 'tcx> VerifyDriver<'target, 'tcx> {
     fn build_invariant_trees(
         &self,
         is_constructor: bool,
+        check_unwind: bool,
     ) -> FxHashMap<CheckpointLocation, PathTree> {
         let mut pg = PathGraph::new(self.tcx, self.target.def_id);
         pg.find_scc();
@@ -406,7 +416,7 @@ impl<'target, 'tcx> VerifyDriver<'target, 'tcx> {
 
         let mut trees_by_checkpoint: FxHashMap<CheckpointLocation, PathTree> = FxHashMap::default();
 
-        if is_constructor {
+        if !check_unwind {
             let return_blocks = collect_return_block_indices(self.tcx, self.target.def_id);
             for &return_block in &return_blocks {
                 let checkpoint = CheckpointLocation {
@@ -429,19 +439,28 @@ impl<'target, 'tcx> VerifyDriver<'target, 'tcx> {
                 }
             }
         } else {
-            // Method: re-prove the invariant only at `Return` blocks.  Checking
-            // every path's last block would also pick up panicking paths (e.g.
-            // `assert!` failures), whose return place is never initialized, so
-            // their `NonNull`/`Align`/`Allocated` would spuriously fail.
-            let return_blocks = collect_return_block_indices(self.tcx, self.target.def_id);
-            for &return_block in &return_blocks {
+            // Method: re-prove the invariant at *every* exit block of the CFG —
+            // each complete path's last block.  This covers both the normal
+            // `Return` blocks and the panic-unwind exits (an explicit `resume`,
+            // or a diverging `unwind continue` call such as `panic!`).  On a
+            // panic path the *return value* is never initialized, so its
+            // invariants are filtered out in `run_invariant_checks`; the
+            // *receiver's* invariant must still hold there — the borrow ends on
+            // unwind and the owner drops the pointee.
+            let mut exit_blocks: FxHashSet<BasicBlock> = FxHashSet::default();
+            for path in all_paths.to_vecs() {
+                if let Some(&last) = path.last() {
+                    exit_blocks.insert(BasicBlock::from_usize(last));
+                }
+            }
+            for exit_block in exit_blocks {
                 let checkpoint = CheckpointLocation {
                     caller: self.target.def_id,
-                    block: return_block,
+                    block: exit_block,
                 };
                 let mut tree = PathTree::new();
                 let _ = all_paths.walk_prefixes(
-                    return_block.as_usize(),
+                    exit_block.as_usize(),
                     &mut |prefix: &[usize]| -> bool {
                         if tree.len() >= PATH_LIMIT {
                             return false;
@@ -1390,6 +1409,16 @@ fn property_field_indices(property: &crate::verify::contract::Property<'_>) -> V
         }
     }
     indices
+}
+
+/// Whether an invariant targets the function's return value (as opposed to a
+/// parameter / the receiver).  Only `Atom` invariants carry a first-argument
+/// place; `And`/`Or` invariants have no `target_place`, so they are never
+/// treated as return-value invariants.
+fn targets_return_value(property: &Property<'_>) -> bool {
+    property
+        .target_place()
+        .is_some_and(|cp| matches!(cp.base, PlaceBase::Return))
 }
 
 fn remap_constructor_contract<'tcx>(

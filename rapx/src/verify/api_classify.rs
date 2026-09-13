@@ -121,6 +121,12 @@ pub fn is_as_ptr_valid(callee: Option<DefId>) -> bool {
     is_as_ptr(callee) && !is_raw_ptr_cast(callee)
 }
 
+/// `str::as_bytes`: reinterprets `&str` as `&[u8]` — same data pointer and
+/// byte length, so the result aliases the argument.
+pub fn is_str_as_bytes(callee: Option<DefId>) -> bool {
+    any_of(callee, &[crate::def_id::str_as_bytes()])
+}
+
 // ── Pointer arithmetic ────────────────────────────────────────────
 // Direction (`add` vs `sub`) and granularity (`element` vs `byte`) are two
 // orthogonal axes. Each of the four combinations is a first-class classifier

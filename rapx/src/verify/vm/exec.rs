@@ -1744,9 +1744,21 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     })
                     .collect();
                 if !field_indices.is_empty() {
-                    // Resolve the dereferenced pointer (a reference/reborrow
-                    // temp) back to the local it points at, matching its
-                    // address term against the known local addresses.
+                    // `&mut self` (and other reference parameters) materialize
+                    // their pointee's scalar fields keyed by the *reference*
+                    // local itself, so a `(*self).field = val` write must land
+                    // in `field_values[(self, field)]` directly.  (This is what
+                    // makes a struct-invariant re-proof see `self.len += 1`.)
+                    if self.field_value(place.local, &field_indices).is_some() {
+                        let mut write_value = value;
+                        write_value.invariants.init = true;
+                        self.set_field_value(place.local, field_indices, write_value);
+                        return;
+                    }
+                    // Otherwise resolve the dereferenced pointer (a
+                    // reference/reborrow temp) back to the local it points at,
+                    // matching its address term against the known local
+                    // addresses.
                     let pointed = self.locals.get(&place.local).cloned();
                     if let Some(pointed) = pointed {
                         if let Some(referent) = self.find_local_by_address(&pointed.term) {
@@ -2595,7 +2607,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// it agrees with InBound/`alloc.size` checks.  Uses the symbolic element
     /// size (`size_sym_read`) so `len = (len·S) / S` cancels to `len` for a
     /// generic element type — mirroring `set_len_from_alloc`.
-    fn slice_len_from_value(&self, val: &VmValue<'ctx, 'tcx>) -> Option<Int<'ctx>> {
+    pub(crate) fn slice_len_from_value(&self, val: &VmValue<'ctx, 'tcx>) -> Option<Int<'ctx>> {
         let alloc_id = val.provenance_alloc_id()?;
         let alloc = self.alloc(alloc_id);
         let elem_ty = alloc.element_ty?;

@@ -193,6 +193,21 @@ pub(crate) enum CallEffect {
     /// `Iterator::find`): `Some(i)` satisfies `0 <= i < self.len()` where
     /// `self` is the Iter/IterMut struct produced by `into_iter`/`iter`.
     ReturnOptionSomeScanIndex { self_arg: usize },
+    /// The call returns `Option<usize>` whose `Some` payload `i` is an index
+    /// into the slice argument `arg`: `i < args[arg].len()`.  Detected from the
+    /// callee's MIR shape (`while i < arg.len() { ... return Some(i); ... }`,
+    /// i.e. `memchr`-style search).  Lets a caller re-prove a numeric invariant
+    /// like `finger <= finger_back` after `finger += i + 1`.
+    ReturnOptionSomeIndexLtArgLen { arg: usize },
+    /// The call returns `Option<(.., usize, ..)>` whose tuple field `field` (a
+    /// byte length) is `<= args[arg].len()`.  Detected from a UTF-8-decoder
+    /// shape: each `Some((.., len))` return is guarded by `slice.get(len - 1)?`.
+    ReturnOptionSomeTupleFieldLeArgLen { field: usize, arg: usize },
+    /// The call is `Try::branch`: `Option<T>` -> `ControlFlow<Option<!>, T>`,
+    /// so the result's `Continue` payload (field 0) equals the input's `Some`
+    /// payload (field 0).  Models the `?` operator's `if let Some(..) = expr?`
+    /// unwrap so the payload's provenance survives the branch.
+    ReturnBranchPayload { arg: usize },
     /// The call returns the length of a nul-terminated string (models
     /// `strlen`): `0 <= len < isize::MAX`, so `len + 1` (the byte length with
     /// the terminator) fits in `isize::MAX` — discharging the
@@ -257,6 +272,43 @@ pub(crate) fn dependency_summary<'tcx>(
                     unsupported: false,
                 };
             }
+        }
+        // A memchr/decode-style callee's return payload is bounded by a slice
+        // argument's length, so the return value depends on that slice argument.
+        // The dataflow analyzer can't see this through the loop, so detect it
+        // from the MIR shape and keep the slice argument relevant.
+        if let Some(effect) = interprocedural::try_slice_bounded_return_effect(tcx, callee) {
+            if let CallEffect::ReturnOptionSomeIndexLtArgLen { arg } = effect {
+                if arg < arg_count {
+                    return CallDependencySummary {
+                        return_depends_on_args: vec![arg],
+                        may_write_args: Vec::new(),
+                        unsupported: false,
+                    };
+                }
+            }
+        }
+        if let Some(effect) = interprocedural::try_decode_length_return_effect(tcx, callee) {
+            if let CallEffect::ReturnOptionSomeTupleFieldLeArgLen { arg, .. } = effect {
+                if arg < arg_count {
+                    return CallDependencySummary {
+                        return_depends_on_args: vec![arg],
+                        may_write_args: Vec::new(),
+                        unsupported: false,
+                    };
+                }
+            }
+        }
+        // `Try::branch` (`Option<T>` -> `ControlFlow<Option<!>, T>`): the
+        // `Continue` payload is the input's `Some` payload, so the return value
+        // depends on the input.  Detect by name (the trait method's `self` type
+        // is generic, so the type check below is skipped here).
+        if mir_utils::call_name(tcx, func).ends_with("::branch") {
+            return CallDependencySummary {
+                return_depends_on_args: vec![0],
+                may_write_args: Vec::new(),
+                unsupported: false,
+            };
         }
         if let Some(return_deps) = interprocedural::local_return_dependencies(tcx, callee) {
             return CallDependencySummary {

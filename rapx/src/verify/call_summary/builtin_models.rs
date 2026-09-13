@@ -99,6 +99,8 @@ static REGISTRY: &[Entry] = &[
     // from the source). Raw-pointer `cast` is excluded (`is_as_ptr_valid`)
     // because it only reinterprets the address and is left to MIR inlining.
     ED!(api_classify::is_as_ptr_valid, eff_alias_ptr),
+    // `str::as_bytes` reinterprets `&str` as `&[u8]` (same data pointer + len).
+    ED!(api_classify::is_str_as_bytes, eff_alias_arg0),
     // Slice / collection queries.
     ED!(api_classify::is_len, eff_len),
     ED!(api_classify::is_capacity, eff_len),

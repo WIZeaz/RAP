@@ -66,6 +66,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             return;
         }
 
+        // Slice range `get`: `<[T]>::get(range)` returns `Option<&[T]>` whose
+        // `Some` payload is the sub-slice.
+        if self.try_slice_get(callee, &arg_values, args, destination) {
+            return;
+        }
+
         // Iter::len() / Iter::is_empty(): compute from struct fields.
         if self.try_iter_len_is_empty(&name, &arg_values, args, destination) {
             return;
@@ -116,6 +122,37 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
                 if let Some(effect) =
                     crate::verify::call_summary::interprocedural::try_ptr_field_return_effect(
+                        self.tcx, c,
+                    )
+                {
+                    self.apply_call_effect(&effect, &arg_values, &caller_arg_locals, destination);
+                    self.last_call_name = name.clone();
+                    self.last_call_callee = callee;
+                    self.materialize_const_bytes_after_call(args, destination);
+                    return;
+                }
+                if let Some(effect) =
+                    crate::verify::call_summary::interprocedural::try_branch_effect(self.tcx, c)
+                {
+                    self.apply_call_effect(&effect, &arg_values, &caller_arg_locals, destination);
+                    self.last_call_name = name.clone();
+                    self.last_call_callee = callee;
+                    self.materialize_const_bytes_after_call(args, destination);
+                    return;
+                }
+                if let Some(effect) =
+                    crate::verify::call_summary::interprocedural::try_slice_bounded_return_effect(
+                        self.tcx, c,
+                    )
+                {
+                    self.apply_call_effect(&effect, &arg_values, &caller_arg_locals, destination);
+                    self.last_call_name = name.clone();
+                    self.last_call_callee = callee;
+                    self.materialize_const_bytes_after_call(args, destination);
+                    return;
+                }
+                if let Some(effect) =
+                    crate::verify::call_summary::interprocedural::try_decode_length_return_effect(
                         self.tcx, c,
                     )
                 {
@@ -181,7 +218,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     invariants: ValueInvariants::default(),
                 },
             );
-            return;
         }
 
         self.materialize_const_bytes_after_call(args, destination);
@@ -327,8 +363,16 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             _ => (zero.clone(), total_len.clone()),
         };
         let elem_size_term = Int::from_u64(self.ctx, elem_size);
-        let start_bytes = Int::mul(self.ctx, &[&start, &elem_size_term]);
-        let size_bytes = Int::mul(self.ctx, &[&len, &elem_size_term]);
+        let start_bytes = if elem_size == 1 {
+            start.clone()
+        } else {
+            Int::mul(self.ctx, &[&start, &elem_size_term])
+        };
+        let size_bytes = if elem_size == 1 {
+            len.clone()
+        } else {
+            Int::mul(self.ctx, &[&len, &elem_size_term])
+        };
         let dest_term = Int::add(self.ctx, &[&array_term, &start_bytes]);
         let (alloc_id, _) = self.allocate(size_bytes, elem_align, Some(elem_ty));
         self.alloc_mut(alloc_id).parent = Some(prov.alloc_id);
@@ -337,6 +381,134 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             VmValue {
                 term: dest_term,
                 ty: dest_ty,
+                provenance: Some(Provenance {
+                    alloc_id,
+                    offset: Int::from_u64(self.ctx, 0),
+                    is_field_offset: false,
+                }),
+                invariants: ValueInvariants {
+                    non_null: true,
+                    aligned: true,
+                    init: true,
+                    in_bounds: true,
+                    ..Default::default()
+                },
+            },
+        );
+        true
+    }
+
+    /// Slice range `get` `<[T]>::get(range)` / `::get_mut(range)`: returns
+    /// `Option<&[T]>` whose `Some` payload is a sub-slice with the range's
+    /// extent.  Mirrors [`try_slice_index`](Self::try_slice_index), but stores
+    /// the sub-slice under field 0 (the `Some` payload) so a downstream
+    /// `slice.len()` / `memchr(x, subslice)` sees the correct element count and
+    /// provenance.
+    fn try_slice_get(
+        &mut self,
+        callee: Option<DefId>,
+        arg_values: &[VmValue<'ctx, 'tcx>],
+        args: &[Spanned<Operand<'tcx>>],
+        destination: Local,
+    ) -> bool {
+        let Some(c) = callee else {
+            return false;
+        };
+        let Some(assoc) = self.tcx.opt_associated_item(c) else {
+            return false;
+        };
+        if !matches!(assoc.name().as_str(), "get" | "get_mut") || arg_values.len() < 2 {
+            return false;
+        }
+        let dest_ty = self.body.local_decls[destination].ty;
+        let TyKind::Adt(adt, substs) = dest_ty.kind() else {
+            return false;
+        };
+        if !self.tcx.is_diagnostic_item(rustc_span::sym::Option, adt.did()) {
+            return false;
+        }
+        let payload_ty = substs.type_at(0);
+        let TyKind::Ref(_, slice_ty, _) = payload_ty.kind() else {
+            return false;
+        };
+        if !matches!(slice_ty.kind(), TyKind::Slice(_)) {
+            return false;
+        }
+        let Some(prov) = arg_values[0].provenance.clone() else {
+            return false;
+        };
+        let array_term = arg_values[0].term.clone();
+        let (elem_ty, elem_size) = match arg_values[0].ty.kind() {
+            TyKind::Ref(_, inner, _) => match inner.kind() {
+                TyKind::Array(e, _) | TyKind::Slice(e) => (*e, self.size_of_ty(*e).max(1) as u64),
+                _ => (arg_values[0].ty, 1),
+            },
+            _ => (arg_values[0].ty, 1),
+        };
+        let elem_align = self.align_of_ty(elem_ty).max(1);
+        let range_local = args.get(1).and_then(|a| match &a.node {
+            Operand::Copy(p) | Operand::Move(p) => Some(p.local),
+            _ => None,
+        });
+        let range_field = |idx: usize| -> Option<Int<'ctx>> {
+            range_local.and_then(|l| self.field_value(l, &[idx]).map(|v| v.term.clone()))
+        };
+        let zero = Int::from_u64(self.ctx, 0);
+        let one = Int::from_u64(self.ctx, 1);
+        let total_len = self
+            .alloc(prov.alloc_id)
+            .size
+            .clone()
+            .div(&Int::from_u64(self.ctx, elem_size));
+        let range_kind = arg_values.get(1).and_then(|v| match v.ty.kind() {
+            TyKind::Adt(adt_def, _) => Some(crate::helpers::mir_utils::range_kind(
+                self.tcx,
+                adt_def.did(),
+            )),
+            _ => None,
+        });
+        let (start, len) = match range_kind {
+            Some(crate::helpers::mir_utils::RangeKind::RangeTo) => (
+                zero.clone(),
+                range_field(0).unwrap_or_else(|| total_len.clone()),
+            ),
+            Some(crate::helpers::mir_utils::RangeKind::RangeFrom) => {
+                let s = range_field(0).unwrap_or_else(|| zero.clone());
+                (s.clone(), Int::sub(self.ctx, &[&total_len, &s]))
+            }
+            Some(crate::helpers::mir_utils::RangeKind::Range) => {
+                let s = range_field(0).unwrap_or_else(|| zero.clone());
+                let e = range_field(1).unwrap_or_else(|| total_len.clone());
+                (s.clone(), Int::sub(self.ctx, &[&e, &s]))
+            }
+            Some(crate::helpers::mir_utils::RangeKind::RangeInclusive) => {
+                let s = range_field(0).unwrap_or_else(|| zero.clone());
+                let e = range_field(1).unwrap_or_else(|| total_len.clone());
+                let l = Int::sub(self.ctx, &[&e, &s]);
+                (s.clone(), Int::add(self.ctx, &[&l, &one]))
+            }
+            _ => (zero.clone(), total_len.clone()),
+        };
+        let elem_size_term = Int::from_u64(self.ctx, elem_size);
+        let start_bytes = if elem_size == 1 {
+            start.clone()
+        } else {
+            Int::mul(self.ctx, &[&start, &elem_size_term])
+        };
+        let size_bytes = if elem_size == 1 {
+            len.clone()
+        } else {
+            Int::mul(self.ctx, &[&len, &elem_size_term])
+        };
+        let dest_term = Int::add(self.ctx, &[&array_term, &start_bytes]);
+        let (alloc_id, _) = self.allocate(size_bytes, elem_align, Some(elem_ty));
+        self.alloc_mut(alloc_id).parent = Some(prov.alloc_id);
+        self.set_field_value(
+            destination,
+            vec![0],
+            VmValue {
+                term: dest_term,
+                ty: payload_ty,
                 provenance: Some(Provenance {
                     alloc_id,
                     offset: Int::from_u64(self.ctx, 0),
@@ -1939,6 +2111,82 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             VmValue {
                                 term: payload,
                                 ty: payload_ty,
+                                provenance: None,
+                                invariants: ValueInvariants::default(),
+                            },
+                        );
+                    }
+                }
+            }
+            CallEffect::ReturnBranchPayload { arg } => {
+                // `Try::branch`: copy the `Option` arg's `Some` payload (field 0)
+                // to the `ControlFlow` result's `Continue` payload (field 0),
+                // preserving its provenance so a `?`-operator unwrap survives.
+                let arg_local = caller_arg_locals.get(*arg).copied().flatten();
+                if let Some(l) = arg_local {
+                    if let Some(payload) = self.field_value(l, &[0]).cloned() {
+                        self.set_field_value(dest, vec![0], payload);
+                    }
+                }
+            }
+            CallEffect::ReturnOptionSomeIndexLtArgLen { arg } => {
+                // `memchr(x, bytes)`/`memrchr(x, bytes)`-style search returns
+                // `Option<usize>` whose `Some(i)` payload satisfies
+                // `0 <= i < bytes.len()`.  Store the payload under field 0 (so
+                // `if let Some(i)` resolves to it) and record both bounds so a
+                // caller can re-prove `finger <= finger_back` after
+                // `finger += i + 1` (forward) or `finger_back = finger + i`
+                // (reverse).
+                if let Some(slice) = args.get(*arg) {
+                    if let Some(len) = self.slice_len_from_value(slice) {
+                        let payload =
+                            self.fresh_int(&format!("scan_idx_{}", dest.as_usize()));
+                        self.path_conditions.push(payload.lt(&len));
+                        let zero = Int::from_u64(self.ctx, 0);
+                        self.path_conditions.push(payload.ge(&zero));
+                        let dest_ty = self.body.local_decls[dest].ty;
+                        let payload_ty = match dest_ty.kind() {
+                            TyKind::Adt(adt, substs) if adt.is_enum() => substs.type_at(0),
+                            _ => dest_ty,
+                        };
+                        self.set_field_value(
+                            dest,
+                            vec![0],
+                            VmValue {
+                                term: payload,
+                                ty: payload_ty,
+                                provenance: None,
+                                invariants: ValueInvariants::default(),
+                            },
+                        );
+                    }
+                }
+            }
+            CallEffect::ReturnOptionSomeTupleFieldLeArgLen { field, arg } => {
+                // UTF-8 decoder returns `Option<(.., len, ..)>` whose length
+                // field satisfies `len <= slice.len()`.  Store the length under
+                // `[0, field]` (the `Some` payload tuple's field) and record
+                // `len <= arg.len()` so a caller can re-prove
+                // `finger <= finger_back` after `finger += len`.
+                if let Some(slice) = args.get(*arg) {
+                    if let Some(arg_len) = self.slice_len_from_value(slice) {
+                        let len = self.fresh_int(&format!("decode_len_{}", dest.as_usize()));
+                        self.path_conditions.push(len.le(&arg_len));
+                        let dest_ty = self.body.local_decls[dest].ty;
+                        let payload_ty = match dest_ty.kind() {
+                            TyKind::Adt(adt, substs) if adt.is_enum() => substs.type_at(0),
+                            _ => dest_ty,
+                        };
+                        let field_ty = match payload_ty.kind() {
+                            TyKind::Tuple(tys) => tys.get(*field).copied().unwrap_or(payload_ty),
+                            _ => payload_ty,
+                        };
+                        self.set_field_value(
+                            dest,
+                            vec![0, *field],
+                            VmValue {
+                                term: len,
+                                ty: field_ty,
                                 provenance: None,
                                 invariants: ValueInvariants::default(),
                             },

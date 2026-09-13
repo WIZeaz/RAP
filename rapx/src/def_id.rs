@@ -1453,6 +1453,10 @@ intrinsics! {
         "std::str::<impl str>::as_ptr",
         "core::str::<impl str>::as_ptr"
     ],
+    str_as_bytes: &[
+        "std::str::<impl str>::as_bytes",
+        "core::str::<impl str>::as_bytes"
+    ],
     str_as_mut_ptr: &[
         "std::str::<impl str>::as_mut_ptr",
         "core::str::<impl str>::as_mut_ptr"

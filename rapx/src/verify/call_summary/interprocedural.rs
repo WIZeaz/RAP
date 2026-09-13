@@ -478,6 +478,494 @@ pub(crate) fn try_ptr_field_return_effect(
     None
 }
 
+/// Trace a local back through `x = copy y` / `x = move y` assignments to its
+/// copy root (the original loop variable before MIR temporaries).
+fn copy_root(body: &rustc_middle::mir::Body<'_>, mut local: Local) -> Local {
+    let mut seen = HashSet::new();
+    loop {
+        if !seen.insert(local) {
+            break;
+        }
+        let mut next = None;
+        for bb in body.basic_blocks.iter() {
+            for stmt in &bb.statements {
+                let StatementKind::Assign(assign) = &stmt.kind else {
+                    continue;
+                };
+                let (dest, rvalue) = &**assign;
+                if dest.local != local || !dest.projection.is_empty() {
+                    continue;
+                }
+                let Rvalue::Use(op, ..) = rvalue else {
+                    continue;
+                };
+                let (Operand::Copy(p) | Operand::Move(p)) = op else {
+                    continue;
+                };
+                if p.projection.is_empty() {
+                    next = Some(p.local);
+                }
+            }
+        }
+        match next {
+            Some(n) => local = n,
+            None => break,
+        }
+    }
+    local
+}
+
+/// Detect a `memchr`-style search function: it returns `Option<usize>` whose
+/// `Some(i)` payload is an index guarded by a loop condition `i < arg.len()`
+/// (where `arg` is a slice argument).  The summary lets a caller re-prove a
+/// numeric invariant like `finger <= finger_back` after `finger += i + 1`.
+pub(crate) fn try_slice_bounded_return_effect(
+    tcx: TyCtxt<'_>,
+    callee: DefId,
+) -> Option<CallEffect> {
+    if !tcx.is_mir_available(callee) {
+        return None;
+    }
+    let body = tcx.optimized_mir(callee);
+    if body.basic_blocks.len() > 12 || body.arg_count < 1 {
+        return None;
+    }
+
+    // (1) Find `_0 = Some(payload)` and record the payload's copy root.
+    let mut payload_root: Option<Local> = None;
+    for bb in body.basic_blocks.iter() {
+        for stmt in &bb.statements {
+            let StatementKind::Assign(assign) = &stmt.kind else {
+                continue;
+            };
+            let (place, rvalue) = &**assign;
+            if place.local.as_usize() != 0 || !place.projection.is_empty() {
+                continue;
+            }
+            let Rvalue::Aggregate(kind, operands) = rvalue else {
+                continue;
+            };
+            let rustc_middle::mir::AggregateKind::Adt(adt, variant_idx, ..) = &**kind else {
+                continue;
+            };
+            if !tcx.is_diagnostic_item(rustc_span::sym::Option, *adt) {
+                continue;
+            }
+            if variant_idx.as_usize() != 1 {
+                continue; // not `Some`
+            }
+            let Some(payload) = operands.iter().next() else {
+                continue;
+            };
+            let (Operand::Copy(p) | Operand::Move(p)) = payload else {
+                continue;
+            };
+            if p.projection.is_empty() {
+                payload_root = Some(copy_root(&body, p.local));
+            }
+        }
+    }
+    let payload_root = payload_root?;
+
+    // (2) Find `tmp = PtrMetadata(arg)` — the slice argument's length.
+    let mut len_defs: Vec<(Local, usize)> = Vec::new();
+    for bb in body.basic_blocks.iter() {
+        for stmt in &bb.statements {
+            let StatementKind::Assign(assign) = &stmt.kind else {
+                continue;
+            };
+            let (place, rvalue) = &**assign;
+            if !place.projection.is_empty() {
+                continue;
+            }
+            let Rvalue::UnaryOp(op, operand) = rvalue else {
+                continue;
+            };
+            if !matches!(op, rustc_middle::mir::UnOp::PtrMetadata) {
+                continue;
+            }
+            let (Operand::Copy(p) | Operand::Move(p)) = operand else {
+                continue;
+            };
+            if p.projection.is_empty()
+                && p.local.as_usize() >= 1
+                && p.local.as_usize() <= body.arg_count
+            {
+                len_defs.push((place.local, p.local.as_usize() - 1));
+            }
+        }
+    }
+
+    // (3) Find `x = Lt(payload, tmp)` (or `Le`) where `tmp` is a length temp.
+    for bb in body.basic_blocks.iter() {
+        for stmt in &bb.statements {
+            let StatementKind::Assign(assign) = &stmt.kind else {
+                continue;
+            };
+            let (_, rvalue) = &**assign;
+            let Rvalue::BinaryOp(op, pair) = rvalue else {
+                continue;
+            };
+            if !matches!(op, BinOp::Lt | BinOp::Le) {
+                continue;
+            }
+            let (a, b) = &**pair;
+            let a_root = match a {
+                Operand::Copy(p) | Operand::Move(p) if p.projection.is_empty() => {
+                    copy_root(&body, p.local)
+                }
+                _ => continue,
+            };
+            if a_root != payload_root {
+                continue;
+            }
+            let b_local = match b {
+                Operand::Copy(p) | Operand::Move(p) if p.projection.is_empty() => Some(p.local),
+                _ => None,
+            };
+            let Some(&(_, arg)) = len_defs.iter().find(|(tmp, _)| Some(*tmp) == b_local) else {
+                continue;
+            };
+            return match op {
+                BinOp::Lt => Some(CallEffect::ReturnOptionSomeIndexLtArgLen { arg }),
+                _ => None,
+            };
+        }
+    }
+    None
+}
+
+/// Detect `<Option<T> as Try>::branch`: `Option<T>` -> `ControlFlow<Option<!>, T>`.
+/// The `Continue` payload (field 0) equals the `Some` payload (field 0), so a
+/// `?`-operator `if let Some(..) = expr?` unwrap keeps the payload's provenance.
+pub(crate) fn try_branch_effect(tcx: TyCtxt<'_>, callee: DefId) -> Option<CallEffect> {
+    let name = tcx.def_path_str(callee);
+    if !name.ends_with("::branch") {
+        return None;
+    }
+    if !tcx.is_mir_available(callee) {
+        return None;
+    }
+    let body = tcx.optimized_mir(callee);
+    if body.arg_count != 1 {
+        return None;
+    }
+    // Input is `Option<T>` (the `self` argument).
+    let arg_ty = body.local_decls[Local::from_usize(1)].ty;
+    let TyKind::Adt(arg_adt, _) = arg_ty.kind() else {
+        return None;
+    };
+    if !tcx.is_diagnostic_item(rustc_span::sym::Option, arg_adt.did()) {
+        return None;
+    }
+    // Output is `ControlFlow<..>`.
+    let ret_ty = body.local_decls[Local::from_usize(0)].ty;
+    let TyKind::Adt(ret_adt, _) = ret_ty.kind() else {
+        return None;
+    };
+    if !tcx.def_path_str(ret_adt.did()).contains("ControlFlow") {
+        return None;
+    }
+    Some(CallEffect::ReturnBranchPayload { arg: 0 })
+}
+
+/// Whether `callee` is `slice::get`/`get_mut` (an inherent method returning
+/// `Option<&[T]>`/`Option<&mut [T]>`), which the VM summarizes without
+/// inlining (see `try_slice_get`).  The path graph must not inline it — the
+/// inlined `Some(&self[range])` body does not preserve the sub-slice's
+/// provenance through the `?` operator.
+pub(crate) fn is_slice_get_summary(tcx: TyCtxt<'_>, callee: DefId) -> bool {
+    let Some(assoc) = tcx.opt_associated_item(callee) else {
+        return false;
+    };
+    let name = assoc.name();
+    let name_str = name.as_str();
+    if name_str != "get" && name_str != "get_mut" {
+        return false;
+    }
+    // `slice::get`/`get_mut` return `Option<&[T]>` (or `Option<&[T]>` via a
+    // `SliceIndex::Output` projection alias); identify by the `slice` impl
+    // path rather than normalizing the projection type.
+    let path = tcx.def_path_str(callee);
+    path.contains("::slice::") || path.contains("slice::<impl")
+}
+
+/// Whether block `a` dominates block `b` (every path from the entry to `b`
+/// passes through `a`).  Simple BFS: `a` dominates `b` iff `b` is *not*
+/// reachable from the entry when `a` is skipped.
+fn block_dominates(body: &rustc_middle::mir::Body<'_>, a: BasicBlock, b: BasicBlock) -> bool {
+    let entry = 0usize;
+    let mut queue = VecDeque::from([entry]);
+    let mut seen = HashSet::from([entry]);
+    while let Some(cur) = queue.pop_front() {
+        if cur == b.as_usize() {
+            return false; // reached b without passing a
+        }
+        if cur == a.as_usize() {
+            continue; // skip a's successors
+        }
+        for succ in body.basic_blocks[BasicBlock::from_usize(cur)].terminator().successors() {
+            if seen.insert(succ.as_usize()) {
+                queue.push_back(succ.as_usize());
+            }
+        }
+    }
+    true
+}
+
+/// Detect a UTF-8-decoder shape: the function returns `Option<(.., usize, ..)>`
+/// whose length field is a *constant* on each `Some` return, and each
+/// `Some((.., len))` return is guarded by a `slice.get(len - 1)?` (so
+/// `len <= slice.len()`).  Summarizes the tuple's length field as
+/// `field <= arg.len()` so a caller can re-prove `finger <= finger_back` after
+/// `finger += len`.
+pub(crate) fn try_decode_length_return_effect(
+    tcx: TyCtxt<'_>,
+    callee: DefId,
+) -> Option<CallEffect> {
+    if !tcx.is_mir_available(callee) {
+        return None;
+    }
+    let body = tcx.optimized_mir(callee);
+    if body.arg_count < 1 {
+        return None;
+    }
+    // Return type must be `Option<(.., usize, ..)>`.
+    let ret_ty = body.local_decls[Local::from_usize(0)].ty;
+    let TyKind::Adt(adt, substs) = ret_ty.kind() else {
+        return None;
+    };
+    if !tcx.is_diagnostic_item(rustc_span::sym::Option, adt.did()) {
+        return None;
+    }
+    let inner = substs.type_at(0);
+    let TyKind::Tuple(tys) = inner.kind() else {
+        return None;
+    };
+    let Some(field) = tys.iter().position(|t| {
+        matches!(t.kind(), TyKind::Uint(rustc_middle::ty::UintTy::Usize))
+    }) else {
+        return None;
+    };
+
+    // Collect `Some((.., L))` returns with constant or computed length `L`.
+    let mut returns: Vec<(BasicBlock, u64)> = Vec::new();
+    let mut computed_returns: Vec<BasicBlock> = Vec::new();
+    for (bb, data) in body.basic_blocks.iter_enumerated() {
+        for stmt in &data.statements {
+            let StatementKind::Assign(assign) = &stmt.kind else {
+                continue;
+            };
+            let (place, rvalue) = &**assign;
+            if place.local.as_usize() != 0 || !place.projection.is_empty() {
+                continue;
+            }
+            let Rvalue::Aggregate(kind, operands) = rvalue else {
+                continue;
+            };
+            let rustc_middle::mir::AggregateKind::Adt(adt, variant_idx, ..) = &**kind else {
+                continue;
+            };
+            if !tcx.is_diagnostic_item(rustc_span::sym::Option, *adt) {
+                continue;
+            }
+            if variant_idx.as_usize() != 1 {
+                continue; // not `Some`
+            }
+            let Some(payload) = operands.iter().next() else {
+                continue;
+            };
+            // Payload is `(code, len)` (or a temp holding it).
+            match tuple_field_len_kind(&body, payload, field) {
+                Some(TupleFieldLen::Const(len)) => returns.push((bb, len)),
+                Some(TupleFieldLen::LenSub) => computed_returns.push(bb),
+                None => {}
+            }
+        }
+    }
+    if returns.is_empty() && computed_returns.is_empty() {
+        return None;
+    }
+
+    // Collect `slice.get(k)` calls with a constant `k`.
+    let mut gets: Vec<(BasicBlock, u64)> = Vec::new();
+    for (bb, data) in body.basic_blocks.iter_enumerated() {
+        let TerminatorKind::Call { func, args, .. } = &data.terminator().kind else {
+            continue;
+        };
+        let Some(get_callee) = helpers::dep_callee_def_id(func) else {
+            continue;
+        };
+        if !tcx.opt_associated_item(get_callee).is_some_and(|a| {
+            let name = a.name();
+            matches!(name.as_str(), "get" | "index" | "index_mut")
+        }) {
+            continue;
+        }
+        let Some(k) = args.get(1).and_then(|a| helpers::operand_const_u64(&a.node)) else {
+            continue;
+        };
+        gets.push((bb, k));
+    }
+    if gets.is_empty() && computed_returns.is_empty() {
+        return None;
+    }
+
+    // For each return with length `L`, `get(L - 1)` must dominate it.  The
+    // `L == 1` (ASCII) case only needs the slice to be non-empty, which a
+    // well-formed decoder establishes with its first byte access (often
+    // optimized away from `get(0)` into a direct deref), so it is accepted.
+    for (bb, len) in &returns {
+        if *len <= 1 {
+            continue;
+        }
+        let k = len.checked_sub(1)?;
+        let Some(&(get_bb, _)) = gets.iter().find(|(_, kk)| *kk == k) else {
+            return None;
+        };
+        if !block_dominates(&body, get_bb, *bb) {
+            return None;
+        }
+    }
+
+    Some(CallEffect::ReturnOptionSomeTupleFieldLeArgLen { field, arg: 0 })
+}
+
+/// Length kind of a decoder's returned tuple length field.
+enum TupleFieldLen {
+    /// A constant byte length (e.g. `Some((code, 2))`).
+    Const(u64),
+    /// `slice.len() - x` for a non-negative `x` (e.g. `decode_last_char`'s
+    /// `n - lead_idx`), so `len <= slice.len()`.
+    LenSub,
+}
+
+/// Classify the length field of a `(.., len, ..)` tuple, tracing through
+/// copy/move temps and a `_tmp = (..)` tuple aggregate assignment.
+fn tuple_field_len_kind<'tcx>(
+    body: &rustc_middle::mir::Body<'tcx>,
+    operand: &Operand<'tcx>,
+    field: usize,
+) -> Option<TupleFieldLen> {
+    let tuple_local = match operand {
+        Operand::Copy(p) | Operand::Move(p) if p.projection.is_empty() => p.local,
+        _ => return None,
+    };
+    let mut field_operand: Option<Operand<'tcx>> = None;
+    for bb in body.basic_blocks.iter() {
+        for stmt in &bb.statements {
+            let StatementKind::Assign(assign) = &stmt.kind else {
+                continue;
+            };
+            let (place, rvalue) = &**assign;
+            if place.local != tuple_local || !place.projection.is_empty() {
+                continue;
+            }
+            let Rvalue::Aggregate(kind, operands) = rvalue else {
+                continue;
+            };
+            if !matches!(&**kind, rustc_middle::mir::AggregateKind::Tuple) {
+                continue;
+            }
+            field_operand = operands
+                .get(rustc_abi::FieldIdx::from_usize(field))
+                .cloned();
+        }
+    }
+    let mut cur = field_operand?;
+
+    loop {
+        if let Some(c) = helpers::operand_const_u64(&cur) {
+            return Some(TupleFieldLen::Const(c));
+        }
+        let local = match &cur {
+            Operand::Copy(p) | Operand::Move(p) if p.projection.is_empty() => p.local,
+            // `SubWithOverflow`/`AddWithOverflow` yield a tuple; the value is
+            // the `.0` field, so strip a single Field(0) projection and keep
+            // tracing the base local.
+            Operand::Copy(p) | Operand::Move(p)
+                if p.projection.len() == 1
+                    && matches!(
+                        p.projection[0].kind(),
+                        rustc_middle::mir::ProjectionElem::Field(
+                            rustc_abi::FieldIdx::ZERO,
+                            _
+                        )
+                    ) =>
+            {
+                p.local
+            }
+            _ => return None,
+        };
+        let mut defining: Option<&Rvalue<'tcx>> = None;
+        for bb in body.basic_blocks.iter() {
+            for stmt in &bb.statements {
+                let StatementKind::Assign(assign) = &stmt.kind else {
+                    continue;
+                };
+                let (place, rvalue) = &**assign;
+                if place.local != local || !place.projection.is_empty() {
+                    continue;
+                }
+                defining = Some(rvalue);
+            }
+        }
+        match defining? {
+            Rvalue::Use(op, ..) => cur = op.clone(),
+            Rvalue::BinaryOp(BinOp::Sub | BinOp::SubWithOverflow, pair) => {
+                // `len = lhs - rhs`; sound iff `lhs == slice.len()` and
+                // `rhs >= 0` (the latter holds because `rhs` is a `usize`).
+                let (lhs, _) = &**pair;
+                return operand_is_ptr_metadata(body, lhs).then_some(TupleFieldLen::LenSub);
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// Whether `operand` (through copy/move temps) is `PtrMetadata(slice)`,
+/// including a `slice.len()` call (which is semantically `PtrMetadata`).
+fn operand_is_ptr_metadata<'tcx>(body: &rustc_middle::mir::Body<'tcx>, operand: &Operand<'tcx>) -> bool {
+    let mut cur = operand.clone();
+    loop {
+        let local = match &cur {
+            Operand::Copy(p) | Operand::Move(p) if p.projection.is_empty() => p.local,
+            _ => return false,
+        };
+        // A `slice.len()` call result is the slice's length.
+        for bb in body.basic_blocks.iter() {
+            let TerminatorKind::Call { func, destination, .. } = &bb.terminator().kind else {
+                continue;
+            };
+            if destination.local == local
+                && crate::verify::api_classify::is_len(helpers::dep_callee_def_id(func))
+            {
+                return true;
+            }
+        }
+        let mut defining: Option<&Rvalue<'tcx>> = None;
+        for bb in body.basic_blocks.iter() {
+            for stmt in &bb.statements {
+                let StatementKind::Assign(assign) = &stmt.kind else {
+                    continue;
+                };
+                let (place, rvalue) = &**assign;
+                if place.local != local || !place.projection.is_empty() {
+                    continue;
+                }
+                defining = Some(rvalue);
+            }
+        }
+        match defining {
+            Some(Rvalue::UnaryOp(op, _)) => {
+                return matches!(op, rustc_middle::mir::UnOp::PtrMetadata);
+            }
+            Some(Rvalue::Use(op, ..)) => cur = op.clone(),
+            _ => return false,
+        }
+    }
+}
+
 /// Detect a `pre_dec_end(offset)` call on the receiver (arg 0) and return its
 /// constant offset. `next_back_unchecked` calls `self.pre_dec_end(1)` before
 /// returning the `end_or_len` field, so the returned pointer must be adjusted

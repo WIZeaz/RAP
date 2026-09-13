@@ -227,6 +227,17 @@ pub fn collect_return_block_indices(tcx: TyCtxt<'_>, def_id: DefId) -> Vec<Basic
     blocks
 }
 
+/// Whether `block` ends in a `Return` terminator (a normal exit point).
+pub fn is_return_block(tcx: TyCtxt<'_>, def_id: DefId, block: BasicBlock) -> bool {
+    if !tcx.is_mir_available(def_id) {
+        return false;
+    }
+    let body = tcx.optimized_mir(def_id);
+    body.basic_blocks
+        .get(block)
+        .is_some_and(|data| matches!(data.terminator().kind, TerminatorKind::Return))
+}
+
 /// Return the callee argument index represented by a MIR local.
 ///
 /// Contract annotations written with parameter names are parsed in the callee's
