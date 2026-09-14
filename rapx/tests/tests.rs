@@ -65,7 +65,20 @@ fn run_with_args(dir: &str, args: &[&str]) -> String {
         .output()
         .expect("Failed to execute cargo rapx");
 
-    String::from_utf8_lossy(&output.stderr).into_owned()
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_no_parse_error(&stderr);
+    stderr
+}
+
+/// Every test case runs through `run_with_args`; a RAPx attribute that fails to
+/// parse is only logged and then silently dropped, which would otherwise let a
+/// regression (like a broken `#[rapx::invariant(...)]`) go unnoticed while the
+/// function still verifies as SOUND. Fail hard here instead.
+fn assert_no_parse_error(output: &str) {
+    assert!(
+        !output.contains("Failed to parse RAPx"),
+        "RAPx attribute parse error detected (a contract was silently dropped):\n{output}"
+    );
 }
 
 fn cargo_rapx_command() -> Command {

@@ -169,6 +169,17 @@ fn parse_property_head(input: ParseStream<'_>) -> SynResult<AttrProperty> {
 /// resolution still recognises them.  Arguments that are genuine expressions
 /// (`0`, `x + 1`, `ptr.0`) fail type parsing and fall back to `Expr`.
 fn parse_property_arg(input: ParseStream<'_>) -> SynResult<Expr> {
+    // Arguments that begin with a parenthesised group are tuple/parenthesised
+    // expressions (e.g. the disjunctive grouping `(Align(head, T), ValidPtr(...))`
+    // inside `any`), never types.  syn's `Type` parser is fooled by these: it
+    // parses `(Align(head, T))` as a `Type::Paren` around just `Align` and
+    // silently leaves the rest of the group unparsed, which then surfaces as a
+    // spurious `unexpected token, expected `)`` error.  Parse them directly as
+    // expressions instead.
+    if input.peek(syn::token::Paren) {
+        return input.parse::<Expr>();
+    }
+
     let fork = input.fork();
     if fork.parse::<Type>().is_ok() && (fork.is_empty() || fork.peek(Token![,])) {
         let ty: Type = input.parse()?;
@@ -243,4 +254,44 @@ fn strip_lifetime_ticks(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_attr(attr: &str, expected_name: &str) -> Option<AttrProperty> {
+        parse_rapx_attr(attr, expected_name)
+            .unwrap_or_else(|e| panic!("parse failed for {attr}: {e}"))
+    }
+
+    #[test]
+    fn parses_any_invariant_with_tuple_disjunction() {
+        let property = parse_attr(
+            r#"#[rapx::invariant(any(Null(head), (Align(head, Node), ValidPtr(head, Node, 1), Allocated(head, Node, 1), Typed(head, Node), Owning(head))))]"#,
+            "invariant",
+        )
+        .expect("expected an invariant property");
+
+        assert_eq!(property.tag, "any");
+        assert_eq!(property.args.len(), 2);
+    }
+
+    #[test]
+    fn parses_type_argument_with_generics() {
+        let property = parse_attr(r#"#[rapx::requires(ValidTransmute(T, Option<NonZero<T>>))]"#, "requires")
+            .expect("expected a requires property");
+
+        assert_eq!(property.tag, "ValidTransmute");
+        assert_eq!(property.args.len(), 2);
+    }
+
+    #[test]
+    fn parses_lifetime_argument() {
+        let property = parse_attr(r#"#[rapx::requires(Alive(ptr, 'a))]"#, "requires")
+            .expect("expected a requires property");
+
+        assert_eq!(property.tag, "Alive");
+        assert_eq!(property.args.len(), 2);
+    }
 }
