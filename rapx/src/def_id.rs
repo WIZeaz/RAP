@@ -1319,7 +1319,9 @@ intrinsics! {
     ],
     arc_as_ptr: &[
         "std::sync::Arc::<T>::as_ptr",
-        "alloc::sync::Arc::<T>::as_ptr"
+        "alloc::sync::Arc::<T>::as_ptr",
+        "std::sync::Arc::<T, A>::as_ptr",
+        "alloc::sync::Arc::<T, A>::as_ptr"
     ],
     rc_into_raw: &[
         "std::rc::Rc::<T>::into_raw",
@@ -1327,7 +1329,9 @@ intrinsics! {
     ],
     rc_as_ptr: &[
         "std::rc::Rc::<T>::as_ptr",
-        "alloc::rc::Rc::<T>::as_ptr"
+        "alloc::rc::Rc::<T>::as_ptr",
+        "std::rc::Rc::<T, A>::as_ptr",
+        "alloc::rc::Rc::<T, A>::as_ptr"
     ],
     vec_from_elem: &[
         "std::vec::from_elem",
