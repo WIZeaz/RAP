@@ -137,7 +137,7 @@ impl PropertyChecker {
                                 term: base_val.term.clone(),
                                 ty: base_val.ty,
                                 provenance: base_val.provenance.clone(),
-                                invariants: base_val.invariants,
+                                invariants: base_val.invariants.clone(),
                             });
                         }
                     }
@@ -182,7 +182,7 @@ impl PropertyChecker {
                     term: base_val.term.clone(),
                     ty: base_val.ty,
                     provenance: Some(prov.clone()),
-                    invariants: base_val.invariants,
+                    invariants: base_val.invariants.clone(),
                 });
             }
         }
@@ -630,6 +630,12 @@ impl PropertyChecker {
                     }
                 }
                 let val = self.eval_contract_expr_to_value(vm_state, checkpoint, inner)?;
+                // Prefer the materialized slice length; fall back to the
+                // `size / elem_size` derivation for allocations that never got
+                // a materialized `slice_len`.
+                if let Some(len) = vm_state.slice_len_from_value(&val) {
+                    return Some(len);
+                }
                 let alloc_id = val.provenance_alloc_id()?;
                 let alloc = vm_state.alloc(alloc_id);
                 let elem_ty = alloc.element_ty?;

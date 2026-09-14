@@ -311,7 +311,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             },
             _ => (arg_values[0].ty, 1),
         };
-        let elem_align = self.align_of_ty(elem_ty).max(1);
+        let elem_align = self.align_sym(elem_ty);
         // The range argument is an aggregate whose field layout determines the
         // slice extent (start element offset and element count):
         //   RangeTo { end }        -> start = 0, len = end
@@ -445,7 +445,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             },
             _ => (arg_values[0].ty, 1),
         };
-        let elem_align = self.align_of_ty(elem_ty).max(1);
+        let elem_align = self.align_sym(elem_ty);
         let range_local = args.get(1).and_then(|a| match &a.node {
             Operand::Copy(p) | Operand::Move(p) => Some(p.local),
             _ => None,
@@ -1301,9 +1301,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         rustc_middle::ty::TyKind::Slice(_)
                     );
                     if is_slice {
+                        let elem_align = self.align_sym(elem);
                         let (alloc_id, base) = self.allocate_external(
                             Int::from_u64(self.ctx, i64::MAX as u64),
-                            self.align_of_ty(elem).max(1),
+                            elem_align,
                             Some(elem),
                         );
                         val = VmValue {
@@ -1383,7 +1384,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             (pointee, sz, Int::from_u64(self.ctx, 1))
                         });
 
-                    let total_len = alloc_size.div(&elem_sz_term); // self.len()
+                    let total_len = self
+                        .slice_len_from_value(self_val)
+                        .unwrap_or_else(|| alloc_size.div(&elem_sz_term)); // self.len()
 
                     let zero = Int::from_u64(self.ctx, 0);
                     self.path_conditions.push(mid_val.term.ge(&zero));
@@ -1409,11 +1412,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         let field_alloc_align = self_val
                             .provenance
                             .as_ref()
-                            .map(|p| self.alloc(p.alloc_id).align)
-                            .unwrap_or(1);
+                            .map(|p| self.alloc(p.alloc_id).align.clone())
+                            .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
 
                         let (alloc_id, _base) =
-                            self.allocate(field_size.clone(), field_alloc_align, elem_ty);
+                            self.allocate(field_size.clone(), field_alloc_align.clone(), elem_ty);
+                        self.alloc_mut(alloc_id).slice_len = Some(field_len.clone());
                         let src_bytes = Int::mul(self.ctx, &[&total_len, &elem_sz_term]);
                         if f == 0 {
                             self.path_conditions.push(field_size._eq(&mid_bytes));
@@ -1544,7 +1548,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     _ => return,
                 };
                 let size_u = self.size_of_ty(body_elem_ty).max(1) as u64;
-                let align_u = self.align_of_ty(body_elem_ty).max(1);
+                let align_u = self.align_sym(body_elem_ty);
 
                 let Some(src_prov) = self_val.provenance.clone() else {
                     return;
@@ -1558,7 +1562,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
                 let elem_sz_term = Int::from_u64(self.ctx, elem_sz);
                 let size_u_term = Int::from_u64(self.ctx, size_u);
-                let align_u_term = Int::from_u64(self.ctx, align_u);
 
                 // Fresh aligned offset: (ptr + offset) % align_u == 0 and
                 // 0 <= offset < align_u.
@@ -1566,9 +1569,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let zero = Int::from_u64(self.ctx, 0);
                 let ptr_plus_offset = Int::add(self.ctx, &[&self_val.term, &offset]);
                 self.path_conditions
-                    .push(ptr_plus_offset.rem(&align_u_term)._eq(&zero));
+                    .push(ptr_plus_offset.rem(&align_u)._eq(&zero));
                 self.path_conditions.push(offset.ge(&zero));
-                self.path_conditions.push(offset.lt(&align_u_term));
+                self.path_conditions.push(offset.lt(&align_u));
 
                 // body = len_bytes - offset bytes split into size_u chunks; the
                 // remainder is the suffix. Record the Euclidean identity so that
@@ -1590,15 +1593,15 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let body_byte_len = Int::mul(self.ctx, &[&body_len, &size_u_term]);
                 let suffix_ptr = Int::add(self.ctx, &[&ptr_plus_offset, &body_byte_len]);
 
-                let base_align = self.alloc(src_prov.alloc_id).align;
+                let base_align = self.alloc(src_prov.alloc_id).align.clone();
 
-                let fields: Vec<(Int<'ctx>, Int<'ctx>, Ty<'tcx>, u64, u64)> = vec![
+                let fields: Vec<(Int<'ctx>, Int<'ctx>, Ty<'tcx>, u64, Int<'ctx>)> = vec![
                     (
                         prefix_len,
                         self_val.term.clone(),
                         elem_tys[0],
                         elem_sz,
-                        base_align,
+                        base_align.clone(),
                     ),
                     (body_len, ptr_plus_offset, elem_tys[1], size_u, align_u),
                     (suffix_len, suffix_ptr, elem_tys[2], elem_sz, base_align),
@@ -1608,7 +1611,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 {
                     let f_size = Int::mul(self.ctx, &[&f_len, &Int::from_u64(self.ctx, f_elem_sz)]);
                     let f_elem_ty = if f == 1 { Some(body_elem_ty) } else { elem_ty };
-                    let (alloc_id, _) = self.allocate(f_size.clone(), f_align, f_elem_ty);
+                    let (alloc_id, _) = self.allocate(f_size.clone(), f_align.clone(), f_elem_ty);
+                    self.alloc_mut(alloc_id).slice_len = Some(f_len.clone());
                     self.alloc_mut(alloc_id).initialized = true;
                     self.alloc_mut(alloc_id).parent = Some(src_prov.alloc_id);
                     if let Some(ref_dest_alloc_id) = self.local_alloc_ids.get(&dest).copied() {
@@ -1627,7 +1631,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             non_null: true,
                             aligned: true,
                             in_bounds: true,
-                            align_n: if f_align > 1 { Some(f_align) } else { None },
+                            align_n: if f_align.simplify().as_u64() != Some(1) {
+                                Some(f_align)
+                            } else {
+                                None
+                            },
                             is_field_offset: false,
                         },
                     };
@@ -1713,7 +1721,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     });
                     let align_n = match stride {
                         Some(s) => self.compute_pointer_add_align(base, offset, s),
-                        None => base.invariants.align_n,
+                        None => base.invariants.align_n.clone(),
                     };
                     let val = VmValue {
                         term: new_term,
@@ -1760,7 +1768,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     });
                     let align_n = match stride {
                         Some(s) => self.compute_pointer_add_align(base, offset, s),
-                        None => base.invariants.align_n,
+                        None => base.invariants.align_n.clone(),
                     };
                     let val = VmValue {
                         term: new_term,
@@ -2312,7 +2320,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 _ => crate::verify::call_summary::vec_elem_ty(self.tcx, arg_val.ty),
                             };
                             let heap_align =
-                                elem_ty.map(|ty| self.align_of_ty(ty)).unwrap_or(1).max(1);
+                                elem_ty.map(|ty| self.align_sym(ty)).unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                             if let Some(old_data) = self.alloc(prov.alloc_id).slice_data {
                                 // Subsequent mutation: invalidate old heap data.
                                 self.alloc_mut(old_data).dead = true;
@@ -2400,8 +2408,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         Int::from_u64(self.ctx, *elem_size)
                     };
                     let total = Int::mul(self.ctx, &[&size_val.term, &elem_sz_term]);
-                    let heap_align = elem_ty.map(|ty| self.align_of_ty(ty)).unwrap_or(1).max(1);
+                    let heap_align = elem_ty.map(|ty| self.align_sym(ty)).unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                     let (alloc_id, base) = self.allocate(total, heap_align, elem_ty);
+                    self.alloc_mut(alloc_id).slice_len = Some(size_val.term.clone());
                     let prov = Provenance {
                         alloc_id,
                         offset: Int::from_u64(self.ctx, 0),
@@ -2425,11 +2434,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         // Copy byte-level tracking (value, init, NUL knowledge).
                         self.copy_byte_tracking(source_prov.alloc_id, alloc_id);
                     }
-                    let result_align_n = ptr_val.invariants.align_n.or_else(|| {
+                    let result_align_n = ptr_val.invariants.align_n.clone().or_else(|| {
                         ptr_val
                             .provenance
                             .as_ref()
-                            .map(|p| self.alloc(p.alloc_id).align)
+                            .map(|p| self.alloc(p.alloc_id).align.clone())
                     });
                     let vec_base = base.clone();
                     let vec_prov = prov.clone();
@@ -2445,7 +2454,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 init: true,
                                 in_bounds: true,
                                 aligned: true,
-                                align_n: result_align_n,
+                                align_n: result_align_n.clone(),
                                 ..ValueInvariants::default()
                             },
                         },
@@ -2481,7 +2490,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let total = Int::mul(self.ctx, &[&size_val.term, &elem_sz]);
                     let dest_ty = self.body.local_decls[dest].ty;
                     let elem_ty = crate::verify::call_summary::vec_elem_ty(self.tcx, dest_ty);
-                    let heap_align = elem_ty.map(|ty| self.align_of_ty(ty)).unwrap_or(1).max(1);
+                    let heap_align = elem_ty.map(|ty| self.align_sym(ty)).unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                     let (alloc_id, base) = self.allocate_external(total, heap_align, elem_ty);
                     let dest_alloc_id = self.local_alloc_ids.get(&dest).copied();
                     if let Some(dest_alloc_id) = dest_alloc_id {
@@ -2540,7 +2549,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let total = Int::mul(self.ctx, &[&cap_val.term, &elem_sz]);
                     let dest_ty = self.body.local_decls[dest].ty;
                     let elem_ty = crate::verify::call_summary::vec_elem_ty(self.tcx, dest_ty);
-                    let heap_align = elem_ty.map(|ty| self.align_of_ty(ty)).unwrap_or(1).max(1);
+                    let heap_align = elem_ty.map(|ty| self.align_sym(ty)).unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                     let (alloc_id, base) = self.allocate_external(total, heap_align, elem_ty);
                     let dest_alloc_id = self.local_alloc_ids.get(&dest).copied();
                     if let Some(dest_alloc_id) = dest_alloc_id {
@@ -2598,7 +2607,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 self.ensure_local_allocation(dest);
                 let dest_ty = self.body.local_decls[dest].ty;
                 let elem_ty = crate::verify::call_summary::vec_elem_ty(self.tcx, dest_ty);
-                let heap_align = elem_ty.map(|ty| self.align_of_ty(ty)).unwrap_or(1).max(1);
+                let heap_align = elem_ty.map(|ty| self.align_sym(ty)).unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                 let max = Int::from_u64(self.ctx, i64::MAX as u64);
                 let (alloc_id, base) = self.allocate_external(max, heap_align, elem_ty);
                 let dest_alloc_id = self.local_alloc_ids.get(&dest).copied();
@@ -2788,11 +2797,18 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         base: &VmValue<'ctx, 'tcx>,
         _offset: &VmValue<'ctx, 'tcx>,
         stride_bytes: u64,
-    ) -> Option<u64> {
-        let base_align = base.invariants.align_n;
-        let Some(n) = base_align else { return None };
+    ) -> Option<Int<'ctx>> {
+        let base_align = base.invariants.align_n.as_ref()?;
+        // Concrete alignment: the result stays n-aligned only if the stride is
+        // a multiple of n.  A symbolic alignment can't be decided against a
+        // concrete stride, so drop it here (the `check_align` SMT query
+        // re-derives alignment from the allocation's align and the
+        // `sizeof_T % align_T == 0` layout constraint).
+        let Some(n) = base_align.simplify().as_u64() else {
+            return None;
+        };
         if stride_bytes > 0 && stride_bytes % n == 0 {
-            return Some(n);
+            return Some(base_align.clone());
         }
         None
     }
@@ -2990,6 +3006,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             return false;
         };
         let dest_ty = self.body.local_decls[dest].ty;
+        // Prefer the materialized slice length.
+        if let Some(len) = self.alloc(alloc_id).slice_len.clone() {
+            let val = VmValue::new(len, dest_ty);
+            self.set_local(dest, val);
+            return true;
+        }
         if let Some(elem_ty) = self.alloc(alloc_id).element_ty {
             let elem_term = self.size_sym_read(elem_ty);
             let size = self.allocation_size(alloc_id);

@@ -4,7 +4,7 @@ use std::fmt;
 
 use super::state::ValueInvariants;
 
-impl fmt::Display for ValueInvariants {
+impl fmt::Display for ValueInvariants<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut flags = Vec::new();
         if self.non_null {

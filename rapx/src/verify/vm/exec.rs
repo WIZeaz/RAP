@@ -225,7 +225,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         };
                         let heap_ty = heap_ty.unwrap_or(ty);
                         let heap_size = self.size_of_ty(heap_ty) as u64;
-                        let heap_align = self.align_of_ty(heap_ty);
+                        let heap_align = self.align_sym(heap_ty);
                         let heap_size_term = Int::from_u64(self.ctx, heap_size.max(1));
                         // Vec/CString can hold many elements — use an external
                         // allocation so Allocated checks can pass for arbitrary
@@ -233,7 +233,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         let (heap_alloc_id, heap_base) = if is_vec {
                             let max_size = Int::from_u64(self.ctx, i64::MAX as u64);
                             let (id, base) =
-                                self.allocate_external(max_size, heap_align, Some(heap_ty));
+                                self.allocate_external(max_size, heap_align.clone(), Some(heap_ty));
                             (id, base)
                         } else {
                             self.allocate(heap_size_term, heap_align, Some(heap_ty))
@@ -474,23 +474,17 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         // symbolic `sizeof_T` so `InBound` can cancel the factor
                         // (`len·S / S == len`).
                         let data_size = Int::mul(self.ctx, &[&len, &self.size_sym(*elem_ty)]);
-                        // For a generic element type the rustc layout collapses to
-                        // align 1; recover the real (minimum) alignment from the
-                        // trait bounds so `check_align` can discharge `Align` at
-                        // return, mirroring `size_of_generic_param` above.
-                        let mut elem_align = self.align_of_ty(*elem_ty);
-                        if elem_align <= 1 {
-                            let min_a = crate::helpers::mir_utils::min_align_of_generic_param(
-                                self.tcx,
-                                self.caller_def_id,
-                                *elem_ty,
-                            );
-                            if min_a > 1 {
-                                elem_align = min_a;
-                            }
-                        }
+                        // The data allocation's alignment is the element type's
+                        // alignment — symbolic (`align_T`) for a generic element
+                        // type, with the layout constraint `sizeof_T % align_T
+                        // == 0` established by `align_sym`.
+                        let elem_align = self.align_sym(*elem_ty);
                         let (data_alloc_id, data_base) =
                             self.allocate(data_size, elem_align, Some(*elem_ty));
+                        // Materialize the slice length (the fat pointer's
+                        // metadata word) on the data allocation; `len()` reads it
+                        // directly rather than dividing `size / sizeof_T`.
+                        self.alloc_mut(data_alloc_id).slice_len = Some(len);
                         if let Some(ref_alloc_id) = self.alloc_for_local(local) {
                             self.alloc_mut(ref_alloc_id).slice_data = Some(data_alloc_id);
                         }
@@ -516,7 +510,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // Non-slice reference: allocate pointee.  A generic `T`
                     // yields `sizeof_T`; a struct with a generic field is summed
                     // (`struct_size_sym`) so a field reference can be discharged.
-                    let pointee_align = self.align_of_ty(pointee_ty);
+                    let pointee_align = self.align_sym(pointee_ty);
                     let pointee_size_term = self
                         .struct_size_sym(pointee_ty)
                         .unwrap_or_else(|| self.size_sym(pointee_ty));
@@ -590,7 +584,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                     // on the field propagates the allocation info.
                                     if let rustc_middle::ty::TyKind::Slice(elem_ty) = pointee.kind()
                                     {
-                                        let elem_align = 1u64.max(self.align_of_ty(*elem_ty));
+                                        let elem_align = self.align_sym(*elem_ty);
                                         let max_size = Int::from_u64(self.ctx, i64::MAX as u64);
                                         let (data_alloc_id, data_base) = self.allocate_external(
                                             max_size,
@@ -618,7 +612,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                             },
                                         );
                                     } else {
-                                        let pointee_align = 1u64.max(self.align_of_ty(*pointee));
+                                        let pointee_align = self.align_sym(*pointee);
                                         let max_size = Int::from_u64(self.ctx, i64::MAX as u64);
                                         let (field_alloc_id, field_base) = self.allocate_external(
                                             max_size,
@@ -653,7 +647,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                     // model it as an external allocation so its length
                                     // stays symbolic instead of defaulting to a single
                                     // element (which would make `inner.len()` == 1).
-                                    let elem_align = 1u64.max(self.align_of_ty(*elem_ty));
+                                    let elem_align = self.align_sym(*elem_ty);
                                     let max_size = Int::from_u64(self.ctx, i64::MAX as u64);
                                     let (data_alloc_id, data_base) =
                                         self.allocate_external(max_size, elem_align, Some(*elem_ty));
@@ -740,7 +734,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // to make property checks pass.
                 if let rustc_middle::ty::TyKind::RawPtr(pointee, _mutbl) = ty.kind() {
                     let max_size = Int::from_u64(self.ctx, i64::MAX as u64);
-                    let pointee_align = self.align_of_ty(*pointee);
+                    let pointee_align = self.align_sym(*pointee);
                     let (alloc_id, base) =
                         self.allocate_external(max_size, pointee_align, Some(*pointee));
                     self.set_local(
@@ -768,19 +762,31 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             .map(|v| v as usize);
                     let elem_size = self.size_of_ty(*elem_ty) as u64;
                     let step = (elem_size.max(1)) as usize;
-                    let align = self.align_of_ty(*elem_ty);
+                    let align = self.align_sym(*elem_ty);
                     // Symbolic-aware element size: a generic `T` gets `sizeof_T`
                     // (≥ 1) so the allocation is `N·sizeof_T` bytes, not `N`.
                     let elem_sym = self.size_sym(*elem_ty);
+                    // Materialized element count (the array length `N`).
+                    let n_term = match n {
+                        Some(v) => Int::from_u64(self.ctx, v as u64),
+                        None => {
+                            let const_text =
+                                format!("Ty({:?}, {:?})", self.tcx.types.usize, const_len);
+                            let name =
+                                format!("const_{}", const_text.replace([':', '#', ' '], "_"));
+                            Int::new_const(self.ctx, name.as_str())
+                        }
+                    };
                     let (alloc_id, base) = if let Some(n) = n {
                         let total =
                             Int::mul(self.ctx, &[&Int::from_u64(self.ctx, n as u64), &elem_sym]);
-                        self.allocate(total, align, Some(*elem_ty))
+                        self.allocate(total, align.clone(), Some(*elem_ty))
                     } else {
                         // Generic N: unbounded external allocation
                         let max_size = Int::from_u64(self.ctx, i64::MAX as u64);
                         self.allocate_external(max_size, align, Some(*elem_ty))
                     };
+                    self.alloc_mut(alloc_id).slice_len = Some(n_term);
                     self.alloc_mut(alloc_id).initialized = true;
                     self.local_alloc_ids.insert(local, alloc_id);
                     if let Some(n) = n {
@@ -895,7 +901,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                         term: src_val.term.clone(),
                                         ty: dest.ty(self.body, self.tcx).ty,
                                         provenance: src_val.provenance.clone(),
-                                        invariants: src_val.invariants,
+                                        invariants: src_val.invariants.clone(),
                                     },
                                 );
                             }
@@ -982,7 +988,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 },
             );
         } else {
-            let field_align = 1u64.max(self.align_of_ty(pointee));
+            let field_align = self.align_sym(pointee);
             let max_size = Int::from_u64(self.ctx, i64::MAX as u64);
             let (field_alloc_id, field_base) =
                 self.allocate_external(max_size, field_align, Some(pointee));
@@ -1103,7 +1109,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             let mut path = prefix.clone();
             path.push(idx);
             if let Some(pointee) = self.find_nn_pointee(field_ty) {
-                let field_align = 1u64.max(self.align_of_ty(pointee));
+                let field_align = self.align_sym(pointee);
                 let max_size = Int::from_u64(self.ctx, i64::MAX as u64);
                 let (fa, _fb) = self.allocate_external(max_size, field_align, Some(pointee));
                 self.alloc_mut(fa).initialized = true;
@@ -1155,7 +1161,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     as u64;
                 let elem_sz = self.size_sym(*elem_ty);
                 let arr_size = Int::mul(self.ctx, &[&Int::from_u64(self.ctx, n), &elem_sz]);
-                let arr_align = 1u64.max(self.align_of_ty(*elem_ty));
+                let arr_align = self.align_sym(*elem_ty);
                 let (fa, fb) = self.allocate(arr_size, arr_align, Some(*elem_ty));
                 self.alloc_mut(fa).initialized = true;
                 self.alloc_field_values.insert(
@@ -1444,8 +1450,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let alloc_align = addr
                     .provenance
                     .as_ref()
-                    .map(|p| self.alloc(p.alloc_id).align)
-                    .filter(|&a| a > 1);
+                    .map(|p| self.alloc(p.alloc_id).align.clone())
+                    .filter(|a| a.simplify().as_u64() != Some(1));
                 let has_deref = place
                     .projection
                     .iter()
@@ -1493,8 +1499,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let alloc_align = addr
                     .provenance
                     .as_ref()
-                    .map(|p| self.alloc(p.alloc_id).align)
-                    .filter(|&a| a > 1);
+                    .map(|p| self.alloc(p.alloc_id).align.clone())
+                    .filter(|a| a.simplify().as_u64() != Some(1));
                 let src_in_bounds = self
                     .locals
                     .get(&place.local)
@@ -1947,8 +1953,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let alloc_align = addr
                         .provenance
                         .as_ref()
-                        .map(|p| self.alloc(p.alloc_id).align)
-                        .filter(|&a| a > 1);
+                        .map(|p| self.alloc(p.alloc_id).align.clone())
+                        .filter(|a| a.simplify().as_u64() != Some(1));
                     // Inherit in_bounds. For &[T] created via Deref of a
                     // fat raw ptr (inlined from_raw_parts), set in_bounds
                     // like ReturnFreshAllocation does in builtin_models.
@@ -1981,8 +1987,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let slice_elem_align = if is_slice_ref && is_from_raw_parts_like && has_deref {
                         if let rustc_middle::ty::TyKind::Ref(_, inner, _) = dest_ty.kind() {
                             if let rustc_middle::ty::TyKind::Slice(elem) = inner.kind() {
-                                let a = self.align_of_ty(*elem);
-                                if a > 1 { Some(a) } else { None }
+                                let a = self.align_sym(*elem);
+                                if a.simplify().as_u64() != Some(1) {
+                                    Some(a)
+                                } else {
+                                    None
+                                }
                             } else {
                                 None
                             }
@@ -2035,8 +2045,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let alloc_align = addr
                         .provenance
                         .as_ref()
-                        .map(|p| self.alloc(p.alloc_id).align)
-                        .filter(|&a| a > 1);
+                        .map(|p| self.alloc(p.alloc_id).align.clone())
+                        .filter(|a| a.simplify().as_u64() != Some(1));
                     let source_in_bounds = self
                         .locals
                         .get(&place.local)
@@ -2147,7 +2157,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             term: term.clone(),
                             ty: fields[0],
                             provenance: provenance.clone(),
-                            invariants,
+                            invariants: invariants.clone(),
                         };
                         self.set_field_value(dest_place.local, vec![0], result_val);
                         let overflow_term = self.fresh_int("overflow_flag");
@@ -2610,6 +2620,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     pub(crate) fn slice_len_from_value(&self, val: &VmValue<'ctx, 'tcx>) -> Option<Int<'ctx>> {
         let alloc_id = val.provenance_alloc_id()?;
         let alloc = self.alloc(alloc_id);
+        // The length is materialized on the data allocation (the fat pointer's
+        // metadata word); `size` is `slice_len * sizeof_T`.  Fall back to the
+        // `size / elem_size` derivation for allocations created before the
+        // materialization was introduced (e.g. some call effects).
+        if let Some(len) = &alloc.slice_len {
+            return Some(len.clone());
+        }
         let elem_ty = alloc.element_ty?;
         let elem_term = self.size_sym_read(elem_ty);
         if elem_term.simplify().as_u64() == Some(1) {
@@ -2702,7 +2719,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         lhs: &VmValue<'ctx, 'tcx>,
         rhs: &VmValue<'ctx, 'tcx>,
         provenance: &Option<Provenance<'ctx>>,
-    ) -> ValueInvariants {
+    ) -> ValueInvariants<'ctx> {
         let non_null = provenance.is_some() && lhs.invariants.non_null;
 
         let align_n = match op {
@@ -2714,25 +2731,44 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             | BinOp::SubUnchecked
             | BinOp::Offset => {
                 // If both LHS and RHS are known to be n-aligned, sum/diff is n-aligned
-                match (lhs.invariants.align_n, rhs.invariants.align_n) {
-                    (Some(a), Some(b)) if a == b => Some(a),
+                match (&lhs.invariants.align_n, &rhs.invariants.align_n) {
+                    (Some(a), Some(b)) if a == b => Some(a.clone()),
                     // LHS has alignment, RHS is a constant multiple of it
-                    (Some(a), None) => {
-                        let c = rhs.term.as_u64().unwrap_or(1);
-                        if c % a == 0 { Some(a) } else { None }
-                    }
+                    (Some(a), None) => match a.simplify().as_u64() {
+                        Some(au) => {
+                            let c = rhs.term.as_u64().unwrap_or(1);
+                            if c % au == 0 {
+                                Some(a.clone())
+                            } else {
+                                None
+                            }
+                        }
+                        // Symbolic alignment: only a zero RHS is a guaranteed
+                        // multiple of `align_T`.
+                        None => {
+                            if rhs.term.as_u64() == Some(0) {
+                                Some(a.clone())
+                            } else {
+                                None
+                            }
+                        }
+                    },
                     // LHS has alignment, RHS is the result of Mul by constant factor
-                    (Some(a), _) if self.rhs_is_aligned_multiple(rhs, a) => Some(a),
+                    (Some(a), _) if self.rhs_is_aligned_multiple(rhs, a) => Some(a.clone()),
                     _ => None,
                 }
             }
             BinOp::Mul | BinOp::MulWithOverflow | BinOp::MulUnchecked => {
                 match rhs.term.as_u64() {
-                    Some(c) => pow2_factor(c),
-                    None => lhs.term.as_u64().and_then(pow2_factor),
+                    Some(c) => pow2_factor(c).map(|p| Int::from_u64(self.ctx, p)),
+                    None => lhs
+                        .term
+                        .as_u64()
+                        .and_then(pow2_factor)
+                        .map(|p| Int::from_u64(self.ctx, p)),
                 }
             }
-            _ => lhs.invariants.align_n,
+            _ => lhs.invariants.align_n.clone(),
         };
 
         ValueInvariants {
@@ -2744,17 +2780,19 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
     /// Check if a value is known to be a multiple of `align` (e.g. the result
     /// of a Mul by a constant factor of `align`).
-    fn rhs_is_aligned_multiple(&self, val: &VmValue<'ctx, 'tcx>, align: u64) -> bool {
-        // If the value itself has align_n >= align, it's a multiple
-        if let Some(a) = val.invariants.align_n {
-            if a >= align && a % align == 0 {
-                return true;
+    fn rhs_is_aligned_multiple(&self, val: &VmValue<'ctx, 'tcx>, align: &Int<'ctx>) -> bool {
+        // If both the value's align_n and `align` are concrete, compare directly.
+        if let Some(au) = align.simplify().as_u64() {
+            if let Some(a) = val.invariants.align_n.as_ref().and_then(|a| a.simplify().as_u64()) {
+                if a >= au && a % au == 0 {
+                    return true;
+                }
             }
-        }
-        // If the value is a constant, check directly
-        if let Some(c) = val.term.as_u64() {
-            if c % align == 0 {
-                return true;
+            // If the value is a constant, check directly
+            if let Some(c) = val.term.as_u64() {
+                if c % au == 0 {
+                    return true;
+                }
             }
         }
         false
@@ -2965,7 +3003,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         if let Some(src_pk) = &div_lhs {
                             if let Some(local) = src_pk.local() {
                                 if let Some(mut val) = self.locals.get(&local).cloned() {
-                                    val.invariants.align_n = Some(divisor);
+                                    val.invariants.align_n = Some(Int::from_u64(self.ctx, divisor));
                                     self.set_local(local, val);
                                 }
                             }
@@ -3218,13 +3256,18 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         huge: bool,
     ) -> VmValue<'ctx, 'tcx> {
         let elem_sz_raw = self.size_of_ty(elem_ty);
-        let heap_align = self.align_of_ty(elem_ty).max(1);
+        let heap_align = self.align_sym(elem_ty);
+        let heap_align_n = if heap_align.simplify().as_u64() != Some(1) {
+            Some(heap_align.clone())
+        } else {
+            None
+        };
         let (heap_id, heap_base) = if huge || elem_sz_raw == 0 {
             // Struct-field targets (and generic element types): use an
             // unbounded external allocation so `Allocated`/`InBound` checks
             // auto-pass regardless of the symbolic element size.
             let max_size = Int::from_u64(self.ctx, i64::MAX as u64);
-            self.allocate_external(max_size, heap_align, Some(elem_ty))
+            self.allocate_external(max_size, heap_align.clone(), Some(elem_ty))
         } else {
             let elem_sz = Int::from_u64(self.ctx, elem_sz_raw as u64);
             let count = count_term.unwrap_or_else(|| Int::from_u64(self.ctx, 1));
@@ -3245,11 +3288,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 init: true,
                 in_bounds: true,
                 aligned: true,
-                align_n: if heap_align > 1 {
-                    Some(heap_align)
-                } else {
-                    None
-                },
+                align_n: heap_align_n,
                 is_field_offset: false,
             },
         }
@@ -3504,6 +3543,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     }
                 }
                 let val = self.eval_contract_expr_simple_value(inner)?;
+                // Prefer the materialized slice length; fall back to
+                // `size / elem_size` for allocations that never got a
+                // materialized `slice_len`.
+                if let Some(len) = self.slice_len_from_value(&val) {
+                    return Some(len);
+                }
                 let alloc_id = val.provenance_alloc_id()?;
                 let alloc = self.alloc(alloc_id);
                 let elem_ty = alloc.element_ty?;
@@ -3709,7 +3754,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .max(1);
         let Some(data_size) = data_size else { return };
         let elem_sz_term = Int::from_u64(self.ctx, elem_sz);
-        let len = data_size.div(&elem_sz_term);
+        // Prefer the materialized slice length; fall back to `size / elem_size`.
+        let len = slice_local
+            .and_then(|loc| self.locals.get(&loc))
+            .and_then(|sl_val| self.slice_len_from_value(sl_val))
+            .unwrap_or_else(|| data_size.div(&elem_sz_term));
         let zero = Int::from_u64(self.ctx, 0);
         for (_, term) in &byte_vals {
             self.path_conditions.push(term.ge(&zero));
@@ -3754,12 +3803,19 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         else {
             return;
         };
-        let elem_sz_term = self
-            .alloc(da_id)
-            .element_ty
-            .map(|ty| self.size_sym_read(ty))
-            .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
-        let len = self.alloc(da_id).size.div(&elem_sz_term);
+        // Prefer the materialized slice length; fall back to `size / elem_size`
+        // for allocations that never got a materialized `slice_len`.
+        let alloc = self.alloc(da_id);
+        let len = match &alloc.slice_len {
+            Some(len) => len.clone(),
+            None => {
+                let elem_sz_term = alloc
+                    .element_ty
+                    .map(|ty| self.size_sym_read(ty))
+                    .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
+                alloc.size.div(&elem_sz_term)
+            }
+        };
         let Some(index_term) = self.eval_contract_expr_simple(index) else {
             return;
         };
@@ -3795,8 +3851,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     fn set_align_for_value(&mut self, property: &Property<'tcx>, mut val: VmValue<'ctx, 'tcx>) {
         val.invariants.aligned = true;
         if let Some(PropertyArg::Ty(ty)) = property.args().get(1) {
-            let align = self.align_of_ty(*ty);
-            if align > 1 {
+            let align = self.align_sym(*ty);
+            if align.simplify().as_u64() != Some(1) {
                 val.invariants.align_n = Some(align);
             }
         }
@@ -3998,8 +4054,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             .or_else(|| self.trace_to_const_bytes(operand));
                     if let Some(bytes) = bytes_opt {
                         let size = z3::ast::Int::from_u64(self.ctx, bytes.len() as u64);
-                        let (alloc_id, base) =
-                            self.allocate(size, self.align_of_ty(pointee_ty), Some(pointee_ty));
+                        let align = self.align_sym(pointee_ty);
+                        let (alloc_id, base) = self.allocate(size, align, Some(pointee_ty));
                         self.alloc_mut(alloc_id).initialized = true;
                         for (i, &b) in bytes.iter().enumerate() {
                             self.record_byte_value(

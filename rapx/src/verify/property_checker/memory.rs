@@ -28,6 +28,7 @@ impl PropertyChecker {
         _solver: &Solver<'ctx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
+        use_symbolic_align: bool,
     ) -> CheckResult {
         let Some(value) = self.target_value(vm_state, checkpoint, property) else {
             return CheckResult::Unknown;
@@ -46,28 +47,36 @@ impl PropertyChecker {
                 None
             }
         });
-        let align = ty_arg.map(|ty| vm_state.align_of_ty(ty)).unwrap_or(1);
-        let align = if align <= 1 {
-            ty_arg
-                .and_then(|ty| {
-                    let resolved = self.instantiate_callsite_ty(vm_state, checkpoint, ty);
+        // Alignment term.  For a type-invariant re-proof the alignment is the
+        // *symbolic* `align_T` (matching the allocation's own alignment, so the
+        // invariant `self % align_T == 0` holds trivially).  For a checkpoint
+        // precondition it is the *concrete* trait-bound minimum: requiring
+        // `ptr` to be aligned to every possible instantiation of `T` would be
+        // unprovable and would reject sound std APIs like
+        // `NonNull::<[T]>::from_raw_parts`, whose data pointer is only as
+        // aligned as the caller guarantees.
+        let align = match ty_arg {
+            Some(ty) => {
+                let resolved = self.instantiate_callsite_ty(vm_state, checkpoint, ty);
+                if use_symbolic_align {
+                    vm_state.align_sym_read(resolved)
+                } else {
                     let resolved_align = vm_state.align_of_ty(resolved);
                     if resolved_align > 1 {
-                        Some(resolved_align)
+                        Int::from_u64(vm_state.ctx, resolved_align)
                     } else {
                         let min_a = crate::helpers::mir_utils::min_align_of_generic_param(
                             vm_state.tcx,
                             vm_state.caller_def_id,
                             resolved,
                         );
-                        if min_a > 1 { Some(min_a) } else { None }
+                        Int::from_u64(vm_state.ctx, if min_a > 1 { min_a } else { 1 })
                     }
-                })
-                .unwrap_or(align)
-        } else {
-            align
+                }
+            }
+            None => Int::from_u64(vm_state.ctx, 1),
         };
-        if align <= 1 {
+        if align.simplify().as_u64() == Some(1) {
             return CheckResult::Proved;
         }
         // Check allocation base alignment with concrete offset
@@ -77,35 +86,50 @@ impl PropertyChecker {
                 .offset
                 .as_u64()
                 .or_else(|| prov.offset.simplify().as_u64());
-            if let Some(off) = off_u64 {
-                if alloc.align >= align {
-                    if off % align == 0 {
+            if let (Some(off), Some(align_u64), Some(alloc_align_u64)) = (
+                off_u64,
+                align.simplify().as_u64(),
+                alloc.align.simplify().as_u64(),
+            ) {
+                if alloc_align_u64 >= align_u64 {
+                    if off % align_u64 == 0 {
                         return CheckResult::Proved;
                     }
-                    if off % align != 0 {
+                    if off % align_u64 != 0 {
                         return CheckResult::Failed;
                     }
                 }
             }
         }
-        if let Some(known_align) = value.invariants.align_n {
-            if known_align >= align && known_align % align == 0 {
-                return CheckResult::Proved;
+        if let Some(known_align) = value
+            .invariants
+            .align_n
+            .as_ref()
+            .and_then(|a| a.simplify().as_u64())
+        {
+            if let Some(align_u64) = align.simplify().as_u64() {
+                if known_align >= align_u64 && known_align % align_u64 == 0 {
+                    return CheckResult::Proved;
+                }
             }
         }
         // Packed-struct fast-path: if the allocation is less aligned than
         // required, the concrete offset alone determines alignment.
         if let Some(ref prov) = value.provenance {
             let alloc = vm_state.alloc(prov.alloc_id);
-            if alloc.align < align {
-                if let Some(off) = prov.offset.as_u64() {
-                    if off % align != 0 {
-                        return CheckResult::Failed;
+            if let (Some(alloc_align_u64), Some(align_u64)) =
+                (alloc.align.simplify().as_u64(), align.simplify().as_u64())
+            {
+                if alloc_align_u64 < align_u64 {
+                    if let Some(off) = prov.offset.as_u64() {
+                        if off % align_u64 != 0 {
+                            return CheckResult::Failed;
+                        }
                     }
                 }
             }
         }
-        let align_term = Int::from_u64(vm_state.ctx, align);
+        let align_term = align;
         let zero = Int::from_u64(vm_state.ctx, 0);
         let local = Solver::new(vm_state.ctx);
         local.push();
@@ -118,14 +142,12 @@ impl PropertyChecker {
             );
             local.assert(&alloc.base._eq(&zero).not());
             local.assert(&alloc.base.ge(&zero));
-            if alloc.align > 1 {
-                let a = Int::from_u64(vm_state.ctx, alloc.align);
-                local.assert(&alloc.base.rem(&a)._eq(&zero));
+            if alloc.align.simplify().as_u64() != Some(1) {
+                local.assert(&alloc.base.rem(&alloc.align)._eq(&zero));
             }
         }
-        if let Some(known_align) = value.invariants.align_n {
-            let n = Int::from_u64(vm_state.ctx, known_align);
-            local.assert(&value.term.rem(&n)._eq(&zero));
+        if let Some(known_align) = value.invariants.align_n.as_ref() {
+            local.assert(&value.term.rem(known_align)._eq(&zero));
         }
         for cond in &vm_state.path_conditions {
             local.assert(cond);
@@ -162,7 +184,12 @@ impl PropertyChecker {
         if align <= 1 {
             return true;
         }
-        if let Some(n) = value.invariants.align_n {
+        if let Some(n) = value
+            .invariants
+            .align_n
+            .as_ref()
+            .and_then(|n| n.simplify().as_u64())
+        {
             if n >= align && n % align == 0 {
                 return true;
             }
@@ -178,9 +205,8 @@ impl PropertyChecker {
                     ._eq(&Int::add(vm_state.ctx, &[&alloc.base, &prov.offset])),
             );
             solver.assert(&alloc.base.ge(&zero));
-            if alloc.align > 1 {
-                let a = Int::from_u64(vm_state.ctx, alloc.align);
-                solver.assert(&alloc.base.rem(&a)._eq(&zero));
+            if alloc.align.simplify().as_u64() != Some(1) {
+                solver.assert(&alloc.base.rem(&alloc.align)._eq(&zero));
             }
         }
         for cond in &vm_state.path_conditions {

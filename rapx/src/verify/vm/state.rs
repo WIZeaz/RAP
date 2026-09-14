@@ -37,15 +37,17 @@ pub(crate) struct Provenance<'ctx> {
 }
 
 /// Known invariants about a symbolic value.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ValueInvariants {
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ValueInvariants<'ctx> {
     pub non_null: bool,
     pub aligned: bool,
     pub init: bool,
     pub in_bounds: bool,
     /// If Some(n), the value's term is known to satisfy `term % n == 0`.
     /// Set by alignment guards, Mul by power-of-two, and type alignment.
-    pub align_n: Option<u64>,
+    /// `n` is a Z3 term so that a generic type's alignment (a symbolic
+    /// `align_T`) can be carried the same way as a concrete alignment.
+    pub align_n: Option<Int<'ctx>>,
     /// Whether this scalar value is a compile-time field offset (`offset_of!`).
     /// Propagated to a pointer's provenance when used as an `add`/`byte_add`
     /// offset.
@@ -74,7 +76,7 @@ pub(crate) struct VmValue<'ctx, 'tcx> {
     /// Which allocation this pointer derives from and at what offset.
     pub provenance: Option<Provenance<'ctx>>,
     /// Known constraints on this value.
-    pub invariants: ValueInvariants,
+    pub invariants: ValueInvariants<'ctx>,
 }
 
 impl<'ctx, 'tcx> VmValue<'ctx, 'tcx> {
@@ -105,11 +107,18 @@ pub(crate) struct Allocation<'ctx, 'tcx> {
     /// Size in bytes (Z3 term, may be symbolic).
     pub size: Int<'ctx>,
 
-    /// Alignment in bytes.
-    pub align: u64,
+    /// Alignment in bytes (Z3 term, may be symbolic for a generic element
+    /// type).
+    pub align: Int<'ctx>,
 
     /// Element type for bounds checking.
     pub element_ty: Option<Ty<'tcx>>,
+
+    /// Element count (the slice/array length), materialized like the fat
+    /// pointer's metadata word.  `size` is derived from it as
+    /// `slice_len * size_of(element_ty)`.  `None` for allocations that are not
+    /// slice/array data (e.g. a single object or a Vec's external buffer).
+    pub slice_len: Option<Int<'ctx>>,
 
     /// True if this allocation models an external raw-pointer parameter
     /// whose exact size and nullability are unknown.
@@ -142,7 +151,7 @@ impl<'ctx, 'tcx> Allocation<'ctx, 'tcx> {
     pub(crate) fn new(
         base: Int<'ctx>,
         size: Int<'ctx>,
-        align: u64,
+        align: Int<'ctx>,
         element_ty: Option<Ty<'tcx>>,
         is_external: bool,
     ) -> Self {
@@ -151,6 +160,7 @@ impl<'ctx, 'tcx> Allocation<'ctx, 'tcx> {
             size,
             align,
             element_ty,
+            slice_len: None,
             is_external,
             dead: false,
             initialized: false,
@@ -323,6 +333,12 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     /// element sizes, and allocation sizes consistent so that SMT can cancel the
     /// factor in `InBound` (e.g. `(mid+n)·S <= len·S  ⟺  mid+n <= len`).
     pub(crate) sym_sizes: FxHashMap<Ty<'tcx>, Int<'ctx>>,
+
+    /// Symbolic element alignment for generic types whose concrete `align_of`
+    /// is unknown at verification time (an unconstrained `T`).  One constant
+    /// per type, linked to `sym_sizes` by the layout constraint
+    /// `sizeof_T % align_T == 0`.
+    pub(crate) sym_aligns: FxHashMap<Ty<'tcx>, Int<'ctx>>,
 }
 
 impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
@@ -364,6 +380,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             inline_arg_referents: Vec::new(),
             deferred_field_writes: Vec::new(),
             sym_sizes: FxHashMap::default(),
+            sym_aligns: FxHashMap::default(),
         }
     }
 
@@ -392,7 +409,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     pub(crate) fn allocate(
         &mut self,
         size: Int<'ctx>,
-        align: u64,
+        align: Int<'ctx>,
         element_ty: Option<Ty<'tcx>>,
     ) -> (AllocId, Int<'ctx>) {
         self.allocate_internal(size, align, element_ty, false)
@@ -403,7 +420,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     pub(crate) fn allocate_external(
         &mut self,
         size: Int<'ctx>,
-        align: u64,
+        align: Int<'ctx>,
         element_ty: Option<Ty<'tcx>>,
     ) -> (AllocId, Int<'ctx>) {
         self.allocate_internal(size, align, element_ty, true)
@@ -412,7 +429,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     fn allocate_internal(
         &mut self,
         size: Int<'ctx>,
-        align: u64,
+        align: Int<'ctx>,
         element_ty: Option<Ty<'tcx>>,
         is_external: bool,
     ) -> (AllocId, Int<'ctx>) {
@@ -576,9 +593,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 solver.assert(&alloc.base._eq(&zero).not());
             }
             solver.assert(&alloc.size.ge(&zero));
-            if alloc.align > 1 {
-                let align_term = Int::from_u64(self.ctx, alloc.align);
-                solver.assert(&alloc.base.rem(&align_term)._eq(&zero));
+            if alloc.align.simplify().as_u64() != Some(1) {
+                solver.assert(&alloc.base.rem(&alloc.align)._eq(&zero));
             }
         }
 
@@ -731,7 +747,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             term: base_val.term.clone(),
                             ty: place.ty(self.body, self.tcx).ty,
                             provenance: Some(prov.clone()),
-                            invariants: base_val.invariants,
+                            invariants: base_val.invariants.clone(),
                         });
                     }
                 }

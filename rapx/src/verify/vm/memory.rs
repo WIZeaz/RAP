@@ -186,7 +186,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             return;
         }
         let ty = self.body.local_decls[local].ty;
-        let align = self.align_of_ty(ty);
+        let align = self.align_sym(ty);
         let base = self.local_address(local);
         let id = AllocId(self.next_alloc_id);
         self.next_alloc_id += 1;
@@ -197,7 +197,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // `len() = size / elem_size` equal to `N`, letting downstream
         // InBound checks (e.g. `get_unchecked_mut(idx)` where `idx < N`) be
         // discharged against the loop's `idx < N` path condition.
-        let (size_term, element_ty, is_external) = match ty.kind() {
+        let (size_term, element_ty, is_external, slice_len) = match ty.kind() {
             TyKind::Array(elem, const_len) => {
                 let elem_size = self.size_of_ty(*elem).max(1) as u64;
                 // Mirror the const-generic symbolic name used by
@@ -217,14 +217,15 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     Some(n) => Int::from_u64(self.ctx, n.saturating_mul(elem_size)),
                     None => Int::mul(self.ctx, &[&n_term, &Int::from_u64(self.ctx, elem_size)]),
                 };
-                (size, Some(*elem), false)
+                (size, Some(*elem), false, Some(n_term))
             }
             _ => {
                 let size = self.struct_size_sym(ty).unwrap_or_else(|| self.size_sym(ty));
-                (size, Some(ty), false)
+                (size, Some(ty), false, None)
             }
         };
-        let alloc = Allocation::new(base, size_term, align, element_ty, is_external);
+        let mut alloc = Allocation::new(base, size_term, align, element_ty, is_external);
+        alloc.slice_len = slice_len;
         self.allocations.push(alloc);
         self.local_alloc_ids.insert(local, id);
     }
@@ -310,6 +311,81 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .get(&ty)
             .cloned()
             .unwrap_or_else(|| Int::from_u64(self.ctx, 1))
+    }
+
+    /// Alignment of `ty` as a symbolic Z3 term.  For a concrete type this is
+    /// the constant byte alignment; for a generic type it is a reusable
+    /// symbolic constant `align_T` with `>= 1`, lower-bounded by the trait
+    /// bounds' minimum alignment, and linked to the element size by the layout
+    /// constraint `sizeof_T % align_T == 0` (a type's size is always a multiple
+    /// of its alignment).  For a generic struct, its alignment is additionally
+    /// constrained to be a multiple of each field's alignment, so a field
+    /// pointer (`(*node).value`) inherits the container's alignment.
+    pub(crate) fn align_sym(&mut self, ty: Ty<'tcx>) -> Int<'ctx> {
+        let ty = peel_slice_elem(ty);
+        let align = self.align_of_ty(ty);
+        if align > 1 || !crate::helpers::mir_utils::ty_has_type_param(ty) {
+            return Int::from_u64(self.ctx, align);
+        }
+        if let Some(a) = self.sym_aligns.get(&ty) {
+            return a.clone();
+        }
+        let a = self.fresh_int(&format!("align_{ty}"));
+        self.sym_aligns.insert(ty, a.clone());
+        let one = Int::from_u64(self.ctx, 1);
+        let zero = Int::from_u64(self.ctx, 0);
+        self.path_conditions.push(a.ge(&one));
+        // Lower bound from the trait bounds (0 for an unconstrained `T`): any
+        // implementor is at least this aligned.
+        let min_a = crate::helpers::mir_utils::min_align_of_generic_param(
+            self.tcx,
+            self.caller_def_id,
+            ty,
+        );
+        if min_a > 1 {
+            self.path_conditions
+                .push(a.ge(&Int::from_u64(self.ctx, min_a)));
+        }
+        // A struct's alignment is a multiple of each field's alignment (both
+        // are powers of two).  Pointer fields have a *concrete* alignment, so
+        // this terminates even for recursively-defined containers.
+        if let TyKind::Adt(adt_def, substs) = ty.kind() {
+            if !adt_def.is_enum() {
+                let variant = adt_def.non_enum_variant();
+                for field in variant.fields.iter() {
+                    let field_ty =
+                        crate::helpers::mir_utils::field_ty(self.tcx, field, substs);
+                    let field_align = self.align_sym(field_ty);
+                    self.path_conditions.push(a.rem(&field_align)._eq(&zero));
+                }
+            }
+        }
+        // Layout invariant: a type's size is a multiple of its alignment.
+        let size = self.size_sym(ty);
+        self.path_conditions.push(size.rem(&a)._eq(&zero));
+        a
+    }
+
+    /// Read-only sibling of [`align_sym`](Self::align_sym): returns the
+    /// symbolic alignment for `ty`, falling back to the trait bounds' minimum
+    /// alignment when the constant has not been created yet (e.g. a generic `U`
+    /// that only appears in a cast/contract, never as an allocation element
+    /// type).  Concrete types return their constant alignment.
+    pub(crate) fn align_sym_read(&self, ty: Ty<'tcx>) -> Int<'ctx> {
+        let ty = peel_slice_elem(ty);
+        let align = self.align_of_ty(ty);
+        if align > 1 {
+            return Int::from_u64(self.ctx, align);
+        }
+        if let Some(a) = self.sym_aligns.get(&ty) {
+            return a.clone();
+        }
+        let min_a = crate::helpers::mir_utils::min_align_of_generic_param(
+            self.tcx,
+            self.caller_def_id,
+            ty,
+        );
+        Int::from_u64(self.ctx, min_a.max(1))
     }
 
     /// Size of a struct/ADT as the *sum* of its fields' sizes (each via

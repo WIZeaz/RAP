@@ -43,10 +43,11 @@ impl PropertyChecker {
         vm_state: &VmState<'ctx, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
+        use_symbolic_align: bool,
     ) -> CheckResult {
         let solver = Solver::new(vm_state.ctx);
         vm_state.assert_all(&solver);
-        self.check_inner(vm_state, &solver, checkpoint, property)
+        self.check_inner(vm_state, &solver, checkpoint, property, use_symbolic_align)
     }
 
     fn check_inner<'ctx, 'tcx>(
@@ -55,6 +56,7 @@ impl PropertyChecker {
         solver: &Solver<'ctx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
+        use_symbolic_align: bool,
     ) -> CheckResult {
         // Vacuous truth (implicit): a property whose target place carries an
         // `unwrap_some()` / `iter()` projection is trivially satisfied when the
@@ -65,10 +67,20 @@ impl PropertyChecker {
             return CheckResult::Proved;
         }
         match property {
-            Property::Or(_) => self.check_or(vm_state, solver, checkpoint, property),
-            Property::And(_) => self.check_and(vm_state, solver, checkpoint, property),
+            Property::Or(_) => {
+                self.check_or(vm_state, solver, checkpoint, property, use_symbolic_align)
+            }
+            Property::And(_) => {
+                self.check_and(vm_state, solver, checkpoint, property, use_symbolic_align)
+            }
             Property::Atom(atom) => match atom.kind {
-                PropertyKind::Align => self.check_align(vm_state, solver, checkpoint, property),
+                PropertyKind::Align => self.check_align(
+                    vm_state,
+                    solver,
+                    checkpoint,
+                    property,
+                    use_symbolic_align,
+                ),
                 PropertyKind::NonNull => {
                     self.check_non_null(vm_state, solver, checkpoint, property)
                 }
@@ -143,13 +155,15 @@ impl PropertyChecker {
         solver: &Solver<'ctx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
+        use_symbolic_align: bool,
     ) -> CheckResult {
         // OR semantics: proved if any disjunct is proved; failed only if every
         // disjunct is definitely violated; otherwise unknown.  An empty
         // disjunction is unsatisfiable, hence Failed.
         let mut overall = CheckResult::Failed;
         for disjunct in property.disjuncts() {
-            let result = self.check_inner(vm_state, solver, checkpoint, disjunct);
+            let result =
+                self.check_inner(vm_state, solver, checkpoint, disjunct, use_symbolic_align);
             overall = overall.or(result);
         }
         overall
@@ -161,13 +175,15 @@ impl PropertyChecker {
         solver: &Solver<'ctx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
+        use_symbolic_align: bool,
     ) -> CheckResult {
         // AND semantics: proved if every conjunct is proved; failed if any is
         // definitely violated; otherwise unknown.  An empty conjunction is
         // vacuously proved.
         let mut overall = CheckResult::Proved;
         for conjunct in property.conjuncts() {
-            let result = self.check_inner(vm_state, solver, checkpoint, conjunct);
+            let result =
+                self.check_inner(vm_state, solver, checkpoint, conjunct, use_symbolic_align);
             overall = overall.and(result);
         }
         overall
