@@ -283,10 +283,9 @@ impl PropertyChecker {
             // For range-based InBound (start..end), check end <= len
             index_val.term.le(&len).not()
         } else {
-            // For single-element InBound (index), check index + 1 <= len
-            let one = Int::from_u64(vm_state.ctx, 1);
-            let index_plus_one = Int::add(vm_state.ctx, &[&index_val.term, &one]);
-            index_plus_one.le(&len).not()
+            // For single-element InBound (index), check index < len — the same
+            // strict bound recorded by `assert_in_bound_single`.
+            index_val.term.lt(&len).not()
         };
         solver.assert(&negated);
         let r = match solver.check() {
