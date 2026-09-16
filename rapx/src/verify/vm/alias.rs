@@ -161,6 +161,19 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
                 if origin.is_owned() {
                     return VmAliasResult::Proved;
                 }
+                // An *independent* raw-pointer *parameter* (`*const T` / `*mut T`)
+                // carries no borrow information: it must be assumed to alias every
+                // live reference (shared or mutable), so a Ptr2Ref from it cannot
+                // be proven safe.  A raw-pointer *field copy* (`_tmp = self.head`)
+                // is a temp local above `arg_count`, derived from a borrow field —
+                // it falls through to the field-type-aware check below.
+                if matches!(
+                    origin.kind,
+                    VmOriginKind::RawMutPtr | VmOriginKind::RawConstPtr
+                ) && origin.local.as_usize() <= vm_state.body.arg_count
+                {
+                    return VmAliasResult::Unknown;
+                }
             }
             // A raw-pointer deref in a method whose `self` is a *by-value*
             // `NonNull<T>` is safe: consuming the `NonNull` transfers exclusive

@@ -268,6 +268,10 @@ unsound_hazard_tests! {
     alias_unsound_16: "verify_units/alias_unsound_16" => "unsound_vec_reserve_while_raw_slice_live" => "Alias",
     alias_unsound_18: "verify_units/alias_unsound_18" => "as_bytes_mut_unsound" => "Alias",
     alias_unsound_19: "verify_units/alias_unsound_19" => "as_bytes_mut_ptr_missing_alias" => "Alias",
+    // An *independent* `*mut T` must be assumed to alias the shared `&[T]`
+    // (raw pointers carry no borrow information): Ptr2Ref from it is an Alias
+    // hazard, not discharged by the presence of a shared reference.
+    alias_unsound_21: "verify_units/alias_unsound_21" => "unsound_independent_mut_ptr_aliases_shared" => "Alias",
 }
 
 // ================ NonOverlap Sound Cases =============
