@@ -20,7 +20,7 @@ impl PropertyChecker {
         property: &Property<'tcx>,
     ) -> CheckResult {
         match crate::verify::vm::alias::check_alias_vm(vm_state, checkpoint, property) {
-            crate::verify::vm::alias::VmAliasResult::Proved => CheckResult::Proved,
+            crate::verify::vm::alias::VmAliasResult::Proved => CheckResult::ProvedByRule,
             crate::verify::vm::alias::VmAliasResult::Failed(_msg) => CheckResult::Failed,
             crate::verify::vm::alias::VmAliasResult::Unknown => CheckResult::Unknown,
         }
@@ -40,7 +40,7 @@ impl PropertyChecker {
             if vm_state.alloc(id).dead {
                 return CheckResult::Failed;
             }
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
         CheckResult::Unknown
     }

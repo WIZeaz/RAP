@@ -340,7 +340,6 @@ pub(crate) fn emit_results_counts_and_checkpoints<'tcx>(
     tcx: TyCtxt<'tcx>,
     all_results: &[PropertyCheckResult<'tcx>],
 ) -> (usize, usize) {
-    use super::report::CheckResult;
     use crate::verify::contract::ContractKind;
 
     let unproved = all_results
@@ -348,14 +347,14 @@ pub(crate) fn emit_results_counts_and_checkpoints<'tcx>(
         .filter(|r| {
             r.property.contract_kind() != ContractKind::Hazard
                 && r.property.contract_kind() != ContractKind::Option_
-                && !matches!(r.result, CheckResult::Proved)
+                && !r.result.is_proved()
         })
         .count();
     let hazard_failed = all_results
         .iter()
         .filter(|r| {
             r.property.contract_kind() == ContractKind::Hazard
-                && !matches!(r.result, CheckResult::Proved)
+                && !r.result.is_proved()
         })
         .count();
 
@@ -512,11 +511,11 @@ pub(crate) fn emit_property_rows<'tcx>(_tcx: TyCtxt<'tcx>, results: &[&PropertyC
             } else {
                 name
             };
-            let mut line = format!("          {conn}{tag} | {:?}", result);
+            let mut line = format!("          {conn}{tag} | {}", result.label());
             if *count > 1 {
                 line.push_str(&format!(" (x{count})"));
             }
-            if matches!(result, super::report::CheckResult::Proved) {
+            if result.is_proved() {
                 rap_info!(green, "{line}");
             } else {
                 rap_warn!("{line}");

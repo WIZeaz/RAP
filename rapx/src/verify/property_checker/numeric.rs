@@ -32,18 +32,18 @@ impl PropertyChecker {
     ) -> CheckResult {
         if let Some(PropertyArg::Predicates(predicates)) = property.args().first() {
             if self.all_predicates_are_slice_size_invariant(vm_state, checkpoint, predicates) {
-                return CheckResult::Proved;
+                return CheckResult::ProvedByRule;
             }
             for pred in predicates {
                 if let Some(r) =
                     self.eval_numeric_predicate(vm_state, solver, Some(checkpoint), pred)
                 {
-                    if !matches!(r, CheckResult::Proved) {
+                    if !r.is_proved() {
                         return r;
                     }
                 }
             }
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
         let Some(value) = self.target_value(vm_state, checkpoint, property) else {
             return CheckResult::Unknown;
@@ -67,7 +67,7 @@ impl PropertyChecker {
                     let above = value.term.gt(&Int::from_i64(vm_state.ctx, max as i64));
                     solver.assert(&Bool::or(vm_state.ctx, &[&below, &above]));
                     let r = match solver.check() {
-                        SatResult::Unsat => CheckResult::Proved,
+                        SatResult::Unsat => CheckResult::ProvedBySmt,
                         SatResult::Sat => CheckResult::Failed,
                         _ => CheckResult::Unknown,
                     };
@@ -81,16 +81,16 @@ impl PropertyChecker {
                 solver.push();
                 solver.assert(&value.term.gt(&max));
                 let r = match solver.check() {
-                    SatResult::Unsat => CheckResult::Proved,
+                    SatResult::Unsat => CheckResult::ProvedBySmt,
                     SatResult::Sat => CheckResult::Failed,
                     _ => CheckResult::Unknown,
                 };
                 solver.pop(1);
                 return r;
             }
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
-        CheckResult::Proved
+        CheckResult::ProvedByRule
     }
 
     /// If `expr` is a `SliceIndex` range parameter (e.g. `..n`), return its
@@ -184,14 +184,14 @@ impl PropertyChecker {
             // Concrete 0 from compiler-evaluated AlignOf/SizeOf for
             // generic types — semantically always >= 1 for non-ZST.
             if lhs.as_u64() == Some(0) {
-                return Some(CheckResult::Proved);
+                return Some(CheckResult::ProvedByRule);
             }
             vm_state.assert_all(solver);
         }
         solver.assert(&condition.not());
         let r0 = solver.check();
         let mut r = match r0 {
-            SatResult::Unsat => Some(CheckResult::Proved),
+            SatResult::Unsat => Some(CheckResult::ProvedBySmt),
             SatResult::Sat => Some(CheckResult::Failed),
             _ => None,
         };
@@ -209,7 +209,7 @@ impl PropertyChecker {
             self.inject_vm_div_axioms(vm_state, solver, &pred.rhs);
             solver.assert(&condition.not());
             r = match solver.check() {
-                SatResult::Unsat => Some(CheckResult::Proved),
+                SatResult::Unsat => Some(CheckResult::ProvedBySmt),
                 SatResult::Sat => Some(CheckResult::Failed),
                 _ => r,
             };

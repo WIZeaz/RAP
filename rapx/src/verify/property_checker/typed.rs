@@ -55,7 +55,7 @@ impl PropertyChecker {
             // "typed" — alignment/size are discharged by the separate
             // `Align`/`Allocated` facts.
             if Self::ty_is_maybe_uninit(expected_ty) {
-                return CheckResult::Proved;
+                return CheckResult::ProvedByRule;
             }
 
             // Check provenance: does the allocation's element type match the expected type?
@@ -71,7 +71,7 @@ impl PropertyChecker {
                         }
                     }
                     if elem_ty == expected_ty {
-                        return CheckResult::Proved;
+                        return CheckResult::ProvedByRule;
                     }
                     // An allocation of `T` elements is also "typed" when
                     // accessed through a slice/array pointer `[T]`/`[T; N]`
@@ -82,7 +82,7 @@ impl PropertyChecker {
                         _ => expected_ty,
                     };
                     if elem_ty == expected_elem {
-                        return CheckResult::Proved;
+                        return CheckResult::ProvedByRule;
                     }
                     // MaybeUninit<T> accessed via raw pointer from as_mut_ptr:
                     // treat as T for write ops where caller will initialize it.
@@ -95,7 +95,7 @@ impl PropertyChecker {
                                     if crate::verify::api_classify::is_mem_copy_or_write(
                                         checkpoint.callee,
                                     ) {
-                                        return CheckResult::Proved;
+                                        return CheckResult::ProvedByRule;
                                     }
                                 }
                             }
@@ -123,7 +123,7 @@ impl PropertyChecker {
                                 if field_ty == expected_ty {
                                     if off_u64 == Some(accum) {
                                         if value.invariants.init {
-                                            return CheckResult::Proved;
+                                            return CheckResult::ProvedByRule;
                                         }
                                         return CheckResult::Failed;
                                     }
@@ -143,7 +143,7 @@ impl PropertyChecker {
                                                 == Some(expected_ty)
                                             {
                                                 if vm_state.alloc(alloc_id).initialized {
-                                                    return CheckResult::Proved;
+                                                    return CheckResult::ProvedByRule;
                                                 }
                                                 return CheckResult::Failed;
                                             }
@@ -159,7 +159,7 @@ impl PropertyChecker {
                     if property.for_each().is_some() {
                         if let TyKind::RawPtr(inner, _) = elem_ty.kind() {
                             if *inner == expected_ty {
-                                return CheckResult::Proved;
+                                return CheckResult::ProvedByRule;
                             }
                         }
                     }
@@ -174,7 +174,7 @@ impl PropertyChecker {
                     if Self::all_bit_patterns_valid(expected_ty) {
                         let expected_align = vm_state.align_of_ty(expected_ty).max(1);
                         if Self::value_aligned_to(vm_state, &value, expected_align) {
-                            return CheckResult::Proved;
+                            return CheckResult::ProvedByRule;
                         }
                     }
                     // Non-ADT element type that doesn't match → Failed.
@@ -194,7 +194,7 @@ impl PropertyChecker {
                     && vm_state.size_of_ty(expected_ty) > 0
                     && vm_state.size_of_ty(value_elem_ty) == vm_state.size_of_ty(expected_ty)
                 {
-                    return CheckResult::Proved;
+                    return CheckResult::ProvedByRule;
                 }
             }
 
@@ -207,7 +207,7 @@ impl PropertyChecker {
                     && vm_state.size_of_ty(expected_ty) > 0
                     && vm_state.size_of_ty(value_elem_ty) == vm_state.size_of_ty(expected_ty)
                 {
-                    return CheckResult::Proved;
+                    return CheckResult::ProvedByRule;
                 }
             }
 
@@ -220,7 +220,7 @@ impl PropertyChecker {
                 && vs == es
             {
                 if vm_state.alloc(alloc_id).element_ty.is_some() {
-                    return CheckResult::Proved;
+                    return CheckResult::ProvedByRule;
                 }
             }
 
@@ -267,16 +267,16 @@ impl PropertyChecker {
                 // ZST — `offset_from`, `size_of_val`, ... — are sound for every
                 // `T`, so treating the constraint as satisfied is safe.
                 if self.is_generic_ty(ty) {
-                    return CheckResult::Proved;
+                    return CheckResult::ProvedByRule;
                 }
                 if vm_state.size_of_ty(ty) == 0 {
                     CheckResult::Failed
                 } else {
-                    CheckResult::Proved
+                    CheckResult::ProvedByRule
                 }
             }
             Some(PropertyArg::Ident(id)) if id == "unsized" => match ty.kind() {
-                TyKind::Slice(_) | TyKind::Str | TyKind::Dynamic(..) => CheckResult::Proved,
+                TyKind::Slice(_) | TyKind::Str | TyKind::Dynamic(..) => CheckResult::ProvedByRule,
                 _ => CheckResult::Unknown,
             },
             Some(PropertyArg::Expr(ContractExpr::Const(c))) => {
@@ -284,7 +284,7 @@ impl PropertyChecker {
                     return CheckResult::Unknown;
                 }
                 if vm_state.size_of_ty(ty) as u128 == *c {
-                    CheckResult::Proved
+                    CheckResult::ProvedByRule
                 } else {
                     CheckResult::Failed
                 }
@@ -308,7 +308,7 @@ impl PropertyChecker {
         };
         let ty = self.instantiate_callsite_ty(vm_state, checkpoint, ty);
         match self.type_has_no_padding(vm_state, ty) {
-            Some(true) => CheckResult::Proved,
+            Some(true) => CheckResult::ProvedByRule,
             Some(false) => CheckResult::Failed,
             None => CheckResult::Unknown,
         }

@@ -277,7 +277,7 @@ impl PropertyChecker {
         solver.push();
         solver.assert(condition);
         let r = match solver.check() {
-            SatResult::Unsat => CheckResult::Proved,
+            SatResult::Unsat => CheckResult::ProvedBySmt,
             SatResult::Sat => CheckResult::Failed,
             SatResult::Unknown => CheckResult::Unknown,
         };

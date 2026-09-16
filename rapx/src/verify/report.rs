@@ -12,8 +12,14 @@ use crate::helpers::mir_scan::CheckpointLocation;
 /// Verification status for one required property on one path.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum CheckResult {
-    /// The property has been proved for this path.
-    Proved,
+    /// Proved by a *sound structural rule* (a fast-path that needs no solver
+    /// query): ZST guards, zero-element access, tracked invariants/flags,
+    /// type-level transparency, provenance-origin classification.  These are
+    /// the rules that must be audited for soundness.
+    ProvedByRule,
+    /// Proved by an *SMT query*: the solver showed the negation is unsatisfiable
+    /// (numeric bounds, byte-range coverage, alignment modulo/linear checks).
+    ProvedBySmt,
     /// The verifier found a possible violation for this path.
     Failed,
     /// The verifier has not implemented or completed the proof for this path.
@@ -21,21 +27,42 @@ pub(crate) enum CheckResult {
 }
 
 impl CheckResult {
+    /// Whether this result counts as "proved" (by rule or by SMT).
+    pub(crate) fn is_proved(&self) -> bool {
+        matches!(self, CheckResult::ProvedByRule | CheckResult::ProvedBySmt)
+    }
+
+    /// The user-facing label for this result.  `ProvedByRule` and `ProvedBySmt`
+    /// both report as `"Proved"` — the rule/SMT distinction is an internal
+    /// audit signal, not part of the report.
+    pub(crate) fn label(&self) -> &'static str {
+        match self {
+            CheckResult::ProvedByRule | CheckResult::ProvedBySmt => "Proved",
+            CheckResult::Failed => "Failed",
+            CheckResult::Unknown => "Unknown",
+        }
+    }
+
     /// AND-combine two results: any `Failed` → `Failed`; any `Unknown` →
-    /// `Unknown`; only all-`Proved` → `Proved`.
+    /// `Unknown`; only all-proved → proved (`Rule` when every conjunct was a
+    /// rule, otherwise `Smt`).
     pub(crate) fn and(self, other: CheckResult) -> CheckResult {
         match (self, other) {
             (CheckResult::Failed, _) | (_, CheckResult::Failed) => CheckResult::Failed,
             (CheckResult::Unknown, _) | (_, CheckResult::Unknown) => CheckResult::Unknown,
-            _ => CheckResult::Proved,
+            (CheckResult::ProvedByRule, CheckResult::ProvedByRule) => CheckResult::ProvedByRule,
+            _ => CheckResult::ProvedBySmt,
         }
     }
 
-    /// OR-combine two results: any `Proved` → `Proved`; all `Failed` →
-    /// `Failed`; otherwise `Unknown`.
+    /// OR-combine two results: any proved → proved (a `Rule` proof dominates);
+    /// all `Failed` → `Failed`; otherwise `Unknown`.
     pub(crate) fn or(self, other: CheckResult) -> CheckResult {
         match (self, other) {
-            (CheckResult::Proved, _) | (_, CheckResult::Proved) => CheckResult::Proved,
+            (CheckResult::ProvedByRule, _) | (_, CheckResult::ProvedByRule) => {
+                CheckResult::ProvedByRule
+            }
+            (CheckResult::ProvedBySmt, _) | (_, CheckResult::ProvedBySmt) => CheckResult::ProvedBySmt,
             (CheckResult::Failed, CheckResult::Failed) => CheckResult::Failed,
             _ => CheckResult::Unknown,
         }
@@ -99,13 +126,13 @@ impl<'tcx> VerificationReport<'tcx> {
 
         for (index, result) in self.results.iter().enumerate() {
             out.push_str(&format!(
-                "  check #{index}: checkpoint #{}, bb{}, path #{}, property #{} {:?}, result {:?}\n",
+                "  check #{index}: checkpoint #{}, bb{}, path #{}, property #{} {:?}, result {}\n",
                 result.checkpoint_index,
                 result.checkpoint.block.as_usize(),
                 result.path_index,
                 result.property_index,
                 result.property.kind(),
-                result.result
+                result.result.label()
             ));
 
             if let Some(diagnostics) = &result.diagnostics {

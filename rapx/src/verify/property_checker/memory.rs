@@ -34,10 +34,10 @@ impl PropertyChecker {
         };
 
         if self.zst_guard(vm_state, checkpoint, property) {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
         if self.is_concrete_zst(vm_state, value.ty) {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
         let ty_arg = property.args().get(1).and_then(|a| {
             if let PropertyArg::Ty(ty) = a {
@@ -57,7 +57,7 @@ impl PropertyChecker {
             None => Int::from_u64(vm_state.ctx, 1),
         };
         if align.simplify().as_u64() == Some(1) {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
         // Symbolic fast-path: if the value is known to be at least `align`-aligned
         // (its effective alignment satisfies `align_n >= align`, both powers of
@@ -85,7 +85,7 @@ impl PropertyChecker {
             let r = solver.check();
             solver.pop(1);
             match r {
-                SatResult::Unsat => return CheckResult::Proved,
+                SatResult::Unsat => return CheckResult::ProvedBySmt,
                 SatResult::Sat => return CheckResult::Failed,
                 _ => {}
             }
@@ -104,7 +104,7 @@ impl PropertyChecker {
             ) {
                 if alloc_align_u64 >= align_u64 {
                     if off % align_u64 == 0 {
-                        return CheckResult::Proved;
+                        return CheckResult::ProvedByRule;
                     }
                     if off % align_u64 != 0 {
                         return CheckResult::Failed;
@@ -120,7 +120,7 @@ impl PropertyChecker {
         {
             if let Some(align_u64) = align.simplify().as_u64() {
                 if known_align >= align_u64 && known_align % align_u64 == 0 {
-                    return CheckResult::Proved;
+                    return CheckResult::ProvedByRule;
                 }
             }
         }
@@ -167,7 +167,7 @@ impl PropertyChecker {
         local.assert(&negated);
         let r = match local.check() {
             z3::SatResult::Sat => CheckResult::Failed,
-            z3::SatResult::Unsat => CheckResult::Proved,
+            z3::SatResult::Unsat => CheckResult::ProvedBySmt,
             z3::SatResult::Unknown => CheckResult::Unknown,
         };
         local.pop(1);
@@ -241,17 +241,17 @@ impl PropertyChecker {
             return CheckResult::Unknown;
         };
         if value.invariants.non_null {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
         if value.invariants.in_bounds {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
         // Pointers with non-external provenance point into known stack/heap
         // allocations whose base addresses are never zero.  Raw-pointer
         // parameters get external provenance which may be null.
         if let Some(ref prov) = value.provenance {
             if !vm_state.alloc(prov.alloc_id).is_external {
-                return CheckResult::Proved;
+                return CheckResult::ProvedByRule;
             }
         }
         let zero = Int::from_u64(vm_state.ctx, 0);
@@ -276,7 +276,7 @@ impl PropertyChecker {
             return CheckResult::Unknown;
         };
         if self.is_null(vm_state, checkpoint, place) {
-            CheckResult::Proved
+            CheckResult::ProvedByRule
         } else {
             CheckResult::Failed
         }
@@ -325,10 +325,10 @@ impl PropertyChecker {
         };
 
         if self.zst_guard(vm_state, checkpoint, property) {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
         if self.is_concrete_zst(vm_state, value.ty) {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
 
         // Zero-element access (`Allocated(p, T, 0)`) is trivially satisfied:
@@ -337,7 +337,7 @@ impl PropertyChecker {
         // fast-path in `check_in_bound` and covers `from_raw_parts(ptr, 0)`
         // (e.g. `Option::as_slice` on `None`).
         if self.count_is_zero(vm_state, checkpoint, property) {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
 
         let Some(alloc_id) = value.provenance_alloc_id() else {
@@ -367,7 +367,7 @@ impl PropertyChecker {
         let alloc = vm_state.alloc(alloc_id);
         if let (Some(alloc_elem_ty), Some(req_ty)) = (alloc.element_ty, required_ty) {
             if self.alloc_elem_is_array_of(alloc_elem_ty, req_ty) {
-                return CheckResult::Proved;
+                return CheckResult::ProvedByRule;
             }
             // `MaybeUninit<T>` is `#[repr(transparent)]` over a union, so it has
             // exactly the size/alignment of `T`.  An allocation of
@@ -379,7 +379,7 @@ impl PropertyChecker {
             if maybe_uninit_inner(alloc_elem_ty) == Some(req_ty)
                 || maybe_uninit_inner(req_ty) == Some(alloc_elem_ty)
             {
-                return CheckResult::Proved;
+                return CheckResult::ProvedByRule;
             }
             // Cross-type generic fast-path: when allocation element type
             // and required type are both generic params (e.g. T vs U),
@@ -390,7 +390,7 @@ impl PropertyChecker {
                 (alloc_elem_ty.kind(), req_ty.kind()),
                 (TyKind::Param(_), TyKind::Param(_))
             ) {
-                return CheckResult::Proved;
+                return CheckResult::ProvedByRule;
             }
         }
 
@@ -403,7 +403,7 @@ impl PropertyChecker {
             if val_pointee.and_then(maybe_uninit_inner) == Some(req_ty)
                 || maybe_uninit_inner(req_ty) == val_pointee
             {
-                return CheckResult::Proved;
+                return CheckResult::ProvedByRule;
             }
         }
 
@@ -411,7 +411,7 @@ impl PropertyChecker {
         let size = vm_state.allocation_size(alloc_id).clone();
 
         if vm_state.alloc(alloc_id).is_external {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
 
         let access = self.access_bytes(vm_state, property, 1, 2, checkpoint, &value);
@@ -434,7 +434,7 @@ impl PropertyChecker {
             vm_state.assert_all(&solver);
             solver.assert(&access.le(&field_size).not());
             let r = match solver.check() {
-                SatResult::Unsat => CheckResult::Proved,
+                SatResult::Unsat => CheckResult::ProvedBySmt,
                 SatResult::Sat => CheckResult::Failed,
                 _ => CheckResult::Unknown,
             };
@@ -447,7 +447,7 @@ impl PropertyChecker {
             if size_val < access_val {
                 return CheckResult::Failed;
             }
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
 
         // Generic element type: both size and access use max(1) fallback,
@@ -494,7 +494,7 @@ impl PropertyChecker {
         let covered = Int::add(vm_state.ctx, &[&value.term, access]);
         solver.assert(&covered.le(&bound).not());
         let r = match solver.check() {
-            SatResult::Unsat => CheckResult::Proved,
+            SatResult::Unsat => CheckResult::ProvedBySmt,
             SatResult::Sat => on_sat,
             _ => CheckResult::Unknown,
         };
@@ -510,20 +510,20 @@ impl PropertyChecker {
         property: &Property<'tcx>,
     ) -> CheckResult {
         if self.zst_guard(vm_state, checkpoint, property) {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
         let Some(value) = self.target_value(vm_state, checkpoint, property) else {
             return CheckResult::Unknown;
         };
         if self.is_concrete_zst(vm_state, value.ty) {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
 
         // Zero elements: `Init(p, T, 0)` is vacuously satisfied (the empty
         // range is trivially initialized, regardless of whether `p` is a
         // dangling pointer), mirroring `check_allocated`'s fast-path.
         if self.count_is_zero(vm_state, checkpoint, property) {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
 
         // `Init(p, MaybeUninit<T>, n)` reduces to `Typed(p, MaybeUninit<T>)`:
@@ -541,7 +541,7 @@ impl PropertyChecker {
             }
         }) {
             if Self::ty_is_maybe_uninit(required_ty) {
-                return CheckResult::Proved;
+                return CheckResult::ProvedByRule;
             }
         }
 
@@ -577,7 +577,7 @@ impl PropertyChecker {
                         let all_init = (prov_off as usize..end as usize)
                             .all(|off| vm_state.is_byte_init(id, off));
                         if all_init && access_val > 0 {
-                            return CheckResult::Proved;
+                            return CheckResult::ProvedByRule;
                         }
                     }
                 }
@@ -596,10 +596,10 @@ impl PropertyChecker {
                         }
                     }
                     if access_term.as_u64().is_some() && size.as_u64().is_some() {
-                        return CheckResult::Proved;
+                        return CheckResult::ProvedByRule;
                     }
                 }
-                return CheckResult::Proved;
+                return CheckResult::ProvedByRule;
             }
             // as_ptr/as_mut_ptr on MaybeUninit → write operations don't need pre-init.
             if value.invariants.init
@@ -609,7 +609,7 @@ impl PropertyChecker {
                 && !vm_state.alloc(id).dead
             {
                 if crate::verify::api_classify::is_mem_copy_or_write(checkpoint.callee) {
-                    return CheckResult::Proved;
+                    return CheckResult::ProvedByRule;
                 }
             }
             // Check byte-level init: if all bytes in range are initialized
@@ -618,7 +618,7 @@ impl PropertyChecker {
                 let size_usize = (size_val as usize).min(4096);
                 let all_init = (0..size_usize).all(|off| vm_state.is_byte_init(id, off));
                 if all_init && size_val > 0 {
-                    return CheckResult::Proved;
+                    return CheckResult::ProvedByRule;
                 }
             }
         }
@@ -633,11 +633,11 @@ impl PropertyChecker {
                             (access_term.as_u64(), size.as_u64())
                         {
                             if access_val <= size_val {
-                                return CheckResult::Proved;
+                                return CheckResult::ProvedByRule;
                             }
                             // Required bytes exceed allocation → not fully init
                         } else {
-                            return CheckResult::Proved;
+                            return CheckResult::ProvedByRule;
                         }
                     }
                     // access=None: can't verify size, fall through
@@ -652,10 +652,10 @@ impl PropertyChecker {
                                 (access_term.as_u64(), size.as_u64())
                             {
                                 if access_val <= size_val {
-                                    return CheckResult::Proved;
+                                    return CheckResult::ProvedByRule;
                                 }
                             } else {
-                                return CheckResult::Proved;
+                                return CheckResult::ProvedByRule;
                             }
                         }
                     }
@@ -675,7 +675,7 @@ impl PropertyChecker {
             }
             if local.check() == SatResult::Unsat {
                 local.pop(1);
-                return CheckResult::Proved;
+                return CheckResult::ProvedByRule;
             }
             local.pop(1);
         }
@@ -755,7 +755,7 @@ impl PropertyChecker {
                     let is_param = origin.local.as_usize() <= vm_state.body.arg_count
                         && origin.local != Local::from_usize(0);
                     if is_param {
-                        return CheckResult::Proved;
+                        return CheckResult::ProvedByRule;
                     }
                 }
                 return CheckResult::Failed;
@@ -777,12 +777,12 @@ impl PropertyChecker {
                             && vm_state.alloc(root_id).alive_assumed
                             && !vm_state.alloc(root_id).dead
                         {
-                            return CheckResult::Proved;
+                            return CheckResult::ProvedByRule;
                         }
                         if vm_state.allocations.iter().any(|a| a.alive_assumed) {
                             let root_is_external = vm_state.alloc(root_id).is_external;
                             if root_is_external {
-                                return CheckResult::Proved;
+                                return CheckResult::ProvedByRule;
                             }
                         }
                         // Only fail for raw pointer struct fields when the
@@ -832,7 +832,7 @@ impl PropertyChecker {
                                 return CheckResult::Failed;
                             }
                         }
-                        return CheckResult::Proved;
+                        return CheckResult::ProvedByRule;
                     }
                     // Raw pointer param: check if any ref param shares provenance.
                     let body = vm_state.body;
@@ -851,12 +851,12 @@ impl PropertyChecker {
                         return CheckResult::Failed;
                     }
                 }
-                return CheckResult::Proved;
+                return CheckResult::ProvedByRule;
             }
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
         if value.invariants.non_null || value.invariants.init {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
         CheckResult::Unknown
     }

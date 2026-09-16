@@ -191,7 +191,7 @@ pub(crate) fn contain_no_type_check<'tcx>(
     match type_structurally_contains(tcx, ty, &defs, impl_def_id, is_sync) {
         Contains::Yes => CheckResult::Failed,
         Contains::Maybe => CheckResult::Unknown,
-        Contains::No => CheckResult::Proved,
+        Contains::No => CheckResult::ProvedByRule,
     }
 }
 
@@ -205,7 +205,7 @@ pub(crate) fn no_raw_ptr_check<'tcx>(
     match find_raw_ptr(tcx, ty, impl_def_id, is_sync) {
         Contains::Yes => CheckResult::Failed,
         Contains::Maybe => CheckResult::Unknown,
-        Contains::No => CheckResult::Proved,
+        Contains::No => CheckResult::ProvedByRule,
     }
 }
 
@@ -216,7 +216,7 @@ pub(crate) fn no_internal_mut_check<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Ch
     if has_raw_ptr_writes(tcx, ty) || has_atomic_ptr_updates(tcx, ty) {
         CheckResult::Failed
     } else {
-        CheckResult::Proved
+        CheckResult::ProvedByRule
     }
 }
 
@@ -227,7 +227,7 @@ pub(crate) fn uni_internal_mut_check<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> C
     if (has_raw_ptr_writes(tcx, ty) || has_atomic_ptr_updates(tcx, ty))
         && !type_implements_clone(tcx, ty)
     {
-        CheckResult::Proved
+        CheckResult::ProvedByRule
     } else {
         CheckResult::Failed
     }
@@ -249,11 +249,11 @@ pub(crate) fn atomic_update_check<'tcx>(
     is_sync: bool,
 ) -> CheckResult {
     match find_unsynchronized_mutation(tcx, ty, impl_def_id, is_sync) {
-        Contains::No => CheckResult::Proved,
+        Contains::No => CheckResult::ProvedByRule,
         Contains::Maybe => CheckResult::Unknown,
         Contains::Yes => {
             if has_atomic_ptr_updates(tcx, ty) {
-                CheckResult::Proved
+                CheckResult::ProvedByRule
             } else {
                 CheckResult::Failed
             }
@@ -299,11 +299,11 @@ pub(crate) fn field_invariant_check<'tcx>(
 
     // The invariant must actually hold, not just be annotated.
     if let Some(result) = invariant_results.get(&adt_def_id) {
-        if *result != CheckResult::Proved {
+        if *result != CheckResult::ProvedByRule {
             return CheckResult::Failed;
         }
     }
-    CheckResult::Proved
+    CheckResult::ProvedByRule
 }
 
 /// Type-level `RefSend` obligation check (no VM state required).
@@ -316,7 +316,7 @@ pub(crate) fn ref_send_check<'tcx>(
     match find_unsynchronized_mutation(tcx, ty, impl_def_id, is_sync) {
         Contains::Yes => CheckResult::Failed,
         Contains::Maybe => CheckResult::Unknown,
-        Contains::No => CheckResult::Proved,
+        Contains::No => CheckResult::ProvedByRule,
     }
 }
 

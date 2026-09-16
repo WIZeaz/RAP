@@ -38,7 +38,7 @@ impl PropertyChecker {
         });
         match (src, dst) {
             (Some(s), Some(d)) if vm_state.size_of_ty(s) == vm_state.size_of_ty(d) => {
-                CheckResult::Proved
+                CheckResult::ProvedByRule
             }
             (Some(s), Some(d)) => {
                 let ss = vm_state.size_of_ty(s);
@@ -47,14 +47,14 @@ impl PropertyChecker {
                     // One or both types are generic; sizes are opaque.
                     // Trust the type system: the call compiles, so
                     // the transmute is compatible.
-                    CheckResult::Proved
+                    CheckResult::ProvedByRule
                 } else if ss == ds {
-                    CheckResult::Proved
+                    CheckResult::ProvedByRule
                 } else {
                     CheckResult::Failed
                 }
             }
-            _ => CheckResult::Proved,
+            _ => CheckResult::ProvedByRule,
         }
     }
 
@@ -81,12 +81,12 @@ impl PropertyChecker {
         if trait_name == "Copy" {
             let typing_env = rustc_middle::ty::TypingEnv::post_analysis(tcx, checkpoint.caller);
             if tcx.type_is_copy_modulo_regions(typing_env, ty) {
-                return CheckResult::Proved;
+                return CheckResult::ProvedByRule;
             }
             // Resolve generic param to concrete type via FnDef args
             let resolved = self.instantiate_callsite_ty(vm_state, checkpoint, ty);
             if resolved != ty && tcx.type_is_copy_modulo_regions(typing_env, resolved) {
-                return CheckResult::Proved;
+                return CheckResult::ProvedByRule;
             }
         }
 
@@ -97,7 +97,7 @@ impl PropertyChecker {
             ) {
                 return CheckResult::Failed;
             }
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
 
         let predicates = crate::compat::predicates_of(tcx, checkpoint.caller);
@@ -110,7 +110,7 @@ impl PropertyChecker {
                 if trait_ref.self_ty() == ty {
                     let short_name = crate::helpers::name::short_fn_name(tcx, trait_ref.def_id());
                     if short_name == trait_name {
-                        return CheckResult::Proved;
+                        return CheckResult::ProvedByRule;
                     }
                 }
             }
@@ -129,7 +129,7 @@ impl PropertyChecker {
         property: &Property<'tcx>,
     ) -> CheckResult {
         if vm_state.contract_flags.split_transmute_asserted {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
         let src = property.args().get(0).and_then(|a| {
             if let PropertyArg::Ty(ty) = a {
@@ -163,7 +163,7 @@ impl PropertyChecker {
                 // If the source and destination element types are the same,
                 // transmute is trivially valid.
                 if s == d {
-                    return CheckResult::Proved;
+                    return CheckResult::ProvedByRule;
                 }
 
                 // If the destination is a SIMD vector with a matching lane type,
@@ -174,7 +174,7 @@ impl PropertyChecker {
                             .iter()
                             .any(|a| matches!(a.kind(), GenericArgKind::Type(t) if t == s))
                         {
-                            return CheckResult::Proved;
+                            return CheckResult::ProvedByRule;
                         }
                     }
                 }
@@ -191,7 +191,7 @@ impl PropertyChecker {
                 // (`[usize]` -> `[u8]`, src_sz >= dst_sz) and widening
                 // (`[u8]` -> `[usize]`, src_sz < dst_sz) transmutes.
                 if Self::all_bit_patterns_valid(d) {
-                    return CheckResult::Proved;
+                    return CheckResult::ProvedByRule;
                 }
                 CheckResult::Failed
             }

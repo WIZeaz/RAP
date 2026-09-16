@@ -62,7 +62,7 @@ impl PropertyChecker {
         // distinct from the explicit `Null(p)` guard in `any(Null(p), …)`,
         // which is a `PropertyKind::Null` disjunct handled by `check_null`.
         if self.is_vacuously_true_for_nullable(vm_state, checkpoint, property) {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
         match property {
             Property::Or(_) => {
@@ -98,7 +98,7 @@ impl PropertyChecker {
                 // satisfied (Proved) as a documented soundness assumption —
                 // analysed code is assumed not to mix volatile and non-volatile
                 // access.  Revisit if volatile tracking is ever added.
-                PropertyKind::NonVolatile => CheckResult::Proved,
+                PropertyKind::NonVolatile => CheckResult::ProvedByRule,
                 PropertyKind::ValidNum => {
                     self.check_valid_num(vm_state, solver, checkpoint, property)
                 }
@@ -171,7 +171,7 @@ impl PropertyChecker {
         // AND semantics: proved if every conjunct is proved; failed if any is
         // definitely violated; otherwise unknown.  An empty conjunction is
         // vacuously proved.
-        let mut overall = CheckResult::Proved;
+        let mut overall = CheckResult::ProvedByRule;
         for conjunct in property.conjuncts() {
             let result = self.check_inner(vm_state, solver, checkpoint, conjunct);
             overall = overall.and(result);

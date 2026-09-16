@@ -113,7 +113,7 @@ impl PropertyChecker {
                 root_id = parent_id;
             }
             if vm_state.alloc(alloc_id).nul_terminated || vm_state.alloc(root_id).nul_terminated {
-                return CheckResult::Proved;
+                return CheckResult::ProvedByRule;
             }
 
             let alloc_size = vm_state.allocation_size(alloc_id).clone();
@@ -168,7 +168,7 @@ impl PropertyChecker {
         if is_strict {
             CheckResult::Unknown
         } else {
-            CheckResult::Proved
+            CheckResult::ProvedByRule
         }
     }
 
@@ -237,7 +237,7 @@ impl PropertyChecker {
 
         // All bytes between start_offset and the first NUL are known non-NUL,
         // and the NUL itself is known. This is a valid C string for the tracked range.
-        Some(CheckResult::Proved)
+        Some(CheckResult::ProvedByRule)
     }
 
     /// Check NUL termination using per-byte symbolic values tracked in `bytes`.
@@ -289,7 +289,7 @@ impl PropertyChecker {
                     }
                 }
                 if interior_safe {
-                    return Some(CheckResult::Proved);
+                    return Some(CheckResult::ProvedByRule);
                 }
             }
         }
@@ -402,7 +402,7 @@ impl PropertyChecker {
         }
 
         if nul_store_count == 1 {
-            Some(CheckResult::Proved)
+            Some(CheckResult::ProvedByRule)
         } else if nul_store_count > 1 {
             Some(CheckResult::Failed)
         } else {
@@ -438,7 +438,7 @@ impl PropertyChecker {
                 bytes.last() == Some(&0) && !bytes[..bytes.len().saturating_sub(1)].contains(&0)
             });
             if all_valid {
-                return Some(CheckResult::Proved);
+                return Some(CheckResult::ProvedByRule);
             }
         }
 
@@ -449,7 +449,7 @@ impl PropertyChecker {
             let valid =
                 bytes.last() == Some(&0) && !bytes[..bytes.len().saturating_sub(1)].contains(&0);
             return if valid {
-                Some(CheckResult::Proved)
+                Some(CheckResult::ProvedByRule)
             } else {
                 Some(CheckResult::Failed)
             };

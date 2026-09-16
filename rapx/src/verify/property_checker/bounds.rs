@@ -31,12 +31,12 @@ impl PropertyChecker {
         // Fast-path: if a prior ChecksIndexBoundsDisjoint call already
         // validated bounds for this function, the InBound holds.
         if vm_state.contract_flags.has_checked_bounds {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
         // Fast-path: contract with for_each guarantees all elements
         // of the index array are in bounds.
         if property.for_each().is_some() {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
 
         if let Some(PropertyArg::Expr(ContractExpr::IndexAccess { index: _, .. })) =
@@ -53,19 +53,19 @@ impl PropertyChecker {
             }
         });
         if self.zst_guard(vm_state, checkpoint, property) {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
 
         let Some(value) = self.target_value(vm_state, checkpoint, property) else {
             return CheckResult::Unknown;
         };
         if matches!(value.ty.kind(), TyKind::Ref(..)) {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
         if value.provenance.is_some() {
             if let TyKind::Adt(adt_def, _) = value.ty.kind() {
                 if api_classify::is_std_nonnull(adt_def.did()) {
-                    return CheckResult::Proved;
+                    return CheckResult::ProvedByRule;
                 }
             }
         }
@@ -74,13 +74,13 @@ impl PropertyChecker {
         // never exceeds `size_of::<Container>()`.  This covers patterns such
         // as `Option::as_slice`.
         if self.count_is_offset_of(vm_state, checkpoint, property, &value) {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
         // When the contract expression for the element count evaluates to
         // zero (e.g. div-by-sizeof for ZST generic params), the byte-level
         // access is zero and limits checking is trivial.
         if self.count_is_zero(vm_state, checkpoint, property) {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
         let access = self.access_bytes(vm_state, property, 1, 2, checkpoint, &value);
         let Some(alloc_id) = value.provenance_alloc_id() else {
@@ -92,13 +92,13 @@ impl PropertyChecker {
         let alloc = vm_state.alloc(alloc_id);
         if let (Some(alloc_elem_ty), Some(req_ty)) = (alloc.element_ty, required_ty) {
             if self.alloc_elem_is_array_of(alloc_elem_ty, req_ty) {
-                return CheckResult::Proved;
+                return CheckResult::ProvedByRule;
             }
         }
 
         // External allocations have unbounded size.
         if vm_state.alloc(alloc_id).is_external {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         }
 
         let alloc_elem_is_generic = vm_state
@@ -127,7 +127,7 @@ impl PropertyChecker {
             }
             solver.assert(&access.le(&field_size).not());
             let r = match solver.check() {
-                SatResult::Unsat => CheckResult::Proved,
+                SatResult::Unsat => CheckResult::ProvedBySmt,
                 SatResult::Sat => CheckResult::Failed,
                 _ => CheckResult::Unknown,
             };
@@ -158,7 +158,7 @@ impl PropertyChecker {
         ));
         let sat_result = solver.check();
         let r = match sat_result {
-            SatResult::Unsat => CheckResult::Proved,
+            SatResult::Unsat => CheckResult::ProvedBySmt,
             SatResult::Sat if fallback_for_generic => CheckResult::Unknown,
             SatResult::Sat => CheckResult::Failed,
             _ => CheckResult::Unknown,
@@ -289,7 +289,7 @@ impl PropertyChecker {
         };
         solver.assert(&negated);
         let r = match solver.check() {
-            SatResult::Unsat => CheckResult::Proved,
+            SatResult::Unsat => CheckResult::ProvedBySmt,
             SatResult::Sat => CheckResult::Failed,
             _ => CheckResult::Unknown,
         };
@@ -391,7 +391,7 @@ impl PropertyChecker {
         // and spuriously report the pointers as non-overlapping.
         if let (Some(a), Some(b)) = (v1.provenance_alloc_id(), v2.provenance_alloc_id()) {
             if a != b {
-                return CheckResult::Proved;
+                return CheckResult::ProvedByRule;
             }
         }
 
@@ -418,7 +418,7 @@ impl PropertyChecker {
                 );
                 solver.assert(&overlap);
                 let r = match solver.check() {
-                    SatResult::Unsat => CheckResult::Proved,
+                    SatResult::Unsat => CheckResult::ProvedBySmt,
                     SatResult::Sat => CheckResult::Failed,
                     _ => CheckResult::Unknown,
                 };
@@ -432,7 +432,7 @@ impl PropertyChecker {
         let ne = v1.term._eq(&v2.term).not();
         solver.assert(&ne);
         let r = match solver.check() {
-            SatResult::Unsat => CheckResult::Proved,
+            SatResult::Unsat => CheckResult::ProvedBySmt,
             SatResult::Sat => CheckResult::Failed,
             _ => CheckResult::Unknown,
         };

@@ -163,7 +163,7 @@ impl<'target, 'tcx> VerifyDriver<'target, 'tcx> {
                 view,
                 &or.disjuncts,
                 CheckResult::or,
-                |r| matches!(r, CheckResult::Proved),
+                |r| r.is_proved(),
             ),
         }
     }
@@ -746,7 +746,7 @@ impl<'tcx> Analysis for VerifyRun<'tcx> {
                             let verdict = struct_report
                                 .results
                                 .iter()
-                                .fold(CheckResult::Proved, |acc, r| acc.and(r.result.clone()));
+                                .fold(CheckResult::ProvedByRule, |acc, r| acc.and(r.result.clone()));
                             self.struct_invariant_results
                                 .entry(struct_id)
                                 .and_modify(|v| *v = v.clone().and(verdict.clone()))
@@ -937,7 +937,7 @@ impl<'tcx> VerifyRun<'tcx> {
                 );
                 let label = property.display_for_report(self.tcx, unit.self_ty_def_id, None);
                 let verdict = match result {
-                    CheckResult::Proved => "PROVED",
+                    CheckResult::ProvedByRule | CheckResult::ProvedBySmt => "PROVED",
                     CheckResult::Failed => "FAILED",
                     CheckResult::Unknown => "UNKNOWN",
                 };
@@ -1058,7 +1058,7 @@ impl<'tcx> VerifyRun<'tcx> {
                 _ => CheckResult::Unknown,
             },
             Property::And(and) => {
-                let mut overall = CheckResult::Proved;
+                let mut overall = CheckResult::ProvedByRule;
                 for conjunct in &and.conjuncts {
                     overall = overall
                         .and(self.check_type_obligation(conjunct, impl_def_id, self_ty, is_sync));

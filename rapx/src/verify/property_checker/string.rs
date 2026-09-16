@@ -23,15 +23,15 @@ impl PropertyChecker {
             .and_then(|a| self.resolve_arg_term(vm_state, checkpoint, a))
         {
             if count.as_u64() == Some(0) {
-                return CheckResult::Proved;
+                return CheckResult::ProvedByRule;
             }
         }
 
         let Some(value) = self.target_value(vm_state, checkpoint, property) else {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         };
         let Some(alloc_id) = value.provenance_alloc_id() else {
-            return CheckResult::Proved;
+            return CheckResult::ProvedByRule;
         };
 
         // A dead allocation cannot back a live string (use-after-free).
@@ -42,7 +42,7 @@ impl PropertyChecker {
         // Byte-level check: prove the tracked buffer bytes are *not* valid UTF-8.
         let byte_pairs = vm_state.alloc_byte_values(alloc_id);
         if byte_pairs.is_empty() {
-            return CheckResult::Proved; // no byte-level info → trust
+            return CheckResult::ProvedByRule; // no byte-level info → trust
         }
         let bytes: Vec<Int<'ctx>> = byte_pairs.iter().map(|(_, t)| (*t).clone()).collect();
         let valid = super::utf8_validity(vm_state.ctx, &bytes);
@@ -53,7 +53,7 @@ impl PropertyChecker {
         solver.pop(1);
         match r {
             SatResult::Unsat => CheckResult::Failed,
-            _ => CheckResult::Proved,
+            _ => CheckResult::ProvedByRule,
         }
     }
 }
