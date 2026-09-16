@@ -846,6 +846,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .iter()
             .map(|v| self.find_local_by_address(&v.term))
             .collect();
+        // Whole-place reborrow referents, resolved from the *caller's* MIR
+        // before the body is switched to the callee (used to propagate the
+        // referent's struct fields into the callee for `old = self.ptr`).
+        let reborrow_referents: Vec<Option<Local>> = caller_arg_locals
+            .iter()
+            .map(|arg_opt| arg_opt.and_then(|a| self.find_whole_reborrow_referent(a)))
+            .collect();
         let saved_body = self.body;
         let saved_caller = self.caller_def_id;
         let saved_locals = std::mem::take(&mut self.locals);
@@ -879,17 +886,29 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             let Some(caller_arg) = caller_arg_opt else {
                 continue;
             };
-            let caller_field_keys: Vec<Vec<usize>> = saved_field_values
-                .keys()
-                .filter(|(l, _)| *l == *caller_arg)
-                .map(|(_, f)| f.clone())
-                .collect();
-            for fields in caller_field_keys {
-                if let Some(fv) = saved_field_values
-                    .get(&(*caller_arg, fields.clone()))
-                    .cloned()
-                {
-                    self.set_field_value(callee_param, fields, fv);
+            // A whole-place reborrow (`_7 = &mut (*_1)`) shares the referent's
+            // struct fields; when the reborrow temp's own assignment was pruned,
+            // propagate the referent's fields so `self.ptr` resolves in the
+            // callee (Iter::next).  Excludes field reborrows.
+            let mut source_locals = vec![*caller_arg];
+            if let Some(r) = reborrow_referents.get(i).copied().flatten() {
+                if r != *caller_arg {
+                    source_locals.push(r);
+                }
+            }
+            for src in source_locals {
+                let caller_field_keys: Vec<Vec<usize>> = saved_field_values
+                    .keys()
+                    .filter(|(l, _)| *l == src)
+                    .map(|(_, f)| f.clone())
+                    .collect();
+                for fields in caller_field_keys {
+                    if let Some(fv) = saved_field_values
+                        .get(&(src, fields.clone()))
+                        .cloned()
+                    {
+                        self.set_field_value(callee_param, fields, fv);
+                    }
                 }
             }
         }
@@ -1493,6 +1512,16 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let start_off = Int::from_u64(self.ctx, 0);
                 let end_term = Int::add(self.ctx, &[&self_val.term, &slice_len]);
 
+                // `&[T]` / `&mut [T]` data pointers are aligned to the element
+                // type `T`, so the iterator's `ptr` / `end_or_len` fields inherit
+                // that alignment.  This lets the `raw-ptr-deref` `Align` check in
+                // `Iterator::next`/`next_back` discharge against the tracked
+                // `align_n` instead of falling back to the (unprovable) modulo.
+                let elem_align_n = {
+                    let a = self.align_sym(field_ty);
+                    (a.simplify().as_u64() != Some(1)).then_some(a)
+                };
+
                 let start_val = VmValue {
                     term: self_val.term.clone(),
                     ty: field_ty,
@@ -1504,6 +1533,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     invariants: ValueInvariants {
                         init: true,
                         non_null: true,
+                        aligned: true,
+                        align_n: elem_align_n.clone(),
                         ..Default::default()
                     },
                 };
@@ -1518,6 +1549,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     invariants: ValueInvariants {
                         init: true,
                         non_null: true,
+                        aligned: true,
+                        align_n: elem_align_n,
                         ..Default::default()
                     },
                 };
@@ -1661,6 +1694,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         );
                     val.invariants.non_null = src_non_null;
                     val.invariants.aligned = arg_val.invariants.aligned;
+                    // Preserve the tracked alignment so `as_ptr().deref()` can
+                    // discharge the `raw-ptr-deref` `Align` check (Iter::next).
+                    val.invariants.align_n = arg_val.invariants.align_n.clone();
                     // Pointer-returning APIs expose the backing allocation;
                     // mark it init-accessible for raw pointer types.
                     if matches!(dest_ty.kind(), rustc_middle::ty::TyKind::RawPtr(..)) {
@@ -1842,6 +1878,18 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             CallEffect::ReturnAligned => {
                 if let Some(mut existing) = self.locals.get(&dest).cloned() {
                     existing.invariants.aligned = true;
+                    // `as_ptr`/`as_mut_ptr`/`into_raw` expose a pointer aligned to
+                    // the *pointee* type, so record the symbolic alignment for the
+                    // downstream `raw-ptr-deref`/`from_raw_parts` `Align` check.
+                    if existing.invariants.align_n.is_none() {
+                        let dest_ty = self.body.local_decls[dest].ty;
+                        if let Some(pointee) = crate::helpers::mir_utils::pointee_ty(dest_ty) {
+                            let a = self.align_sym(pointee);
+                            if a.simplify().as_u64() != Some(1) {
+                                existing.invariants.align_n = Some(a);
+                            }
+                        }
+                    }
                     self.set_local(dest, existing);
                 } else {
                     let dest_ty = self.body.local_decls[dest].ty;
@@ -2959,6 +3007,36 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         for (local, addr) in &self.local_addresses {
             if addr == term {
                 return Some(*local);
+            }
+        }
+        None
+    }
+
+    /// Resolve a *whole-place* reborrow (`_7 = &mut (*_1)` / `_7 = &(*_1)`,
+    /// projection exactly `[Deref]`) back to its referent local.  Used to
+    /// propagate the referent's materialized field values into an inlined
+    /// callee when the reborrow temp's own forward assignment was pruned from
+    /// the slice (so its value is still the stack-address default and
+    /// `find_local_by_address` can only self-match).  Deliberately excludes
+    /// field reborrows (`&mut (*_x).field`) — those address a subfield, whose
+    /// value is tracked separately, so propagating the whole struct's fields
+    /// would be wrong (BTreeMap's `NodeRef` handles).
+    fn find_whole_reborrow_referent(&self, local: Local) -> Option<Local> {
+        use rustc_middle::mir::{ProjectionElem, Rvalue, StatementKind};
+        for bb in self.body.basic_blocks.iter() {
+            for stmt in &bb.statements {
+                if let StatementKind::Assign(assign) = &stmt.kind {
+                    let (dest, rvalue) = &**assign;
+                    if dest.local == local && dest.projection.is_empty() {
+                        if let Rvalue::Ref(_, _, place) | Rvalue::RawPtr(_, place) = rvalue {
+                            if place.projection.len() == 1
+                                && matches!(place.projection[0].kind(), ProjectionElem::Deref)
+                            {
+                                return Some(place.local);
+                            }
+                        }
+                    }
+                }
             }
         }
         None

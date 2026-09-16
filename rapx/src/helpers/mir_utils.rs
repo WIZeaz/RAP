@@ -1110,6 +1110,17 @@ pub fn min_align_of_generic_param<'tcx>(tcx: TyCtxt<'tcx>, caller: DefId, ty: Ty
         .unwrap_or(0)
 }
 
+/// Max `align_of` over all implementors of a generic type parameter's trait
+/// bounds (0 for non-param types or a parameter without a bounded set of
+/// implementors).
+pub fn max_align_of_generic_param<'tcx>(tcx: TyCtxt<'tcx>, caller: DefId, ty: Ty<'tcx>) -> u64 {
+    generic_param_impl_layouts(tcx, caller, ty)
+        .into_iter()
+        .map(|l| l.align.abi.bytes())
+        .max()
+        .unwrap_or(0)
+}
+
 /// Follow a `parents` map (built by `verify::property_checker::cstr`'s
 /// `body_parents`) from `start` to its root local, guarding against cycles.
 pub fn follow_parents(parents: &FxHashMap<Local, Local>, start: Local) -> Local {

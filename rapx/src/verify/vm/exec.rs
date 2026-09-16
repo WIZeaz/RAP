@@ -911,27 +911,23 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
         }
 
-        // Pre-warm a shared symbolic `sizeof_T` for every generic type parameter
-        // appearing in the signature.  The property checkers read element sizes
-        // through the read-only `size_sym_read`, which falls back to `1` when the
-        // constant has not been created yet — order-dependent and potentially
-        // unsound (`InBound` would weaken `n·S <= len·S` to `n <= len·S`).
-        // Warming all signature type parameters here makes the fallback dead.
-        let fn_sig = self.tcx.fn_sig(self.caller_def_id).skip_binder();
-        let inputs = fn_sig.inputs().skip_binder();
-        let output = fn_sig.output().skip_binder();
+        // Pre-warm a shared symbolic `sizeof_T` / `align_T` for every generic type
+        // parameter of the caller.  Warming every declared type parameter (not
+        // just those in the signature) makes the read-only `*_sym_read` fallback
+        // dead.
         let mut warmed: FxHashSet<Ty<'tcx>> = FxHashSet::default();
-        for ty in inputs.iter().chain(std::iter::once(&output)) {
-            for t in ty.walk() {
-                if let rustc_middle::ty::GenericArgKind::Type(inner) = t.kind() {
-                    if matches!(inner.kind(), rustc_middle::ty::TyKind::Param(_)) {
-                        warmed.insert(inner);
-                    }
-                }
+        for param in self.tcx.generics_of(self.caller_def_id).own_params.iter() {
+            if let rustc_middle::ty::GenericParamDefKind::Type { .. } = param.kind {
+                warmed.insert(rustc_middle::ty::Ty::new_param(
+                    self.tcx,
+                    param.index,
+                    param.name,
+                ));
             }
         }
         for ty in warmed {
             self.size_sym(ty);
+            self.align_sym(ty);
         }
     }
 
@@ -953,6 +949,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         is_raw_ptr: bool,
         nn_fresh_prefix: &str,
     ) {
+        // A `NonNull<T>` guarantees its inner pointer is aligned to `T`; a raw
+        // pointer carries no such guarantee.
+        let align_n = if is_raw_ptr {
+            None
+        } else {
+            Some(self.align_sym(pointee))
+        };
         let invariants = if is_raw_ptr {
             ValueInvariants {
                 non_null: true,
@@ -962,17 +965,30 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         } else {
             ValueInvariants {
                 init: true,
+                aligned: true,
+                align_n,
                 ..Default::default()
             }
         };
         if let Some(&(existing_alloc, ref base)) = elem_alloc.get(&pointee) {
-            let elem_size = self.size_of_ty(pointee).max(1) as u64;
+            // Byte-accurate element size (`sizeof_T` for a generic `T`) so the
+            // field's offset is a multiple of `align_T` (via the layout
+            // constraint `sizeof_T % align_T == 0` established by `align_sym`).
+            // A raw pointer field that reuses the aligned base allocation is
+            // therefore itself `align_T`-aligned (e.g. `Iter::end_or_len`,
+            // `ptr + len·sizeof_T`).
+            let elem_align = self.align_sym(pointee);
+            let elem_size = self.size_sym(pointee);
             let len_term = self.fresh_int(&format!("field_len_{}_{}", local_idx, idx));
             self.path_conditions
                 .push(len_term.ge(&Int::from_u64(self.ctx, 0)));
-            let prost_offset =
-                Int::mul(self.ctx, &[&len_term, &Int::from_u64(self.ctx, elem_size)]);
+            let prost_offset = Int::mul(self.ctx, &[&len_term, &elem_size]);
             let field_term = Int::add(self.ctx, &[base, &prost_offset]);
+            let mut invariants = invariants;
+            if is_raw_ptr {
+                invariants.aligned = true;
+                invariants.align_n = Some(elem_align);
+            }
             self.set_field_value(
                 local,
                 path.clone(),
@@ -2218,7 +2234,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         init: src_val.invariants.init,
                         aligned,
                         in_bounds: src_val.invariants.in_bounds,
-                        align_n: src_val.invariants.align_n,
+                        align_n: if crate::helpers::mir_utils::pointee_ty(src_ty)
+                            .is_some_and(|t| t.is_unit())
+                        {
+                            None
+                        } else {
+                            src_val.invariants.align_n
+                        },
                         // A raw-pointer cast only reinterprets the address; keep
                         // the field-offset flag so `byte_add(offset_of!()).cast()`
                         // stays a field pointer (`Option::as_slice`).

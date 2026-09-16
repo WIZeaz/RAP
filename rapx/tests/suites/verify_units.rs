@@ -18,6 +18,7 @@ unsound_tests! {
     align_unsound_15: "verify_units/align_unsound_15" => "unsound_four_phase_scc_alignment" => "Align",
     align_unsound_16: "verify_units/align_unsound_16" => "unsound_trait_bound_cross_cast" => "Align",
     align_unsound_17: "verify_units/align_unsound_17" => "unsound_contract_type_param_binds_generic" => "Align",
+    align_unsound_18: "verify_units/align_unsound_18" => "unsound_unbounded_generic_cross_cast" => "Align",
 }
 
 // ================ ValidCStr Sound Cases =============

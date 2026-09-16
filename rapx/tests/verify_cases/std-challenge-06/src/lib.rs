@@ -382,7 +382,7 @@ impl<T> NonNull<[T]> {
 
     /// Performs the same functionality as `ptr::from_raw_parts`.
     #[rapx::verify]
-    pub const fn from_raw_parts(data_pointer: NonNull<()>, metadata: usize) -> Self {
+    pub const fn from_raw_parts(data_pointer: NonNull<T>, metadata: usize) -> Self {
         // SAFETY: the data pointer is non-null, so the assembled wide pointer is non-null.
         unsafe {
             NonNull {

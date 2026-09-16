@@ -199,20 +199,15 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // discharged against the loop's `idx < N` path condition.
         let (size_term, element_ty, is_external, slice_len) = match ty.kind() {
             TyKind::Array(elem, const_len) => {
+                // Concrete element size (`.max(1)` so a generic `T` collapses to
+                // 1 byte, keeping `len() = size / elem_size` equal to the
+                // symbolic element count `N`).  Deliberately *not* the symbolic
+                // `size_sym(elem)`: materializing `sizeof_MaybeUninit<T>` here
+                // would let `access_bytes` read it back as an unbounded access
+                // size, breaking `Allocated(&mut MaybeUninit<T>, T, 1)` against
+                // the iterator provenance (array_try_from_fn_ext).
                 let elem_size = self.size_of_ty(*elem).max(1) as u64;
-                // Mirror the const-generic symbolic name used by
-                // `value_of_operand` (which formats `mir::Const::Ty`), so the
-                // element-count term is *identical* to the `const N` term
-                // appearing in path conditions (`idx < N`).  This lets the
-                // later InBound SMT query discharge `idx + 1 <= len`.
-                let const_text = format!("Ty({:?}, {:?})", self.tcx.types.usize, const_len);
-                let n_term = match const_len.try_to_target_usize(self.tcx) {
-                    Some(v) => Int::from_u64(self.ctx, v),
-                    None => {
-                        let name = format!("const_{}", const_text.replace([':', '#', ' '], "_"));
-                        Int::new_const(self.ctx, name.as_str())
-                    }
-                };
+                let n_term = self.const_len_term(const_len);
                 let size = match n_term.as_u64() {
                     Some(n) => Int::from_u64(self.ctx, n.saturating_mul(elem_size)),
                     None => Int::mul(self.ctx, &[&n_term, &Int::from_u64(self.ctx, elem_size)]),
@@ -297,6 +292,20 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         s
     }
 
+    /// The array length `N` as a Z3 term (concrete value or symbolic const
+    /// generic).  The symbolic name mirrors `value_of_operand`'s formatting so it
+    /// is *identical* to the `const N` term appearing in path conditions.
+    fn const_len_term(&self, const_len: &rustc_middle::ty::Const<'tcx>) -> Int<'ctx> {
+        match const_len.try_to_target_usize(self.tcx) {
+            Some(v) => Int::from_u64(self.ctx, v),
+            None => {
+                let const_text = format!("Ty({:?}, {:?})", self.tcx.types.usize, const_len);
+                let name = format!("const_{}", const_text.replace([':', '#', ' '], "_"));
+                Int::new_const(self.ctx, name.as_str())
+            }
+        }
+    }
+
     /// Read-only sibling of [`size_sym`](Self::size_sym): returns the symbolic
     /// size for `ty`, falling back to `1` when the symbolic constant has not
     /// been created yet (e.g. a checker invoked before the exec phase created
@@ -323,6 +332,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// pointer (`(*node).value`) inherits the container's alignment.
     pub(crate) fn align_sym(&mut self, ty: Ty<'tcx>) -> Int<'ctx> {
         let ty = peel_slice_elem(ty);
+        // An array's alignment equals its element's alignment.
+        if let TyKind::Array(elem, _) = ty.kind() {
+            return self.align_sym(*elem);
+        }
         let align = self.align_of_ty(ty);
         if align > 1 || !crate::helpers::mir_utils::ty_has_type_param(ty) {
             return Int::from_u64(self.ctx, align);
@@ -345,6 +358,18 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if min_a > 1 {
             self.path_conditions
                 .push(a.ge(&Int::from_u64(self.ctx, min_a)));
+        }
+        // Upper bound from the trait bounds (0 for an unconstrained `T`): any
+        // implementor is at most this aligned, which is what lets a cross-cast
+        // from a *more* aligned source (`&[U]` -> `*const T`) be discharged.
+        let max_a = crate::helpers::mir_utils::max_align_of_generic_param(
+            self.tcx,
+            self.caller_def_id,
+            ty,
+        );
+        if max_a > 0 {
+            self.path_conditions
+                .push(a.le(&Int::from_u64(self.ctx, max_a)));
         }
         // A struct's alignment is a multiple of each field's alignment (both
         // are powers of two).  Pointer fields have a *concrete* alignment, so
@@ -373,6 +398,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// type).  Concrete types return their constant alignment.
     pub(crate) fn align_sym_read(&self, ty: Ty<'tcx>) -> Int<'ctx> {
         let ty = peel_slice_elem(ty);
+        // An array's alignment equals its element's alignment.
+        if let TyKind::Array(elem, _) = ty.kind() {
+            return self.align_sym_read(*elem);
+        }
         let align = self.align_of_ty(ty);
         if align > 1 {
             return Int::from_u64(self.ctx, align);

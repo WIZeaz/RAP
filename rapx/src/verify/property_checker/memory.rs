@@ -28,7 +28,6 @@ impl PropertyChecker {
         _solver: &Solver<'ctx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
-        use_symbolic_align: bool,
     ) -> CheckResult {
         let Some(value) = self.target_value(vm_state, checkpoint, property) else {
             return CheckResult::Unknown;
@@ -47,37 +46,49 @@ impl PropertyChecker {
                 None
             }
         });
-        // Alignment term.  For a type-invariant re-proof the alignment is the
-        // *symbolic* `align_T` (matching the allocation's own alignment, so the
-        // invariant `self % align_T == 0` holds trivially).  For a checkpoint
-        // precondition it is the *concrete* trait-bound minimum: requiring
-        // `ptr` to be aligned to every possible instantiation of `T` would be
-        // unprovable and would reject sound std APIs like
-        // `NonNull::<[T]>::from_raw_parts`, whose data pointer is only as
-        // aligned as the caller guarantees.
+        // Alignment term: the *symbolic* `align_T` for a generic `T` (bounded by
+        // the trait bounds' min/max), the concrete constant alignment for a
+        // concrete type, or `1` when the property carries no type.
         let align = match ty_arg {
             Some(ty) => {
                 let resolved = self.instantiate_callsite_ty(vm_state, checkpoint, ty);
-                if use_symbolic_align {
-                    vm_state.align_sym_read(resolved)
-                } else {
-                    let resolved_align = vm_state.align_of_ty(resolved);
-                    if resolved_align > 1 {
-                        Int::from_u64(vm_state.ctx, resolved_align)
-                    } else {
-                        let min_a = crate::helpers::mir_utils::min_align_of_generic_param(
-                            vm_state.tcx,
-                            vm_state.caller_def_id,
-                            resolved,
-                        );
-                        Int::from_u64(vm_state.ctx, if min_a > 1 { min_a } else { 1 })
-                    }
-                }
+                vm_state.align_sym_read(resolved)
             }
             None => Int::from_u64(vm_state.ctx, 1),
         };
         if align.simplify().as_u64() == Some(1) {
             return CheckResult::Proved;
+        }
+        // Symbolic fast-path: if the value is known to be at least `align`-aligned
+        // (its effective alignment satisfies `align_n >= align`, both powers of
+        // two), the check holds without a modulo query — Z3 cannot discharge
+        // `% align_T == 0` for a symbolic divisor, but `align_n >= align` is a
+        // linear inequality it *can* decide given the tracked bounds.
+        //
+        // For a field-offset pointer (`base + offset_of!(Container, field)`) the
+        // effective alignment is the *field's* own type alignment, not the
+        // container's.
+        let effective_align_n = if value
+            .provenance
+            .as_ref()
+            .is_some_and(|prov| prov.is_field_offset)
+        {
+            crate::helpers::mir_utils::pointee_ty(value.ty).map(|ty| vm_state.align_sym_read(ty))
+        } else {
+            value.invariants.align_n.clone()
+        };
+        if let Some(known_align) = effective_align_n {
+            let solver = Solver::new(vm_state.ctx);
+            solver.push();
+            vm_state.assert_all(&solver);
+            solver.assert(&known_align.lt(&align));
+            let r = solver.check();
+            solver.pop(1);
+            match r {
+                SatResult::Unsat => return CheckResult::Proved,
+                SatResult::Sat => return CheckResult::Failed,
+                _ => {}
+            }
         }
         // Check allocation base alignment with concrete offset
         if let Some(ref prov) = value.provenance {
@@ -379,6 +390,19 @@ impl PropertyChecker {
                 (alloc_elem_ty.kind(), req_ty.kind()),
                 (TyKind::Param(_), TyKind::Param(_))
             ) {
+                return CheckResult::Proved;
+            }
+        }
+
+        // A live `&mut MaybeUninit<T>` (or `&MaybeUninit<T>`) reference points at
+        // a `MaybeUninit<T>` whose size/alignment equal `T`'s (`#[repr(transparent)]`
+        // over a union), so `Allocated(p, T, n)` holds regardless of the provenance
+        // the VM recorded for an iterator-deref pointer (`array_try_from_fn_ext`).
+        if let Some(req_ty) = required_ty {
+            let val_pointee = crate::helpers::mir_utils::pointee_ty(value.ty);
+            if val_pointee.and_then(maybe_uninit_inner) == Some(req_ty)
+                || maybe_uninit_inner(req_ty) == val_pointee
+            {
                 return CheckResult::Proved;
             }
         }

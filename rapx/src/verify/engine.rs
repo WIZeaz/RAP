@@ -123,7 +123,7 @@ impl<'tcx> VerifyEngine<'tcx> {
             let mut vm_state = vm_state;
             vm_state.contract_flags.has_checked_bounds = accumulated_has_checked;
 
-            let result = self.checker.check(&vm_state, checkpoint, &bound_property, false);
+            let result = self.checker.check(&vm_state, checkpoint, &bound_property);
             results.push((result, path_desc));
         }
 
@@ -390,7 +390,7 @@ impl<'tcx> VerifyEngine<'tcx> {
                 kind: crate::helpers::mir_scan::CheckpointKind::UnsafeCall,
                 destination: None,
             };
-            let result = self.checker.check(&vm_state, &fake_checkpoint, invariant, true);
+            let result = self.checker.check(&vm_state, &fake_checkpoint, invariant);
             results.push((result, path_desc));
         }
 
