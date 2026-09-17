@@ -743,13 +743,7 @@ impl PropertyChecker {
                     }
                     PlaceBase::Local(n) => Local::from_usize(n),
                 };
-                let mut field_path: Vec<usize> = Vec::new();
-                for proj in &cp.projections {
-                    match proj {
-                        ContractProjection::Field { index, .. } => field_path.push(*index),
-                        _ => return None,
-                    }
-                }
+                let field_path = cp.plain_field_path()?;
                 vm_state.field_value(base_local, &field_path).cloned()
             }
             _ => None,
@@ -765,13 +759,7 @@ impl PropertyChecker {
         // Collect numeric field projections.  Any non-field projection (e.g. a
         // `Downcast` or `ForEach`) cannot be resolved to a scalar, so the
         // place does not evaluate.
-        let mut field_path: Vec<usize> = Vec::new();
-        for proj in &cp.projections {
-            match proj {
-                ContractProjection::Field { index, .. } => field_path.push(*index),
-                _ => return None,
-            }
-        }
+        let field_path = cp.plain_field_path()?;
 
         let base_local: Option<Local> = match cp.base {
             PlaceBase::Return => Some(Local::from_usize(0)),

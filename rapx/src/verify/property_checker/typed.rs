@@ -232,17 +232,7 @@ impl PropertyChecker {
     }
 
     pub(super) fn ty_is_maybe_uninit(ty: Ty<'_>) -> bool {
-        let mut t = ty;
-        loop {
-            match t.kind() {
-                TyKind::Slice(e) | TyKind::Array(e, _) => t = *e,
-                TyKind::RawPtr(e, _) | TyKind::Ref(_, e, _) => t = *e,
-                TyKind::Adt(adt, _) => {
-                    return crate::verify::api_classify::is_maybe_uninit_type(adt.did());
-                }
-                _ => return false,
-            }
-        }
+        crate::verify::api_classify::is_maybe_uninit_ty(ty)
     }
 
     pub(super) fn check_size<'ctx, 'tcx>(

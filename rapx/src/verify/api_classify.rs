@@ -17,6 +17,7 @@
 //! without the false positives of per-call-site name matching.
 
 use rustc_hir::def_id::DefId;
+use rustc_middle::ty::Ty;
 
 /// Whether `callee` is `Some` and matches any item in the (Option<DefId>) list.
 fn any_of(callee: Option<DefId>, items: &[Option<DefId>]) -> bool {
@@ -569,6 +570,22 @@ pub fn is_std_nonnull(def_id: DefId) -> bool {
 }
 pub fn is_maybe_uninit_type(def_id: DefId) -> bool {
     crate::def_id::maybe_uninit_types().contains(&def_id)
+}
+
+/// Whether `ty` (peeling through `&` / `*mut` / `*const` / `[T]` / `[T; N]`) is
+/// `MaybeUninit<...>`, i.e. carries no validity invariant (any bit pattern is a
+/// valid value).  Shared by the VM (`init_parameters`) and the `Typed` checker.
+pub fn is_maybe_uninit_ty(ty: Ty<'_>) -> bool {
+    use rustc_middle::ty::TyKind;
+    let mut t = ty;
+    loop {
+        match t.kind() {
+            TyKind::Slice(e) | TyKind::Array(e, _) => t = *e,
+            TyKind::RawPtr(e, _) | TyKind::Ref(_, e, _) => t = *e,
+            TyKind::Adt(adt, _) => return is_maybe_uninit_type(adt.did()),
+            _ => return false,
+        }
+    }
 }
 pub fn is_std_iter_or_itermut(def_id: DefId) -> bool {
     crate::def_id::iter_types().contains(&def_id)

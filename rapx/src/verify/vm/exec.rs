@@ -28,24 +28,6 @@ use super::state::{AllocId, InlineFrame, Provenance, ValueInvariants, VmState, V
 
 use crate::verify::api_classify;
 
-/// Whether `ty` (peeling through `&` / `*mut` / `*const` / `[T]` / `[T; N]`) is
-/// `MaybeUninit<...>`, i.e. carries no validity invariant (any bit pattern is a
-/// valid value).  Mirrors `PropertyChecker::ty_is_maybe_uninit`.
-fn ty_is_maybe_uninit(ty: Ty<'_>) -> bool {
-    use rustc_middle::ty::TyKind;
-    let mut t = ty;
-    loop {
-        match t.kind() {
-            TyKind::Slice(e) | TyKind::Array(e, _) => t = *e,
-            TyKind::RawPtr(e, _) | TyKind::Ref(_, e, _) => t = *e,
-            TyKind::Adt(adt, _) => {
-                return api_classify::is_maybe_uninit_type(adt.did());
-            }
-            _ => return false,
-        }
-    }
-}
-
 impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// Execute all retained MIR items in path order.
     pub(crate) fn execute_items(&mut self, items: &[RelevantItem<'tcx>]) {
@@ -439,7 +421,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // invariant — the content need not be initialized — so do not
                     // claim `Init` for them (the content property reduces to
                     // `Typed`).
-                    let pointee_is_maybe_uninit = ty_is_maybe_uninit(pointee_ty);
+                    let pointee_is_maybe_uninit = api_classify::is_maybe_uninit_ty(pointee_ty);
 
                     invariants.non_null = true;
                     if !pointee_is_maybe_uninit {
@@ -4213,19 +4195,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         view_ty: Ty<'tcx>,
         expr: &ContractExpr<'tcx>,
     ) -> Option<Int<'ctx>> {
-        use crate::verify::contract::{ContractProjection, NumericBinOp};
+        use crate::verify::contract::NumericBinOp;
         match expr {
             ContractExpr::Const(v) => Some(Int::from_u64(self.ctx, *v as u64)),
             ContractExpr::SizeOf(ty) => Some(self.size_sym_read(*ty)),
             ContractExpr::AlignOf(ty) => Some(self.align_sym_read(*ty)),
             ContractExpr::Place(cp) => {
-                let mut path: Vec<usize> = Vec::new();
-                for proj in &cp.projections {
-                    match proj {
-                        ContractProjection::Field { index, .. } => path.push(*index),
-                        _ => return None,
-                    }
-                }
+                let path = cp.plain_field_path()?;
                 self.alloc_field_values
                     .get(&(alloc_id, view_ty, path))
                     .map(|v| v.term.clone())
@@ -4258,17 +4234,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         view_ty: Ty<'tcx>,
         expr: &ContractExpr<'tcx>,
     ) -> Option<VmValue<'ctx, 'tcx>> {
-        use crate::verify::contract::ContractProjection;
         let ContractExpr::Place(cp) = expr else {
             return None;
         };
-        let mut path: Vec<usize> = Vec::new();
-        for proj in &cp.projections {
-            match proj {
-                ContractProjection::Field { index, .. } => path.push(*index),
-                _ => return None,
-            }
-        }
+        let path = cp.plain_field_path()?;
         self.alloc_field_values
             .get(&(alloc_id, view_ty, path))
             .cloned()
@@ -4296,7 +4265,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .get(1)
             .and_then(|a| {
                 if let PropertyArg::Ty(ty) = a {
-                    Some(ty_is_maybe_uninit(*ty))
+                    Some(api_classify::is_maybe_uninit_ty(*ty))
                 } else {
                     None
                 }
