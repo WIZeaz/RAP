@@ -302,11 +302,12 @@ impl PropertyChecker {
                         Some(vm_state.value_of_operand(op).term)
                     }
                     PlaceBase::Local(n) => {
-                        // The Local(N) refers to the callee's parameter.
-                        // Map to the callsite's corresponding Arg(N-1).
-                        let arg_idx = n.saturating_sub(1);
-                        if arg_idx < checkpoint.args.len() {
-                            let op = &checkpoint.args[arg_idx];
+                        // The Local(N) refers to the callee's parameter. Map to
+                        // the callsite's corresponding Arg via the callee's real
+                        // signature (falling back to the VM local when there is
+                        // no callee — e.g. a synthetic checkpoint — or `n` is a
+                        // temporary rather than a parameter).
+                        if let Some(op) = local_param_operand(vm_state, checkpoint, n) {
                             Some(vm_state.value_of_operand(op).term)
                         } else {
                             vm_state
