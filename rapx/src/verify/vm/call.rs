@@ -385,6 +385,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     alloc_id,
                     offset: Int::from_u64(self.ctx, 0),
                     is_field_offset: false,
+                    element_offset: None,
                 }),
                 invariants: ValueInvariants {
                     non_null: true,
@@ -513,6 +514,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     alloc_id,
                     offset: Int::from_u64(self.ctx, 0),
                     is_field_offset: false,
+                    element_offset: None,
                 }),
                 invariants: ValueInvariants {
                     non_null: true,
@@ -702,6 +704,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 alloc_id: pp.alloc_id,
                 offset: cur_off,
                 is_field_offset: false,
+                element_offset: None,
             }),
             invariants: ValueInvariants {
                 non_null: true,
@@ -1281,7 +1284,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     }
 
     /// Apply a single call effect to the VM state.
-    fn apply_call_effect(
+    pub(crate) fn apply_call_effect(
         &mut self,
         effect: &CallEffect,
         args: &[VmValue<'ctx, 'tcx>],
@@ -1333,6 +1336,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 alloc_id,
                                 offset: Int::from_u64(self.ctx, 0),
                                 is_field_offset: false,
+                                element_offset: None,
                             }),
                             invariants: ValueInvariants::default(),
                         };
@@ -1458,6 +1462,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             alloc_id,
                             offset: field_offset,
                             is_field_offset: false,
+                            element_offset: None,
                         };
 
                         let field_val = VmValue {
@@ -1529,6 +1534,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         alloc_id: root_alloc_id,
                         offset: start_off,
                         is_field_offset: false,
+                        element_offset: None,
                     }),
                     invariants: ValueInvariants {
                         init: true,
@@ -1545,6 +1551,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         alloc_id: root_alloc_id,
                         offset: slice_len,
                         is_field_offset: false,
+                        element_offset: None,
                     }),
                     invariants: ValueInvariants {
                         init: true,
@@ -1658,6 +1665,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             alloc_id,
                             offset: Int::from_u64(self.ctx, 0),
                             is_field_offset: false,
+                            element_offset: None,
                         }),
                         invariants: ValueInvariants {
                             init: true,
@@ -1713,6 +1721,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 alloc_id: data_alloc,
                                 offset: Int::from_u64(self.ctx, 0),
                                 is_field_offset: false,
+                                element_offset: None,
                             });
                         }
                     }
@@ -1727,6 +1736,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 base_arg,
                 offset_arg,
                 stride,
+                dereferenceable,
             } => {
                 let stride = *stride;
                 if let (Some(base), Some(offset)) = (args.get(*base_arg), args.get(*offset_arg)) {
@@ -1750,10 +1760,27 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             .provenance
                             .as_ref()
                             .is_some_and(|p| p.offset.as_u64() == Some(0));
+                    let element_offset = if stride == Some(1) {
+                        None
+                    } else {
+                        match base.provenance.as_ref().and_then(|p| p.element_offset.clone()) {
+                            Some(e) => Some(Int::add(self.ctx, &[&e, &offset.term])),
+                            None
+                                if base
+                                    .provenance
+                                    .as_ref()
+                                    .is_some_and(|p| p.offset.as_u64() == Some(0)) =>
+                            {
+                                Some(offset.term.clone())
+                            }
+                            None => None,
+                        }
+                    };
                     let adjusted_provenance = base.provenance.as_ref().map(|prov| Provenance {
                         alloc_id: prov.alloc_id,
                         offset: Int::add(self.ctx, &[&prov.offset, &adjusted_offset]),
                         is_field_offset,
+                        element_offset,
                     });
                     let align_n = match stride {
                         Some(s) => self.compute_pointer_add_align(base, offset, s),
@@ -1766,7 +1793,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         invariants: ValueInvariants {
                             non_null: base.invariants.non_null,
                             aligned: align_n.is_some() && base.invariants.aligned,
-                            in_bounds: base.invariants.in_bounds,
+                            in_bounds: *dereferenceable,
                             align_n,
                             init: base.invariants.init,
                             is_field_offset: false,
@@ -1797,10 +1824,19 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         Int::mul(self.ctx, &[&offset.term, &stride_term])
                     };
                     let new_term = Int::sub(self.ctx, &[&base.term, &scaled]);
+                    let element_offset = if stride == Some(1) {
+                        None
+                    } else {
+                        match base.provenance.as_ref().and_then(|p| p.element_offset.clone()) {
+                            Some(e) => Some(Int::sub(self.ctx, &[&e, &offset.term])),
+                            None => None,
+                        }
+                    };
                     let adjusted_provenance = base.provenance.as_ref().map(|prov| Provenance {
                         alloc_id: prov.alloc_id,
                         offset: Int::sub(self.ctx, &[&prov.offset, &scaled]),
                         is_field_offset: false,
+                        element_offset,
                     });
                     let align_n = match stride {
                         Some(s) => self.compute_pointer_add_align(base, offset, s),
@@ -2463,6 +2499,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         alloc_id,
                         offset: Int::from_u64(self.ctx, 0),
                         is_field_offset: false,
+                        element_offset: None,
                     };
                     // If return is a reference, register slice/pointee data
                     if let Some(ref dest_alloc_id) = self.local_alloc_ids.get(&dest).copied() {
@@ -2529,6 +2566,38 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     }
                 }
             }
+            CallEffect::ReturnBoxAllocation => {
+                let dest_ty = self.body.local_decls[dest].ty;
+                let pointee = crate::helpers::mir_utils::pointee_ty(dest_ty);
+                let size = pointee
+                    .map(|ty| self.size_sym_read(ty))
+                    .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
+                let align = pointee.map(|ty| self.align_sym(ty)).unwrap_or_else(|| Int::from_u64(self.ctx, 1));
+                let (alloc_id, base) = self.allocate(size, align, pointee);
+                self.alloc_mut(alloc_id).initialized = true;
+                let align_n = pointee.map(|ty| self.align_sym(ty));
+                self.set_local(
+                    dest,
+                    VmValue {
+                        term: base.clone(),
+                        ty: dest_ty,
+                        provenance: Some(Provenance {
+                            alloc_id,
+                            offset: Int::from_u64(self.ctx, 0),
+                            is_field_offset: false,
+                            element_offset: None,
+                        }),
+                        invariants: ValueInvariants {
+                            non_null: true,
+                            init: true,
+                            aligned: true,
+                            in_bounds: true,
+                            align_n,
+                            is_field_offset: false,
+                        },
+                    },
+                );
+            }
             CallEffect::ReturnNewAllocation {
                 size_arg,
                 elem_size,
@@ -2556,6 +2625,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 alloc_id: stack_id,
                                 offset: Int::from_u64(self.ctx, 0),
                                 is_field_offset: false,
+                                element_offset: None,
                             }),
                             invariants: ValueInvariants {
                                 non_null: true,
@@ -2577,6 +2647,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                     alloc_id,
                                     offset: Int::from_u64(self.ctx, 0),
                                     is_field_offset: false,
+                                    element_offset: None,
                                 }),
                                 invariants: ValueInvariants {
                                     non_null: true,
@@ -2615,6 +2686,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 alloc_id: stack_id,
                                 offset: Int::from_u64(self.ctx, 0),
                                 is_field_offset: false,
+                                element_offset: None,
                             }),
                             invariants: ValueInvariants {
                                 non_null: true,
@@ -2635,6 +2707,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                     alloc_id,
                                     offset: Int::from_u64(self.ctx, 0),
                                     is_field_offset: false,
+                                    element_offset: None,
                                 }),
                                 invariants: ValueInvariants {
                                     non_null: true,
@@ -2673,6 +2746,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             alloc_id: stack_id,
                             offset: Int::from_u64(self.ctx, 0),
                             is_field_offset: false,
+                            element_offset: None,
                         }),
                         invariants: ValueInvariants {
                             non_null: true,
@@ -2695,6 +2769,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 alloc_id,
                                 offset: Int::from_u64(self.ctx, 0),
                                 is_field_offset: false,
+                                element_offset: None,
                             }),
                             invariants: ValueInvariants {
                                 non_null: true,
@@ -2724,6 +2799,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                         alloc_id: heap_alloc_id,
                                         offset: Int::from_u64(self.ctx, 0),
                                         is_field_offset: false,
+                                        element_offset: None,
                                     }),
                                     invariants: ValueInvariants {
                                         non_null: true,
@@ -3163,6 +3239,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         alloc_id: prov.alloc_id,
                         offset: Int::sub(self.ctx, &[&prov.offset, &scaled]),
                         is_field_offset: false,
+                        element_offset: None,
                     });
                 }
             }

@@ -60,6 +60,7 @@ static REGISTRY: &[Entry] = &[
     // `reserve`/`reserve_exact` — which are not — for the shared
     // write-to-buffer model.)
     ED!(api_classify::is_vec_alloc_constructor, eff_new_allocation),
+    ED!(api_classify::is_box_alloc_ctor, eff_box_alloc),
     // `into_vec` / `box_assume_init_into_vec_unsafe`: needed on older
     // toolchains where `vec![…]` literals lower to `into_vec` (not `from_elem`).
     ED!(api_classify::is_vec_from_box, eff_vec_from_box),
@@ -217,6 +218,7 @@ fn eff_sliceindex_get_unchecked(ctx: &EffCtx<'_, '_>) -> Vec<CallEffect> {
         base_arg: 1,
         offset_arg: 0,
         stride: destination_stride(ctx.tcx, ctx.caller, ctx.dest),
+        dereferenceable: true,
     }]
 }
 
@@ -278,6 +280,7 @@ fn eff_ptr_arith(
             base_arg: 0,
             offset_arg: 1,
             stride,
+            dereferenceable: false,
         },
     };
     vec![effect]
@@ -439,6 +442,10 @@ fn eff_new_allocation(ctx: &EffCtx<'_, '_>) -> Vec<CallEffect> {
         size_arg: 1,
         elem_size: elem,
     }]
+}
+
+fn eff_box_alloc(_ctx: &EffCtx<'_, '_>) -> Vec<CallEffect> {
+    vec![CallEffect::ReturnBoxAllocation]
 }
 
 fn eff_new_allocation_from_cap(ctx: &EffCtx<'_, '_>) -> Vec<CallEffect> {

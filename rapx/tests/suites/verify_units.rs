@@ -268,10 +268,22 @@ unsound_hazard_tests! {
     alias_unsound_16: "verify_units/alias_unsound_16" => "unsound_vec_reserve_while_raw_slice_live" => "Alias",
     alias_unsound_18: "verify_units/alias_unsound_18" => "as_bytes_mut_unsound" => "Alias",
     alias_unsound_19: "verify_units/alias_unsound_19" => "as_bytes_mut_ptr_missing_alias" => "Alias",
-    // An *independent* `*mut T` must be assumed to alias the shared `&[T]`
-    // (raw pointers carry no borrow information): Ptr2Ref from it is an Alias
-    // hazard, not discharged by the presence of a shared reference.
-    alias_unsound_21: "verify_units/alias_unsound_21" => "unsound_independent_mut_ptr_aliases_shared" => "Alias",
+}
+
+// An *independent* `*mut T` must be assumed to alias the shared `&[T]`
+// (raw pointers carry no borrow information): Ptr2Ref from it is an Alias
+// hazard, not discharged by the presence of a shared reference.  The raw
+// pointer is also not known non-null (the `Init` requires does not imply
+// `NonNull` in the current model), so both properties are unproved.
+#[test]
+fn alias_unsound_21() {
+    let output = run_with_args("verify_units/alias_unsound_21", CMD_VERIFY_TARGETED);
+    assert_unproved_exclusive_with_result(
+        &output,
+        "unsound_independent_mut_ptr_aliases_shared",
+        &["Alias", "NonNull"],
+        "UNSOUND",
+    );
 }
 
 // ================ NonOverlap Sound Cases =============
@@ -626,6 +638,21 @@ fn alias_unsound_02() {
 fn alias_unsound_20() {
     let output = run_with_args("verify_units/alias_unsound_20", CMD_VERIFY_TARGETED);
     assert_unproved_exclusive_with_result(&output, "as_bytes_mut_ptr_len_missing_alias", &["Alias", "ValidNum", "Allocated"], "UNSOUND");
+}
+
+// `&*p` on a one-past-end pointer: the raw-ptr-deref checkpoint checks
+// `NonNull + Allocated + InBound`, so the out-of-bounds deref is rejected via
+// `InBound | Failed` (the pointer has provenance, so `Allocated` holds, but the
+// one-past-end access exceeds the allocation).
+#[test]
+fn alias_unsound_22() {
+    let output = run_with_args("verify_units/alias_unsound_22", CMD_VERIFY_TARGETED);
+    assert_unproved_exclusive_with_result(
+        &output,
+        "unsound_oob_deref_missing_validptr",
+        &["InBound"],
+        "UNSOUND",
+    );
 }
 
 // Custom test: from_raw_parts wrong element type causes multiple failures

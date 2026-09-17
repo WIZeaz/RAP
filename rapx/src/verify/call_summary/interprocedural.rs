@@ -169,35 +169,42 @@ pub(super) fn try_pointer_arith_wrapper_effect<'tcx>(
         }
 
         if let Some(effect) = inner_effect {
-            match effect {
+            let (inner_base, inner_offset, stride, dereferenceable) = match effect {
                 CallEffect::ReturnPointerAdd {
-                    base_arg: inner_base,
-                    offset_arg: inner_offset,
+                    base_arg,
+                    offset_arg,
+                    stride,
+                    dereferenceable,
+                } => (base_arg, offset_arg, stride, dereferenceable),
+                CallEffect::ReturnPointerSub {
+                    base_arg,
+                    offset_arg,
+                    stride,
+                } => (base_arg, offset_arg, stride, false),
+                _ => {
+                    continue;
+                }
+            };
+            let base_arg = trace_to_callee_arg(tcx, body, &args.get(inner_base)?.node)?;
+            let offset_arg = trace_to_callee_arg(tcx, body, &args.get(inner_offset)?.node)?;
+            let is_sub = matches!(
+                effect,
+                CallEffect::ReturnPointerSub { .. }
+            );
+            return Some(if is_sub {
+                CallEffect::ReturnPointerSub {
+                    base_arg,
+                    offset_arg,
                     stride,
                 }
-                | CallEffect::ReturnPointerSub {
-                    base_arg: inner_base,
-                    offset_arg: inner_offset,
+            } else {
+                CallEffect::ReturnPointerAdd {
+                    base_arg,
+                    offset_arg,
                     stride,
-                } => {
-                    let base_arg = trace_to_callee_arg(tcx, body, &args.get(inner_base)?.node)?;
-                    let offset_arg = trace_to_callee_arg(tcx, body, &args.get(inner_offset)?.node)?;
-                    return Some(match effect {
-                        CallEffect::ReturnPointerSub { .. } => CallEffect::ReturnPointerSub {
-                            base_arg,
-                            offset_arg,
-                            stride,
-                        },
-                        _ => CallEffect::ReturnPointerAdd {
-                            base_arg,
-                            offset_arg,
-                            stride,
-                        },
-                    });
+                    dereferenceable,
                 }
-                _ => {}
-            }
-            continue;
+            });
         }
 
         let base_arg = trace_to_callee_arg(tcx, body, &args.get(0)?.node)?;
@@ -219,6 +226,7 @@ pub(super) fn try_pointer_arith_wrapper_effect<'tcx>(
                 base_arg,
                 offset_arg,
                 stride,
+                dereferenceable: false,
             })
         };
     }

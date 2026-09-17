@@ -80,6 +80,10 @@ pub(crate) enum CallEffect {
         base_arg: usize,
         offset_arg: usize,
         stride: Option<u64>,
+        /// Whether the result is a *dereferenceable* pointer (its contract
+        /// guarantees strict in-bounds, e.g. `SliceIndex::get_unchecked`), as
+        /// opposed to plain `add` arithmetic whose result may be one-past-end.
+        dereferenceable: bool,
     },
     /// The return value is `base - offset * stride`.
     ReturnPointerSub {
@@ -163,6 +167,13 @@ pub(crate) enum CallEffect {
     /// this does not require a pointer argument — used for constructors like
     /// `Vec::from_elem(init, count)` that allocate fresh memory.
     ReturnNewAllocation { size_arg: usize, elem_size: u64 },
+    /// `Box::new` / `Box::new_in` / `Box::new_uninit` / `Box::new_uninit_in`
+    /// (and `try_` variants): allocate a fresh heap buffer of `size_of::<T>()`
+    /// bytes and return a `Box` whose pointer field backs it.  These have MIR
+    /// available but carry a `match` on the allocator's `Result`, which the
+    /// inline heuristic rejects as a semantic branch, so a direct effect is the
+    /// only way the fresh allocation's provenance reaches the `NonNull`.
+    ReturnBoxAllocation,
     /// Like ReturnNewAllocation but the length is carried by the argument
     /// itself (a Box fat pointer) rather than a separate count argument.
     /// Used for `into_vec` / `box_assume_init_into_vec_unsafe`.

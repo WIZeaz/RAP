@@ -506,9 +506,10 @@ impl<'a, K, V> NodeRef<marker::Mut<'a>, K, V, marker::LeafOrInternal> {
     }
 }
 
+#[rapx::invariant(ValidNum(idx <= node.len()))]
 pub struct Handle<Node, Type> {
-    pub node: Node,
-    pub idx: usize,
+    node: Node,
+    idx: usize,
     _marker: PhantomData<Type>,
 }
 

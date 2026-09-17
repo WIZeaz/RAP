@@ -444,6 +444,14 @@ impl PropertyChecker {
         let TyKind::Param(param) = ty.kind() else {
             return ty;
         };
+        // A synthetic checkpoint (raw-ptr-deref, static-mut, type-invariant) has
+        // no callee: its property type args are already the caller's own types.
+        // Resolving them through `checkpoint.block`'s terminator would pick up an
+        // *unrelated* neighbouring call (e.g. the `same_bucket` closure call for a
+        // `&mut *ptr_write` deref), mapping `T` to the closure type `F`.
+        if checkpoint.callee.is_none() {
+            return ty;
+        };
 
         let body = vm_state.body;
         let terminator = body.basic_blocks[checkpoint.block].terminator();
@@ -630,6 +638,45 @@ impl PropertyChecker {
                     }
                 }
                 let val = self.eval_contract_expr_to_value(vm_state, checkpoint, inner)?;
+                // A pointer whose pointee ADT carries a `len` field
+                // (`NodeRef<LeafNode>`: `len()` reads `(*ptr).len`).
+                if let Some(len) = vm_state.try_adt_len_field(&val) {
+                    return Some(len);
+                }
+                // A struct (e.g. `NodeRef`) whose `len()` reads `(*x.field).len`
+                // through a `NonNull` field.
+                if let crate::verify::contract::ContractExpr::Place(cp) = &**inner {
+                    let mut field_path: Vec<usize> = Vec::new();
+                    let mut is_plain = true;
+                    for proj in &cp.projections {
+                        match proj {
+                            ContractProjection::Field { index, .. } => field_path.push(*index),
+                            _ => {
+                                is_plain = false;
+                                break;
+                            }
+                        }
+                    }
+                    if is_plain {
+                        let base_local = match cp.base {
+                            PlaceBase::Return => Some(Local::from_usize(0)),
+                            PlaceBase::Local(n) => Some(Local::from_usize(n)),
+                            PlaceBase::Arg(n) => checkpoint
+                                .and_then(|ck| ck.args.get(n))
+                                .and_then(|op| match op {
+                                    Operand::Copy(p) | Operand::Move(p) => Some(p.local),
+                                    _ => None,
+                                }),
+                        };
+                        if let Some(local) = base_local {
+                            if let Some(len) =
+                                vm_state.try_struct_nn_len_field(local, &field_path, val.ty)
+                            {
+                                return Some(len);
+                            }
+                        }
+                    }
+                }
                 // Prefer the materialized slice length; fall back to the
                 // `size / elem_size` derivation for allocations that never got
                 // a materialized `slice_len`.

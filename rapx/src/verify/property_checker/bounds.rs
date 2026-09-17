@@ -59,6 +59,19 @@ impl PropertyChecker {
         let Some(value) = self.target_value(vm_state, checkpoint, property) else {
             return CheckResult::Unknown;
         };
+        // `in_bounds` records "points at a valid element" (established by a
+        // single-element deref/contract), so it only discharges a single-element
+        // InBound.  A `count > 1` check still needs the byte-range proof below.
+        if value.invariants.in_bounds {
+            let count_one = property
+                .args()
+                .get(2)
+                .and_then(|a| self.resolve_arg_term(vm_state, checkpoint, a))
+                .map_or(true, |c| c.simplify().as_u64() == Some(1));
+            if count_one {
+                return CheckResult::ProvedByRule;
+            }
+        }
         if matches!(value.ty.kind(), TyKind::Ref(..)) {
             return CheckResult::ProvedByRule;
         }
@@ -99,6 +112,47 @@ impl PropertyChecker {
         // External allocations have unbounded size.
         if vm_state.alloc(alloc_id).is_external {
             return CheckResult::ProvedByRule;
+        }
+
+        // Element-level bounds fast-path: when the allocation materializes a
+        // slice length and the pointer was derived by element-strided arithmetic
+        // (its `element_offset` is tracked), check `k + count <= len` linearly.
+        // This avoids the non-linear `(k + count)·S <= len·S` byte form for a
+        // generic element size `S`, which Z3's NIA solver cannot decide.
+        // `sub` walks *backwards* (`[value - access, value)`), so this forward
+        // form would mis-classify `end.sub(n)` as out of bounds; the `sub`-aware
+        // byte-range proof below handles that direction.
+        if !api_classify::is_pointer_sub(checkpoint.callee) {
+            if let (Some(len), Some(k)) = (
+                alloc.slice_len.clone(),
+                value
+                    .provenance
+                    .as_ref()
+                    .and_then(|p| p.element_offset.clone()),
+            ) {
+                let count_term = property
+                    .args()
+                    .get(2)
+                    .and_then(|a| self.resolve_arg_term(vm_state, checkpoint, a))
+                    .unwrap_or_else(|| Int::from_u64(vm_state.ctx, 1));
+                let zero = Int::from_u64(vm_state.ctx, 0);
+                let covered = Int::add(vm_state.ctx, &[&k, &count_term]);
+                solver.push();
+                for cond in &vm_state.path_conditions {
+                    solver.assert(cond);
+                }
+                solver.assert(&z3::ast::Bool::or(
+                    vm_state.ctx,
+                    &[&covered.gt(&len), &k.lt(&zero)],
+                ));
+                let r = match solver.check() {
+                    SatResult::Unsat => CheckResult::ProvedBySmt,
+                    SatResult::Sat => CheckResult::Failed,
+                    _ => CheckResult::Unknown,
+                };
+                solver.pop(1);
+                return r;
+            }
         }
 
         let alloc_elem_is_generic = vm_state

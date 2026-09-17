@@ -289,26 +289,26 @@ impl PropertyChecker {
         // Walk both binary_op_sources (Add, Sub, Div, etc.) and
         // other_op_sources (select_unpredictable) for destinations
         // whose term matches target.
-        let op_sources: Vec<&(Option<PlaceKey>, Option<PlaceKey>)> = {
-            let mut src: Vec<&(Option<PlaceKey>, Option<PlaceKey>)> = Vec::new();
-            for (pk, pair) in vm_state.binary_op_sources.iter() {
+        let op_sources: Vec<(Option<PlaceKey>, Option<PlaceKey>)> = {
+            let mut src: Vec<(Option<PlaceKey>, Option<PlaceKey>)> = Vec::new();
+            for (pk, (lhs, rhs, _)) in vm_state.binary_op_sources.iter() {
                 if pk
                     .local()
                     .and_then(|l| vm_state.local_value(l))
                     .map(|v| v.term == *target)
                     .unwrap_or(false)
                 {
-                    src.push(pair);
+                    src.push((lhs.clone(), rhs.clone()));
                 }
             }
-            for (pk, pair) in vm_state.other_op_sources.iter() {
+            for (pk, (lhs, rhs)) in vm_state.other_op_sources.iter() {
                 if pk
                     .local()
                     .and_then(|l| vm_state.local_value(l))
                     .map(|v| v.term == *target)
                     .unwrap_or(false)
                 {
-                    src.push(pair);
+                    src.push((lhs.clone(), rhs.clone()));
                 }
             }
             src
@@ -328,10 +328,16 @@ impl PropertyChecker {
                 continue;
             }
 
-            for (pk, (lhs, rhs)) in vm_state
+            for (pk, lhs, rhs) in vm_state
                 .binary_op_sources
                 .iter()
-                .chain(vm_state.other_op_sources.iter())
+                .map(|(pk, (l, r, _))| (pk, l, r))
+                .chain(
+                    vm_state
+                        .other_op_sources
+                        .iter()
+                        .map(|(pk, (l, r))| (pk, l, r)),
+                )
             {
                 if let Some(dest_local) = pk.local() {
                     if let Some(dest_val) = vm_state.local_value(dest_local) {
@@ -369,7 +375,8 @@ impl PropertyChecker {
             };
 
             // Check if lhs is itself a Div / Rem result
-            if let Some((div_lhs_pk, div_rhs_pk)) = vm_state.binary_op_sources.get(lhs_pk).cloned()
+            if let Some((div_lhs_pk, div_rhs_pk, _)) =
+                vm_state.binary_op_sources.get(lhs_pk).cloned()
             {
                 let Some(div_lhs_local) = div_lhs_pk.and_then(|pk| pk.local()) else {
                     continue;

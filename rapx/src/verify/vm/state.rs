@@ -34,6 +34,14 @@ pub(crate) struct Provenance<'ctx> {
     /// size_of(container)`, which the verifier uses to discharge in-bounds
     /// checks for patterns like `Option::as_slice`.
     pub is_field_offset: bool,
+    /// Element index within the allocation, tracked only when the pointer was
+    /// derived by *element*-strided pointer arithmetic (e.g. `ptr.add(k)` or
+    /// `SliceIndex::get_unchecked`) off an allocation base.  Lets `InBound`
+    /// check `k + count <= slice_len` linearly instead of the non-linear byte
+    /// form `(k + count)·S <= len·S` (which Z3's NIA solver cannot decide for
+    /// a generic element size `S`).  `None` for byte-strided or untracked
+    /// pointers.
+    pub element_offset: Option<Int<'ctx>>,
 }
 
 /// Known invariants about a symbolic value.
@@ -228,6 +236,13 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     /// Current value bound to each MIR local.
     pub(crate) locals: FxHashMap<Local, VmValue<'ctx, 'tcx>>,
 
+    /// Locals whose value was assigned by *forward* execution (not the
+    /// `init_parameters` fallback).  Used by `propagate_single_assign` to tell
+    /// "already executed" apart from "still at its default value", so a
+    /// pruned assignment (e.g. a `*const T as *mut T` cast) is still filled in
+    /// instead of leaving the destination at its stack-address default.
+    pub(crate) forward_assigned: FxHashSet<Local>,
+
     /// Known address for each stack-allocated local.
     pub(crate) local_addresses: FxHashMap<Local, Int<'ctx>>,
 
@@ -246,8 +261,11 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     /// Track block occurrence counts for loop-carried value indexing.
     pub(crate) block_occurrences: FxHashMap<BasicBlock, usize>,
 
-    /// Binary op sources for guard inference: destination → (lhs, rhs) place keys.
-    pub(crate) binary_op_sources: FxHashMap<PlaceKey, (Option<PlaceKey>, Option<PlaceKey>)>,
+    /// Binary op sources for guard inference: destination → (lhs, rhs) place keys
+    /// and the operator kind, so null-check guards (`Ne`) can be told apart from
+    /// alignment/equality guards (`Eq`).
+    pub(crate) binary_op_sources:
+        FxHashMap<PlaceKey, (Option<PlaceKey>, Option<PlaceKey>, rustc_middle::mir::BinOp)>,
 
     /// Direct boolean condition for a comparison result place (Le/Lt/Ge/Gt/Eq/Ne),
     /// used to record precise switch-guard path conditions.
@@ -271,11 +289,15 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     /// Example: `(local_3, [0])` is `local_3.0`, `(local_3, [0, 1])` is `local_3.0.1`.
     pub(crate) field_values: FxHashMap<(Local, Vec<usize>), VmValue<'ctx, 'tcx>>,
 
-    /// Per-allocation field tracking: (alloc_id, field_indices) → value.  This
-    /// mirrors `field_values` but is keyed by allocation instead of local, so a
-    /// `&*NonNull<ADT>` dereference can resolve the pointee's fields (e.g.
-    /// `(*leaf).len`) regardless of which local holds the pointer.
-    pub(crate) alloc_field_values: FxHashMap<(AllocId, Vec<usize>), VmValue<'ctx, 'tcx>>,
+    /// Per-allocation field tracking: (alloc_id, viewed_type, field_indices) →
+    /// value.  This mirrors `field_values` but is keyed by allocation instead of
+    /// local, so a `&*NonNull<ADT>` dereference can resolve the pointee's fields
+    /// (e.g. `(*leaf).len`) regardless of which local holds the pointer.  The
+    /// `viewed_type` distinguishes reinterprets of the same allocation under
+    /// different ADTs (e.g. `LeafNode` vs `InternalNode` cast views), so field
+    /// index `1` resolves to `parent_idx` under `LeafNode` and `edges` under
+    /// `InternalNode` without colliding.
+    pub(crate) alloc_field_values: FxHashMap<(AllocId, Ty<'tcx>, Vec<usize>), VmValue<'ctx, 'tcx>>,
 
     /// Cumulative ptr offset for Iter/IterMut field [0] (ptr).
     /// Key: (struct_local). When post_inc_start advances the ptr by
@@ -355,6 +377,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             body,
             caller_def_id,
             locals: FxHashMap::default(),
+            forward_assigned: FxHashSet::default(),
             local_addresses: FxHashMap::default(),
             local_alloc_ids: FxHashMap::default(),
             allocations: Vec::new(),
@@ -768,11 +791,18 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 .iter()
                 .any(|p| matches!(p.kind(), ProjectionElem::Deref))
         {
-            // Only Deref and Field projections — all non-Field must be Deref.
-            let non_field_deref = place
-                .projection
-                .iter()
-                .all(|p| matches!(p.kind(), ProjectionElem::Field(..) | ProjectionElem::Deref));
+            // Only Deref and Field projections — all non-Field must be Deref
+            // (a full-range `Subslice` (`arr[..]`) is transparent: it converts
+            // `[T; N]` → `[T]` without changing which field is selected, so
+            // `(*ptr).edges[..]` still resolves to the `edges` field).
+            let non_field_deref = place.projection.iter().all(|p| {
+                matches!(
+                    p.kind(),
+                    ProjectionElem::Field(..)
+                        | ProjectionElem::Deref
+                        | ProjectionElem::Subslice { .. }
+                )
+            });
             if non_field_deref {
                 if let Some(val) = self
                     .field_values
@@ -784,12 +814,16 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // Resolve a Deref+Field access through the pointee allocation's
                 // per-allocation field tracking (e.g. `(*leaf).len` → the
                 // `LeafNode.len` field value materialized by
-                // `decompose_pointee_fields`).
+                // `decompose_pointee_fields`).  The viewed type (pointee) is part
+                // of the key so reinterpret casts (e.g. `LeafNode` → `InternalNode`)
+                // resolve to the right field view.
                 if let Some(base_val) = self.locals.get(&place.local) {
                     if let Some(alloc_id) = base_val.provenance_alloc_id() {
+                        let view_ty = crate::helpers::mir_utils::pointee_ty(base_val.ty)
+                            .unwrap_or(base_val.ty);
                         if let Some(val) = self
                             .alloc_field_values
-                            .get(&(alloc_id, field_path.clone()))
+                            .get(&(alloc_id, view_ty, field_path.clone()))
                             .cloned()
                         {
                             return Some(val);

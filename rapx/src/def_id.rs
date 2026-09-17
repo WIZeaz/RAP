@@ -395,6 +395,7 @@ struct Methods {
     from_raw_parts_fns: Vec<DefId>,
     from_raw_parts_mut_fns: Vec<DefId>,
     with_capacity_fns: Vec<DefId>,
+    box_alloc_ctors: Vec<DefId>,
     vec_ownership_transfer_fns: Vec<DefId>,
     min_like: Vec<DefId>,
     max: Vec<DefId>,
@@ -426,6 +427,7 @@ fn init_methods(tcx: TyCtxt) -> Methods {
         from_raw_parts_fns: Vec::new(),
         from_raw_parts_mut_fns: Vec::new(),
         with_capacity_fns: Vec::new(),
+        box_alloc_ctors: Vec::new(),
         vec_ownership_transfer_fns: Vec::new(),
         min_like: Vec::new(),
         max: Vec::new(),
@@ -472,6 +474,16 @@ fn init_methods(tcx: TyCtxt) -> Methods {
             }
             if name.ends_with("::with_capacity") && name.contains("::Vec::") {
                 methods.with_capacity_fns.push(did);
+            }
+            if name.contains("::Box::")
+                && (name.ends_with("::new")
+                    || name.ends_with("::new_in")
+                    || name.ends_with("::new_uninit")
+                    || name.ends_with("::new_uninit_in")
+                    || name.ends_with("::try_new_uninit")
+                    || name.ends_with("::try_new_uninit_in"))
+            {
+                methods.box_alloc_ctors.push(did);
             }
             if (name.ends_with("::from_raw_parts") || name.ends_with("::from_parts"))
                 && (name.contains("Vec") || name.contains("vec::"))
@@ -630,6 +642,14 @@ pub fn with_capacity_fns() -> &'static [DefId] {
         .get()
         .expect("Method DefIds haven't been initialized.")
         .with_capacity_fns
+}
+
+/// `Box::new` / `new_in` / `new_uninit` / `new_uninit_in` (and `try_` variants).
+pub fn box_alloc_ctors() -> &'static [DefId] {
+    &METHODS
+        .get()
+        .expect("Method DefIds haven't been initialized.")
+        .box_alloc_ctors
 }
 
 /// `Vec::from_raw_parts` / `Vec::from_parts` (ownership transfer into a `Vec`).

@@ -424,6 +424,11 @@ pub fn is_vec_from_box(callee: Option<DefId>) -> bool {
 pub fn is_vec_with_capacity(callee: Option<DefId>) -> bool {
     any_fn(callee, crate::def_id::with_capacity_fns())
 }
+/// `Box::new` / `new_in` / `new_uninit` / `new_uninit_in` (and `try_` variants)
+/// — fresh heap allocation constructors.
+pub fn is_box_alloc_ctor(callee: Option<DefId>) -> bool {
+    any_fn(callee, crate::def_id::box_alloc_ctors())
+}
 pub fn is_into_boxed_slice(callee: Option<DefId>) -> bool {
     any_of(callee, &[crate::def_id::vec_into_boxed_slice()])
 }

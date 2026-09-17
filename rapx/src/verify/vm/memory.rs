@@ -32,6 +32,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             alloc_id,
                             offset: zero,
                             is_field_offset: false,
+                            element_offset: None,
                         })
                 });
             return Some(VmValue {
@@ -51,9 +52,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 alloc_id,
                 offset: zero.clone(),
                 is_field_offset: false,
+                element_offset: None,
             });
         let mut current_ty = self.body.local_decls[place.local].ty;
         let mut field_path: Vec<usize> = Vec::new();
+        let mut view_ty = current_ty;
 
         for proj in place.projection.iter() {
             let mut handled = false;
@@ -125,7 +128,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             let alloc = provenance.as_ref().map(|p| p.alloc_id);
                             alloc.and_then(|a| {
                                 self.alloc_field_values
-                                    .get(&(a, field_path.clone()))
+                                    .get(&(a, view_ty, field_path.clone()))
                                     .and_then(|fv| {
                                         fv.provenance.clone().map(|p| (fv.term.clone(), p))
                                     })
@@ -161,7 +164,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     }
                     if let TyKind::Ref(_, deref_ty, _) = current_ty.kind() {
                         current_ty = *deref_ty;
+                    } else if let TyKind::RawPtr(deref_ty, _) = current_ty.kind() {
+                        current_ty = *deref_ty;
                     }
+                    view_ty = current_ty;
                 }
                 _ => {
                     self.notes

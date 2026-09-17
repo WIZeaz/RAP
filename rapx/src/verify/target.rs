@@ -1498,6 +1498,15 @@ fn build_raw_ptr_deref_checks<'tcx>(
                         PropertyKind::Init,
                         vec![target.clone(), ty.clone(), count.clone()],
                     ),
+                    Property::new_atom(PropertyKind::NonNull, vec![target.clone()]),
+                    Property::new_atom(
+                        PropertyKind::Allocated,
+                        vec![target.clone(), ty.clone(), count.clone()],
+                    ),
+                    Property::new_atom(
+                        PropertyKind::InBound,
+                        vec![target.clone(), ty.clone(), count.clone()],
+                    ),
                     Property::new_atom(PropertyKind::Align, vec![target.clone(), ty.clone()]),
                     {
                         let mut p = Property::new_atom(PropertyKind::Alias, vec![target.clone()]);

@@ -82,25 +82,27 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 kind,
             };
 
-            // Prefer parameter locals and owned origins (Box/Vec)
-            let is_param = local.as_usize() <= self.body.arg_count;
+            // Prefer parameter locals and owned origins (Box/Vec), then the
+            // lower local index.
+            let is_param = local.as_usize() >= 1 && local.as_usize() <= self.body.arg_count;
             let is_owned = candidate.is_owned();
 
             match &best {
                 None => best = Some(candidate),
                 Some(existing) => {
-                    let ex_is_param = existing.local.as_usize() <= self.body.arg_count;
+                    let ex_is_param =
+                        existing.local.as_usize() >= 1
+                            && existing.local.as_usize() <= self.body.arg_count;
                     let ex_is_owned = existing.is_owned();
-                    // Parameters preferred over non-params
-                    if is_param && !ex_is_param {
+                    let rank = |p: bool, o: bool| if p { 0 } else if o { 1 } else { 2 };
+                    let cand_rank = rank(is_param, is_owned);
+                    let ex_rank = rank(ex_is_param, ex_is_owned);
+                    if cand_rank < ex_rank {
                         best = Some(candidate);
-                    } else if is_owned && !ex_is_owned {
+                    } else if cand_rank == ex_rank
+                        && local.as_usize() < existing.local.as_usize()
+                    {
                         best = Some(candidate);
-                    } else if is_param == ex_is_param && is_owned == ex_is_owned {
-                        // If equal priority, prefer the one with lower local index
-                        if local.as_usize() < existing.local.as_usize() {
-                            best = Some(candidate);
-                        }
                     }
                 }
             }
@@ -178,12 +180,22 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
             // A raw-pointer deref in a method whose `self` is a *by-value*
             // `NonNull<T>` is safe: consuming the `NonNull` transfers exclusive
             // ownership of its pointer (e.g. `NonNull::as_uninit_mut(self)`).
+            // A *by-reference* `&NonNull<T>` / `&mut NonNull<T>` self is equally
+            // safe (`NonNull::as_ref`/`as_mut`): the reference carries the borrow
+            // (shared or exclusive) over the `NonNull`, whose pointer is the only
+            // source of the deref.
             if vm_state.body.arg_count >= 1 {
                 let self_ty = vm_state.body.local_decls[Local::from_usize(1)].ty;
-                if let rustc_middle::ty::TyKind::Adt(adt_def, _) = self_ty.kind() {
-                    if api_classify::is_std_nonnull(adt_def.did()) {
-                        return VmAliasResult::Proved;
-                    }
+                let nonnull_adt = match self_ty.kind() {
+                    rustc_middle::ty::TyKind::Adt(adt_def, _) => Some(*adt_def),
+                    rustc_middle::ty::TyKind::Ref(_, pointee, _) => match pointee.kind() {
+                        rustc_middle::ty::TyKind::Adt(adt_def, _) => Some(*adt_def),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if nonnull_adt.is_some_and(|adt| api_classify::is_std_nonnull(adt.did())) {
+                    return VmAliasResult::Proved;
                 }
             }
             // Pointer has provenance: check if it's safe.

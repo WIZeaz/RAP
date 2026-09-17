@@ -78,6 +78,16 @@ impl PropertyChecker {
             value.invariants.align_n.clone()
         };
         if let Some(known_align) = effective_align_n {
+            // Concrete fast-path: both alignments are powers of two, so
+            // `align_n >= align` is a plain integer comparison — decide
+            // structurally, no solver query.
+            if let (Some(known_u64), Some(align_u64)) =
+                (known_align.simplify().as_u64(), align.simplify().as_u64())
+            {
+                if known_u64 >= align_u64 {
+                    return CheckResult::ProvedByRule;
+                }
+            }
             let solver = Solver::new(vm_state.ctx);
             solver.push();
             vm_state.assert_all(&solver);
@@ -109,18 +119,6 @@ impl PropertyChecker {
                     if off % align_u64 != 0 {
                         return CheckResult::Failed;
                     }
-                }
-            }
-        }
-        if let Some(known_align) = value
-            .invariants
-            .align_n
-            .as_ref()
-            .and_then(|a| a.simplify().as_u64())
-        {
-            if let Some(align_u64) = align.simplify().as_u64() {
-                if known_align >= align_u64 && known_align % align_u64 == 0 {
-                    return CheckResult::ProvedByRule;
                 }
             }
         }
@@ -442,9 +440,19 @@ impl PropertyChecker {
             return r;
         }
 
-        // Concrete sizes: direct comparison.
-        if let (Some(size_val), Some(access_val)) = (size.as_u64(), access.as_u64()) {
-            if size_val < access_val {
+        // Concrete sizes and offset: direct byte-range comparison, no solver.
+        // The accessed range is `[offset, offset + access)`, which must fit in
+        // `[0, size)`.  The offset is a non-negative byte offset by provenance
+        // construction, so only the upper bound needs checking.
+        if let (Some(off), Some(size_val), Some(access_val)) = (
+            value
+                .provenance
+                .as_ref()
+                .and_then(|p| p.offset.simplify().as_u64()),
+            size.as_u64(),
+            access.as_u64(),
+        ) {
+            if off.saturating_add(access_val) > size_val {
                 return CheckResult::Failed;
             }
             return CheckResult::ProvedByRule;
