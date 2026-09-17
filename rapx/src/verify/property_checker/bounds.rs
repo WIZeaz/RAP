@@ -138,9 +138,6 @@ impl PropertyChecker {
                 let zero = Int::from_u64(vm_state.ctx, 0);
                 let covered = Int::add(vm_state.ctx, &[&k, &count_term]);
                 solver.push();
-                for cond in &vm_state.path_conditions {
-                    solver.assert(cond);
-                }
                 solver.assert(&z3::ast::Bool::or(
                     vm_state.ctx,
                     &[&covered.gt(&len), &k.lt(&zero)],
@@ -176,9 +173,6 @@ impl PropertyChecker {
             let field_size = crate::helpers::mir_utils::pointee_ty(value.ty)
                 .map(|ty| vm_state.size_sym_read(ty))
                 .unwrap_or_else(|| Int::from_u64(vm_state.ctx, 1));
-            for cond in &vm_state.path_conditions {
-                solver.assert(cond);
-            }
             solver.assert(&access.le(&field_size).not());
             let r = match solver.check() {
                 SatResult::Unsat => CheckResult::ProvedBySmt,
@@ -190,12 +184,6 @@ impl PropertyChecker {
         }
 
         let bound = Int::add(vm_state.ctx, &[&base, &size]);
-        // Assert accumulated path conditions so numeric bounds (`index < len`,
-        // `S >= 1`, …) recorded at entry participate in the coverage check, and
-        // the symbolic size factor can be cancelled.
-        for cond in &vm_state.path_conditions {
-            solver.assert(cond);
-        }
         // `sub` walks *backwards*: the accessed range is `[value - access, value)`,
         // so the lower bound is `value - access >= base` and the upper bound is
         // `value <= base + size`.  `add` (and everything else) walks forwards.
@@ -327,12 +315,6 @@ impl PropertyChecker {
         });
 
         solver.push();
-        // Assert accumulated path conditions (e.g. the loop-carried
-        // `initialized < N` guard that makes `idx < N` hold at this call site)
-        // so the bound check below can be discharged symbolically.
-        for cond in &vm_state.path_conditions {
-            solver.assert(cond);
-        }
         let negated = if is_range {
             // For range-based InBound (start..end), check end <= len
             index_val.term.le(&len).not()

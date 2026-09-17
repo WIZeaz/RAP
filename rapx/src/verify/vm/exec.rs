@@ -2819,6 +2819,27 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .map(|v| v.term.clone())
     }
 
+    /// Resolve `len()` of a slice/ADT value: the pointee ADT's `len` field, then
+    /// the materialized slice length, then `size / elem_size`.  Shared by the
+    /// exec- and checker-side `Len` evaluators so the fallback chain is defined
+    /// once.
+    pub(crate) fn len_from_value(&self, val: &VmValue<'ctx, 'tcx>) -> Option<Int<'ctx>> {
+        if let Some(len) = self.try_adt_len_field(val) {
+            return Some(len);
+        }
+        if let Some(len) = self.slice_len_from_value(val) {
+            return Some(len);
+        }
+        let alloc_id = val.provenance_alloc_id()?;
+        let alloc = self.alloc(alloc_id);
+        let elem_ty = alloc.element_ty?;
+        let elem_term = self.size_sym_read(elem_ty);
+        if elem_term.simplify().as_u64() == Some(1) {
+            return Some(alloc.size.clone());
+        }
+        Some(alloc.size.div(&elem_term))
+    }
+
     /// Resolve `x.len()` for a struct `x` (e.g. `NodeRef`) whose `len()` method
     /// reads `(*x.field).len` through a `NonNull`/raw-pointer field.  Follows
     /// that field to its pointee allocation and reads the pointee's `len` field.
@@ -3825,29 +3846,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     if let Some(term) = self.try_simple_iter_len(&val) {
                         return Some(term);
                     }
-                    if let Some(term) = self.try_adt_len_field(&val) {
-                        return Some(term);
-                    }
                 }
                 // A struct (e.g. `NodeRef`) whose `len()` reads `(*x.field).len`
                 // through a `NonNull` field.
                 if let ContractExpr::Place(cp) = &**inner {
-                    let local = cp.base.to_local();
-                    let mut path: Vec<usize> = Vec::new();
-                    let mut ok = true;
-                    for proj in &cp.projections {
-                        match proj {
-                            crate::verify::contract::ContractProjection::Field {
-                                index,
-                                ..
-                            } => path.push(*index),
-                            _ => {
-                                ok = false;
-                                break;
-                            }
-                        }
-                    }
-                    if ok {
+                    if let Some(path) = cp.plain_field_path() {
+                        let local = cp.base.to_local();
                         if let Some(ty) = self.field_type_at(local, &path) {
                             if let Some(term) = self.try_struct_nn_len_field(local, &path, ty) {
                                 return Some(term);
@@ -3856,22 +3860,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     }
                 }
                 let val = self.eval_contract_expr_simple_value(inner)?;
-                // Prefer the materialized slice length; fall back to
-                // `size / elem_size` for allocations that never got a
-                // materialized `slice_len`.
-                if let Some(len) = self.slice_len_from_value(&val) {
-                    return Some(len);
-                }
-                let alloc_id = val.provenance_alloc_id()?;
-                let alloc = self.alloc(alloc_id);
-                let elem_ty = alloc.element_ty?;
-                // Use the symbolic element size so `len = (len·S) / S` cancels
-                // for a generic element type instead of returning `len·S`.
-                let elem_term = self.size_sym_read(elem_ty);
-                if elem_term.simplify().as_u64() == Some(1) {
-                    return Some(alloc.size.clone());
-                }
-                Some(alloc.size.div(&elem_term))
+                self.len_from_value(&val)
             }
             ContractExpr::Binary {
                 op: NumericBinOp::Mul,

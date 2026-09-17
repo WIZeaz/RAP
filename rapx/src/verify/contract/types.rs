@@ -84,6 +84,20 @@ impl<'tcx> ContractPlace<'tcx> {
             PlaceBase::Arg(_) => None,
         }
     }
+
+    /// The field indices when this place is a pure `Field` chain (no `Downcast`
+    /// / `ForEach` steps), otherwise `None`.  Shared by the exec- and
+    /// checker-side `Len` evaluators.
+    pub(crate) fn plain_field_path(&self) -> Option<Vec<usize>> {
+        let mut path = Vec::new();
+        for proj in &self.projections {
+            match proj {
+                ContractProjection::Field { index, .. } => path.push(*index),
+                _ => return None,
+            }
+        }
+        Some(path)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

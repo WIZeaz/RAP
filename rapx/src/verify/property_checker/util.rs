@@ -639,26 +639,10 @@ impl PropertyChecker {
                     }
                 }
                 let val = self.eval_contract_expr_to_value(vm_state, checkpoint, inner)?;
-                // A pointer whose pointee ADT carries a `len` field
-                // (`NodeRef<LeafNode>`: `len()` reads `(*ptr).len`).
-                if let Some(len) = vm_state.try_adt_len_field(&val) {
-                    return Some(len);
-                }
                 // A struct (e.g. `NodeRef`) whose `len()` reads `(*x.field).len`
                 // through a `NonNull` field.
                 if let crate::verify::contract::ContractExpr::Place(cp) = &**inner {
-                    let mut field_path: Vec<usize> = Vec::new();
-                    let mut is_plain = true;
-                    for proj in &cp.projections {
-                        match proj {
-                            ContractProjection::Field { index, .. } => field_path.push(*index),
-                            _ => {
-                                is_plain = false;
-                                break;
-                            }
-                        }
-                    }
-                    if is_plain {
+                    if let Some(field_path) = cp.plain_field_path() {
                         let base_local = match cp.base {
                             PlaceBase::Return => Some(Local::from_usize(0)),
                             PlaceBase::Local(n) => Some(Local::from_usize(n)),
@@ -678,22 +662,7 @@ impl PropertyChecker {
                         }
                     }
                 }
-                // Prefer the materialized slice length; fall back to the
-                // `size / elem_size` derivation for allocations that never got
-                // a materialized `slice_len`.
-                if let Some(len) = vm_state.slice_len_from_value(&val) {
-                    return Some(len);
-                }
-                let alloc_id = val.provenance_alloc_id()?;
-                let alloc = vm_state.alloc(alloc_id);
-                let elem_ty = alloc.element_ty?;
-                // Use the symbolic element size so `len = (len·S) / S` cancels
-                // for a generic element type instead of returning `len·S`.
-                let elem_term = vm_state.size_sym_read(elem_ty);
-                if elem_term.simplify().as_u64() == Some(1) {
-                    return Some(alloc.size.clone());
-                }
-                Some(alloc.size.div(&elem_term))
+                vm_state.len_from_value(&val)
             }
             ContractExpr::ConstParam { index, name: _ } => self
                 .instantiate_callsite_const(vm_state, checkpoint?, *index)
