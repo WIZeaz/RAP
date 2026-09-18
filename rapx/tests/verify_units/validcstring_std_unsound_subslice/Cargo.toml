@@ -1,0 +1,8 @@
+[package]
+name = "validcstring_std_unsound_subslice"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[workspace]

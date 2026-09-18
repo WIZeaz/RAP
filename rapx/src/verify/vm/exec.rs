@@ -4616,8 +4616,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if src_alloc_id == ref_alloc_id {
             return; // same allocation, bytes already there
         }
-        // Copy per-byte tracking from source alloc to ref's alloc.
-        self.copy_byte_tracking(src_alloc_id, ref_alloc_id);
+        // Copy per-byte tracking from source alloc to ref's alloc (offset 0:
+        // the reference points at the source place's start).
+        self.copy_byte_tracking(src_alloc_id, 0, ref_alloc_id);
     }
 
     /// Return the per-field types for an aggregate's operands.

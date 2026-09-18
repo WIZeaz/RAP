@@ -31,6 +31,7 @@ sound_tests! {
     validcstring_std_sound_06: "verify_units/validcstring_std_sound_06" => "sound_vec_with_nul_from_variables",
     validcstring_std_sound_07: "verify_units/validcstring_std_sound_07" => "sound_loop_builds_valid_c_string",
     validcstring_std_sound_08: "verify_units/validcstring_std_sound_08" => "sound_from_ptr_suffix_after_add",
+    validcstring_std_sound_09: "verify_units/validcstring_std_sound_subslice" => "sound_subslice_cstr",
 }
 
 // ================ ValidCStr Unsound Cases =============
@@ -43,6 +44,7 @@ unsound_tests! {
     validcstring_std_unsound_06: "verify_units/validcstring_std_unsound_06" => "unsound_vec_with_variable_interior_nul" => "ValidCStr",
     validcstring_std_unsound_07: "verify_units/validcstring_std_unsound_07" => "unsound_loop_writes_interior_nul" => "ValidCStr",
     validcstring_std_unsound_08: "verify_units/validcstring_std_unsound_08" => "unsound_nested_scc_switches_to_invalid" => "ValidCStr",
+    validcstring_std_unsound_10: "verify_units/validcstring_std_unsound_subslice" => "unsound_subslice_cstr" => "ValidCStr",
 }
 
 // ================ ValidString Sound Cases =============

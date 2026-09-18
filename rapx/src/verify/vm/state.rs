@@ -593,7 +593,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
     /// Copy all per-byte tracking (value, init, NUL knowledge) from one
     /// allocation to another.
-    pub(crate) fn copy_byte_tracking(&mut self, src: AllocId, dst: AllocId) {
+    pub(crate) fn copy_byte_tracking(&mut self, src: AllocId, src_offset: usize, dst: AllocId) {
         let infos: Vec<(usize, ByteInfo<'ctx>)> = self
             .bytes
             .iter()
@@ -601,7 +601,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .map(|((_, off), byte)| (*off, byte.clone()))
             .collect();
         for (off, byte) in infos {
-            self.bytes.insert((dst, off), byte);
+            // The destination allocation starts at `src_offset` into the source,
+            // so shift each tracked byte by that offset (`src[off]` → `dst[off -
+            // src_offset]`).  Bytes before `src_offset` lie outside the sub-slice
+            // and are dropped.
+            if off >= src_offset {
+                self.bytes.insert((dst, off - src_offset), byte);
+            }
         }
     }
 

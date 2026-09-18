@@ -2516,8 +2516,17 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             self.alloc_mut(alloc_id).initialized = true;
                             self.alloc_mut(alloc_id).parent = Some(source_prov.alloc_id);
                         }
-                        // Copy byte-level tracking (value, init, NUL knowledge).
-                        self.copy_byte_tracking(source_prov.alloc_id, alloc_id);
+                        // Copy byte-level tracking (value, init, NUL knowledge),
+                        // shifting by the source pointer's byte offset so a
+                        // non-zero-offset sub-slice (`from_raw_parts(ptr.add(k),
+                        // n)`) inherits the right per-byte state.
+                        let src_offset = source_prov
+                            .offset
+                            .simplify()
+                            .as_u64()
+                            .map(|v| v as usize)
+                            .unwrap_or(0);
+                        self.copy_byte_tracking(source_prov.alloc_id, src_offset, alloc_id);
                     }
                     let result_align_n = ptr_val.invariants.align_n.clone().or_else(|| {
                         ptr_val
