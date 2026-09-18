@@ -3419,9 +3419,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             return;
         }
         // Assert the atom's own effect, then each of its transitive
-        // consequences exactly once (`subsumption_closure` is deduplicated, so
-        // the diamond `Init ⇒ NonNull` via `Allocated`/`Typed` collapses to a
-        // single `NonNull` rather than re-asserting it three times).
+        // consequences exactly once (`subsumption_closure` is deduplicated).
         self.assert_atom_direct(property);
         for sub in crate::verify::contract::compound::subsumption_closure(atom) {
             self.assert_atom_direct(&Property::Atom(sub));

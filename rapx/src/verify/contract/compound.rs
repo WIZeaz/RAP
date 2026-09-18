@@ -419,14 +419,12 @@ fn builtin_subsumptions_map() -> &'static HashMap<String, CompoundSpec> {
 /// in `std-subsumption.rs` with the same `Name(params) { body }` syntax; the
 /// head is an existing primitive tag and the body a pure conjunction of weaker
 /// primitive calls whose parameters map positionally to the head's arguments
-/// (e.g. `Init(p, T, n) ⇒ NonNull(p) ∧ Allocated(p, T, n) ∧ InBound(p, T, n) ∧
-/// Typed(p, T)`, `Allocated(p, T, n) ⇒ NonNull(p)`).
+/// (e.g. `Init(p, T, n) ⇒ Typed(p, T)`).  Pointer-validity primitives
+/// (`NonNull`/`Allocated`/`InBound`) are deliberately *not* implied: they are
+/// orthogonal requirements stated explicitly by contracts.
 ///
 /// Returns the *transitive closure* of the subsumption relation applied to
-/// `atom`, deduplicated: each weaker consequence appears exactly once, so the
-/// diamond `Init ⇒ NonNull` (directly, and via `Allocated`/`Typed`) collapses
-/// to a single `NonNull` instead of re-asserting it three times.  Breadth-first
-/// order keeps a stronger premise (`Allocated`) ahead of its own consequences.
+/// `atom`, deduplicated: each weaker consequence appears exactly once.
 pub(crate) fn subsumption_closure<'tcx>(atom: &AtomProperty<'tcx>) -> Vec<AtomProperty<'tcx>> {
     let Some(head_tag) = super::spec::tag_name_for_kind(atom.kind) else {
         return Vec::new();
