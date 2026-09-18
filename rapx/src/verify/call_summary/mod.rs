@@ -467,7 +467,7 @@ fn transparent_deref_peel<'tcx>(tcx: TyCtxt<'tcx>, func: &Operand<'tcx>) -> Opti
 /// Whether `did` is the `MaybeDangling` lang item.
 ///
 /// The `MaybeDangling` lang item was only added to rustc's table after
-/// nightly-2025-11-25 (the `verify-std` toolchain), so gate the lang-item
+/// nightly-2026-02-05 (the `verify-std` toolchain), so gate the lang-item
 /// lookup behind a build-time check and fall back to name matching on
 /// toolchains that lack it.
 fn is_maybe_dangling(tcx: TyCtxt<'_>, did: DefId) -> bool {

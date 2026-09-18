@@ -1,7 +1,7 @@
 #![feature(register_tool)]
 #![register_tool(rapx)]
 // `unchecked_shl`/`unchecked_shr` are `unchecked_shifts`-gated on the
-// verify-std toolchain (nightly-2025-11-25) but stable since 1.93; the
+// verify-std toolchain (nightly-2026-02-05) but stable since 1.93; the
 // feature gate + `stable_features` allow keeps all three CI toolchains happy.
 #![feature(unchecked_shifts)]
 #![allow(stable_features)]
