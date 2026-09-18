@@ -784,6 +784,16 @@ impl<'tcx> Visitor<'tcx> for VerifyTargetCollector<'tcx> {
             }
         }
 
+        if !self.crate_name_matches(def_id) {
+            return;
+        }
+        self.crate_filter_matched = true;
+
+        if !self.module_path_matches(def_id) {
+            return;
+        }
+        self.module_filter_matched = true;
+
         let function_target = self.build_function_target(def_id);
 
         match self.mode {
@@ -806,16 +816,6 @@ impl<'tcx> Visitor<'tcx> for VerifyTargetCollector<'tcx> {
                 }
             }
         }
-
-        if !self.crate_name_matches(def_id) {
-            return;
-        }
-        self.crate_filter_matched = true;
-
-        if !self.module_path_matches(def_id) {
-            return;
-        }
-        self.module_filter_matched = true;
 
         self.push_function_target(function_target);
     }
