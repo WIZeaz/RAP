@@ -334,7 +334,7 @@ impl PropertyChecker {
         // provenance has been lost through a cast.  Mirrors the `count == 0`
         // fast-path in `check_in_bound` and covers `from_raw_parts(ptr, 0)`
         // (e.g. `Option::as_slice` on `None`).
-        if self.count_is_zero(vm_state, checkpoint, property) {
+        if self.count_is_zero(vm_state, checkpoint, property, 2) {
             return CheckResult::ProvedByRule;
         }
 
@@ -549,7 +549,8 @@ impl PropertyChecker {
         // Zero elements: `Init(p, T, 0)` is vacuously satisfied (the empty
         // range is trivially initialized, regardless of whether `p` is a
         // dangling pointer), mirroring `check_allocated`'s fast-path.
-        if self.count_is_zero(vm_state, checkpoint, property) {
+        let count_arg = if property.args().len() >= 3 { 2 } else { 1 };
+        if self.count_is_zero(vm_state, checkpoint, property, count_arg) {
             return CheckResult::ProvedByRule;
         }
 
@@ -572,9 +573,13 @@ impl PropertyChecker {
             }
         }
 
-        // Compute the required init range: count * sizeof(T) bytes
+        // Compute the required init range: count * sizeof(T) bytes.  The
+        // two-argument form `Init(self, n)` carries no `T`; `access_bytes`
+        // falls back to the target's pointee element type.
         let access = if property.args().len() >= 3 {
-            Some(self.access_bytes(vm_state, property, 1, 2, checkpoint, &value))
+            Some(self.access_bytes(vm_state, property, 1, count_arg, checkpoint, &value))
+        } else if property.args().len() == 2 {
+            Some(self.access_bytes(vm_state, property, 0, count_arg, checkpoint, &value))
         } else {
             None
         };

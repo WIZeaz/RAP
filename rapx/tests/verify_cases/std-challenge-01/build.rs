@@ -1,6 +1,6 @@
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(rapx_rustc_ge_199)");
-    println!("cargo::rustc-check-cfg=cfg(rapx_rustc_ge_196)");
+    println!("cargo::rustc-check-cfg=cfg(rapx_rustc_ge_195)");
 
     let version = rustc_version::version().unwrap();
     let minor = version.minor;
@@ -8,7 +8,7 @@ fn main() {
     if minor >= 99 {
         println!("cargo:rustc-cfg=rapx_rustc_ge_199");
     }
-    if minor >= 96 {
-        println!("cargo:rustc-cfg=rapx_rustc_ge_196");
+    if minor >= 95 {
+        println!("cargo:rustc-cfg=rapx_rustc_ge_195");
     }
 }

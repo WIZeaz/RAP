@@ -517,7 +517,7 @@ pub fn rvalue_any_place_matching<'tcx>(
         Rvalue::Aggregate(_, operands) => operands.iter().any(|operand| match operand {
             Operand::Copy(place) | Operand::Move(place) => pred(place),
             Operand::Constant(_) => false,
-            #[cfg(rapx_ge_99)]
+            #[cfg(rapx_ge_95)]
             Operand::RuntimeChecks(_) => false,
         }),
         _ => rvalue_source_place(rvalue).map_or(false, |place| pred(place)),

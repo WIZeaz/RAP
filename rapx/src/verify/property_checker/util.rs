@@ -358,17 +358,20 @@ impl PropertyChecker {
         }
     }
 
-    /// Whether the element-count argument (`args[2]`) evaluates to the constant
-    /// `0`, making any InBound/Allocated byte-range check trivially satisfied.
+    /// Whether the element-count argument (defaulting to `args[2]`, the
+    /// `[Target, Ty, Expr]` layout) evaluates to the constant `0`, making any
+    /// InBound/Allocated byte-range check trivially satisfied.  `count_arg`
+    /// overrides the index for two-argument forms like `Init(self, n)`.
     pub(super) fn count_is_zero<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
+        count_arg: usize,
     ) -> bool {
         property
             .args()
-            .get(2)
+            .get(count_arg)
             .and_then(|a| self.resolve_arg_term(vm_state, checkpoint, a))
             .and_then(|ct| ct.as_u64())
             == Some(0)
@@ -398,7 +401,16 @@ impl PropertyChecker {
                 }
             })
             .filter(|ty| vm_state.size_of_ty(*ty) > 0)
-            .or_else(|| crate::helpers::mir_utils::pointee_ty(value.ty));
+            .or_else(|| {
+                // Two-argument form (`Init(self, n)`, no `T`): derive the
+                // element type from the target's pointee, peeling `[T]` /
+                // `[T; N]` down to `T` so `n * sizeof(elem)` is computed.
+                crate::helpers::mir_utils::pointee_ty(value.ty).map(|ty| match ty.kind() {
+                    rustc_middle::ty::TyKind::Slice(e)
+                    | rustc_middle::ty::TyKind::Array(e, _) => *e,
+                    _ => ty,
+                })
+            });
         let elem_size_term = elem_ty
             .map(|ty| vm_state.size_sym_read(ty))
             .unwrap_or_else(|| Int::from_u64(vm_state.ctx, 1));

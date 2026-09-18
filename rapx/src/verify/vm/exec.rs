@@ -2526,7 +2526,24 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         None => (term.clone(), None),
                     }
                 } else {
-                    (term.clone(), None)
+                    // `Box<T>` (an aggregate `Box(Unique<T>, A)`) takes its
+                    // provenance from the inner `Unique<T>.pointer` (`NonNull<T>`
+                    // at path `[0, 0]`), which the field-flattening above just
+                    // recorded.  Without this, `Box::assume_init`'s rebuild
+                    // (`Box(Unique::new_unchecked(raw), alloc)`) drops the heap
+                    // provenance and a later `Box::as_ptr` field read fails
+                    // `NonNull` (rustc 1.95 lowers `as_ptr` to that field read).
+                    let box_prov = if let rustc_middle::ty::TyKind::Adt(adt, _) = dest_ty.kind() {
+                        if api_classify::is_std_box(adt.did()) {
+                            self.field_value(dest_local, &[0, 0])
+                                .and_then(|v| v.provenance.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    (term.clone(), box_prov)
                 };
                 VmValue {
                     term: result_term,
@@ -2618,7 +2635,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     invariants: ValueInvariants::default(),
                 }
             }
-            #[cfg(not(rapx_ge_99))]
+            #[cfg(not(rapx_ge_95))]
             Rvalue::NullaryOp(_op) => {
                 let term = self.fresh_int("nullary");
                 let op_debug = format!("{:?}", _op);
@@ -2805,12 +2822,42 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .map(|v| v.term.clone())
     }
 
+    /// Resolve `len()` for `core::ops::IndexRange` (a private `{ start, end }`
+    /// struct): `len() = end - start`.  The `len` field lookup above misses it
+    /// because `IndexRange` has no `len` field — its `len()` computes the
+    /// difference of its two private fields.
+    pub(crate) fn try_index_range_len(&self, val: &VmValue<'ctx, 'tcx>) -> Option<Int<'ctx>> {
+        let rustc_middle::ty::TyKind::Adt(adt_def, _) = val.ty.kind() else {
+            return None;
+        };
+        let name = self.tcx.def_path_str(adt_def.did());
+        if !(name.ends_with("::IndexRange") || name == "IndexRange") {
+            return None;
+        }
+        let alloc_id = val.provenance_alloc_id()?;
+        let view_ty = crate::helpers::mir_utils::pointee_ty(val.ty).unwrap_or(val.ty);
+        let start = self
+            .alloc_field_values
+            .get(&(alloc_id, view_ty, vec![0]))?
+            .term
+            .clone();
+        let end = self
+            .alloc_field_values
+            .get(&(alloc_id, view_ty, vec![1]))?
+            .term
+            .clone();
+        Some(Int::sub(self.ctx, &[&end, &start]))
+    }
+
     /// Resolve `len()` of a slice/ADT value: the pointee ADT's `len` field, then
     /// the materialized slice length, then `size / elem_size`.  Shared by the
     /// exec- and checker-side `Len` evaluators so the fallback chain is defined
     /// once.
     pub(crate) fn len_from_value(&self, val: &VmValue<'ctx, 'tcx>) -> Option<Int<'ctx>> {
         if let Some(len) = self.try_adt_len_field(val) {
+            return Some(len);
+        }
+        if let Some(len) = self.try_index_range_len(val) {
             return Some(len);
         }
         if let Some(len) = self.slice_len_from_value(val) {

@@ -50,7 +50,7 @@ fn make_dummy_fn(ident_name: &str, build_std: bool) -> Box<Item> {
         define_opaque: None,
         #[cfg(rapx_ge_100)]
         eii_impl: Default::default(),
-        #[cfg(all(rapx_ge_99, not(rapx_ge_100)))]
+        #[cfg(all(rapx_ge_95, not(rapx_ge_100)))]
         eii_impls: Default::default(),
         body: Some(Box::new(make_dummy_block())),
     };

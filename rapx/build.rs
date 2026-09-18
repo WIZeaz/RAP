@@ -3,6 +3,7 @@ use std::process::Command;
 fn main() {
     let (_major, minor, _patch) = detect_rustc_version();
 
+    emit_check_cfg("rapx_ge_95");
     emit_check_cfg("rapx_ge_99");
     emit_check_cfg("rapx_ge_100");
     emit_check_cfg("rapx_has_public_adts");
@@ -18,6 +19,7 @@ fn main() {
     emit_check_cfg("rapx_constkind_alias");
     emit_check_cfg("rapx_has_deeply_resolve_ignoring_regions");
 
+    emit_cfg("rapx_ge_95", minor >= 95);
     emit_cfg("rapx_ge_99", minor >= 99);
     emit_cfg("rapx_ge_100", minor >= 100);
     emit_cfg(

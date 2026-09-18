@@ -1068,6 +1068,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // assigned a constant earlier in the body.
         let discr_is_const = match discr {
             rustc_middle::mir::Operand::Constant(_) => true,
+            // `ub_checks` lowers to `Operand::RuntimeChecks` on newer rustc: it
+            // is a compile-time runtime-check flag, not a semantic branch, so it
+            // can be folded to the no-check edge when inlining (mirroring
+            // `rvalue_runtime_checks_value` below).
+            #[cfg(rapx_ge_95)]
+            rustc_middle::mir::Operand::RuntimeChecks(_) => true,
             rustc_middle::mir::Operand::Copy(p) | rustc_middle::mir::Operand::Move(p) => {
                 body.basic_blocks.iter().any(|bbd| {
                     bbd.statements.iter().any(|stmt| {
@@ -2634,7 +2640,21 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
             CallEffect::ReturnBoxAllocation => {
                 let dest_ty = self.body.local_decls[dest].ty;
-                let pointee = crate::helpers::mir_utils::pointee_ty(dest_ty);
+                // `pointee_ty` doesn't unwrap `Box`; extract its `T` from the
+                // first generic argument so the heap allocation is sized to the
+                // pointee and (below) the inner `Unique<T>.pointer` field can be
+                // exposed.
+                let pointee = crate::helpers::mir_utils::pointee_ty(dest_ty).or_else(|| {
+                    if let rustc_middle::ty::TyKind::Adt(adt, substs) = dest_ty.kind() {
+                        if api_classify::is_std_box(adt.did()) {
+                            substs.first().and_then(|s| s.as_type())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                });
                 let size = pointee
                     .map(|ty| self.size_sym(ty))
                     .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
@@ -2642,6 +2662,34 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let (alloc_id, base) = self.allocate(size, align, pointee);
                 self.alloc_mut(alloc_id).initialized = true;
                 let align_n = pointee.map(|ty| self.align_sym(ty));
+                let heap_prov = Provenance {
+                    alloc_id,
+                    offset: Int::from_u64(self.ctx, 0),
+                    is_field_offset: false,
+                    element_offset: None,
+                };
+                // Expose `Box`'s inner `Unique<T>.pointer` (`NonNull<T>` at path
+                // `[0, 0]`) so inlined `Box::as_ptr`/`as_mut_ptr` bodies — which
+                // read `(_1.0).0` and cast it to `*const`/`*mut T` — inherit the
+                // heap pointer's provenance (rustc 1.95 lowers `&raw **b` to
+                // exactly this field read + transmute).  Record it both on the
+                // local (`field_values`, for direct `_1.0.0` reads) and on the
+                // heap allocation (`alloc_field_values`, for `(*&box).0.0`
+                // deref-reads through a reborrow).
+                let nn_field = VmValue {
+                    term: base.clone(),
+                    ty: dest_ty,
+                    provenance: Some(heap_prov.clone()),
+                    invariants: ValueInvariants {
+                        non_null: true,
+                        init: true,
+                        aligned: true,
+                        ..Default::default()
+                    },
+                };
+                self.set_field_value(dest, vec![0, 0], nn_field.clone());
+                self.alloc_field_values
+                    .insert((alloc_id, dest_ty, vec![0, 0]), nn_field);
                 self.set_local(
                     dest,
                     VmValue {
@@ -2889,6 +2937,20 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     val.ty = self.body.local_decls[dest].ty;
                     val.invariants.init = true;
                     val.invariants.non_null = true;
+                    // `Box::from_raw`/`from_raw_in` reconstruct a Box whose
+                    // `Unique<T>.pointer` (`NonNull<T>` at path `[0, 0]`) must
+                    // carry the same provenance: rustc 1.95 lowers `Box::as_ptr`
+                    // (`&raw **b`) to a `(_1.0).0` field read + transmute, so
+                    // without this the re-derived pointer loses provenance.
+                    if let rustc_middle::ty::TyKind::Adt(adt, _) = val.ty.kind() {
+                        if api_classify::is_std_box(adt.did()) {
+                            self.set_field_value(dest, vec![0, 0], val.clone());
+                            if let Some(prov) = &val.provenance {
+                                self.alloc_field_values
+                                    .insert((prov.alloc_id, val.ty, vec![0, 0]), val.clone());
+                            }
+                        }
+                    }
                     self.set_local(dest, val);
                 }
             }

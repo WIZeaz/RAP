@@ -4682,14 +4682,6 @@
   ],
   "alloc::vec::set_len": [
     {
-      "tag": "InBound",
-      "args": [
-        "self",
-        "T",
-        "new_len"
-      ]
-    },
-    {
       "tag": "ValidNum",
       "args": [
         "new_len <= self.capacity()"
@@ -5362,16 +5354,7 @@
       ]
     }
   ],
-  "alloc::string::as_mut_vec": [
-    {
-      "tag": "ValidString",
-      "args": [
-        "self",
-        "u8",
-        "len(self)"
-      ]
-    }
-  ],
+  "alloc::string::as_mut_vec": [],
   "alloc::sync::get_mut_unchecked": [
     {
       "tag": "Typed",

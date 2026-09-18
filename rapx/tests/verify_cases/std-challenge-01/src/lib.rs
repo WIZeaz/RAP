@@ -392,7 +392,7 @@ pub unsafe fn align_to_mut_ext<T, U>(slice: &mut [T]) -> (&mut [T], &mut [U], &m
 }
 
 /// `<[T]>::as_simd`: view a slice as SIMD lanes via `align_to`.
-#[cfg(not(rapx_rustc_ge_196))]
+#[cfg(not(rapx_rustc_ge_195))]
 #[rapx::verify]
 pub fn as_simd_ext<T, const LANES: usize>(
     slice: &[T],
@@ -408,7 +408,7 @@ where
 }
 
 /// `<[T]>::as_simd`: view a slice as SIMD lanes via `align_to`.
-#[cfg(rapx_rustc_ge_196)]
+#[cfg(rapx_rustc_ge_195)]
 #[rapx::verify]
 pub fn as_simd_ext<T, const LANES: usize>(
     slice: &[T],
@@ -423,7 +423,7 @@ where
 }
 
 /// `<[T]>::as_simd_mut`: mutable counterpart of `as_simd`.
-#[cfg(not(rapx_rustc_ge_196))]
+#[cfg(not(rapx_rustc_ge_195))]
 #[rapx::verify]
 pub fn as_simd_mut_ext<T, const LANES: usize>(
     slice: &mut [T],
@@ -439,7 +439,7 @@ where
 }
 
 /// `<[T]>::as_simd_mut`: mutable counterpart of `as_simd`.
-#[cfg(rapx_rustc_ge_196)]
+#[cfg(rapx_rustc_ge_195)]
 #[rapx::verify]
 pub fn as_simd_mut_ext<T, const LANES: usize>(
     slice: &mut [T],

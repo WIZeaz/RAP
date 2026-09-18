@@ -611,7 +611,7 @@ impl<'tcx> Replacer<'tcx> {
                             self.replace_place(place, &bb);
                         }
                         Operand::Constant(const_operand) => {}
-                        #[cfg(rapx_ge_99)]
+                        #[cfg(rapx_ge_95)]
                         Operand::RuntimeChecks(_) => {}
                     }
                 }

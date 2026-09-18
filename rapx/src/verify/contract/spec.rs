@@ -153,7 +153,7 @@ static SPECS: &[PropertySpec] = &[
     ps(
         "Init",
         PropertyKind::Init,
-        &[&[Target, Ty, Expr]],
+        &[&[Target, Ty, Expr], &[Target, Expr]],
         ContractKind::Precond,
         BuildKind::Uniform,
         "forall i in 0..{2}: *({0} + i*sizeof({1})) |= type_invariant({1}), and the {2} value(s) are initialized",

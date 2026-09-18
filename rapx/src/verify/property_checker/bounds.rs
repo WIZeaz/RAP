@@ -92,7 +92,7 @@ impl PropertyChecker {
         // When the contract expression for the element count evaluates to
         // zero (e.g. div-by-sizeof for ZST generic params), the byte-level
         // access is zero and limits checking is trivial.
-        if self.count_is_zero(vm_state, checkpoint, property) {
+        if self.count_is_zero(vm_state, checkpoint, property, 2) {
             return CheckResult::ProvedByRule;
         }
         let access = self.access_bytes(vm_state, property, 1, 2, checkpoint, &value);
@@ -372,6 +372,16 @@ impl PropertyChecker {
             crate::helpers::mir_utils::RangeKind::Range
             | crate::helpers::mir_utils::RangeKind::RangeInclusive => {
                 Some(rustc_abi::FieldIdx::from_usize(1))
+            }
+            crate::helpers::mir_utils::RangeKind::Other => {
+                // `core::ops::IndexRange` is a private `{ start, end }` struct
+                // (no lang item); its `end` lives at field 1 like `Range`.
+                let name = vm_state.tcx.def_path_str(adt_def.did());
+                if name.ends_with("::IndexRange") || name == "IndexRange" {
+                    Some(rustc_abi::FieldIdx::from_usize(1))
+                } else {
+                    None
+                }
             }
             _ => None,
         };

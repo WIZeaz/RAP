@@ -413,9 +413,14 @@ impl<'tcx> VerifyTargetCollector<'tcx> {
                         // function has no caller-side safety contract, so an
                         // empty entry here is expected (e.g. a safe
                         // `#[rapx::verify]` target whose body uses raw-pointer
-                        // derefs rather than unsafe callee calls).
+                        // derefs rather than unsafe callee calls).  Compiler
+                        // intrinsics (`extern "rust-intrinsic"`) have no MIR
+                        // and their safety is enforced by the type system, so
+                        // they never carry a JSON contract either.
+                        let is_intrinsic = self.tcx.intrinsic(callee_def_id).is_some();
                         if self.tcx.fn_sig(callee_def_id).skip_binder().safety()
                             == rustc_hir::Safety::Unsafe
+                            && !is_intrinsic
                         {
                             let path = crate::helpers::name::get_cleaned_def_path_name(
                                 self.tcx,

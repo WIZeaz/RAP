@@ -100,7 +100,7 @@ fn trace_to_callee_arg<'tcx>(
             let Some(source) = args.first().and_then(|arg| match &arg.node {
                 Operand::Copy(place) | Operand::Move(place) => Some(place.local),
                 Operand::Constant(_) => None,
-                #[cfg(rapx_ge_99)]
+                #[cfg(rapx_ge_95)]
                 Operand::RuntimeChecks(_) => None,
             }) else {
                 continue;
