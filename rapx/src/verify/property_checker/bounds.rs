@@ -194,10 +194,21 @@ impl PropertyChecker {
             let covered = Int::add(vm_state.ctx, &[&value.term, &access]);
             (covered.gt(&bound), value.term.lt(&base))
         };
-        solver.assert(&z3::ast::Bool::or(
-            vm_state.ctx,
-            &[&above_negated, &below_negated],
-        ));
+        let negated = z3::ast::Bool::or(vm_state.ctx, &[&above_negated, &below_negated]);
+
+        // Generic element size: discharge by a case split on `S = 0` (ZST) vs
+        // `S ≥ 1` (non-ZST) rather than a single nonlinear query.
+        if let Some(s) = vm_state.generic_elem_size(alloc_id) {
+            solver.pop(1);
+            let on_sat = if fallback_for_generic {
+                CheckResult::Unknown
+            } else {
+                CheckResult::Failed
+            };
+            return Self::smt_check_size_split(vm_state, &s, &negated, on_sat);
+        }
+
+        solver.assert(&negated);
         let sat_result = solver.check();
         let r = match sat_result {
             SatResult::Unsat => CheckResult::ProvedBySmt,

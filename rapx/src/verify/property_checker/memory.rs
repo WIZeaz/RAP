@@ -468,6 +468,7 @@ impl PropertyChecker {
             .alloc(alloc_id)
             .element_ty
             .map_or(false, |ty| matches!(ty.kind(), TyKind::Param(_)));
+        let elem_size = vm_state.generic_elem_size(alloc_id);
         if alloc_elem_is_generic && !size.as_u64().is_some() && !access.as_u64().is_some() {
             return Self::allocation_covers_access(
                 vm_state,
@@ -476,17 +477,28 @@ impl PropertyChecker {
                 &base,
                 &size,
                 CheckResult::Unknown,
+                elem_size.as_ref(),
             );
         }
 
-        Self::allocation_covers_access(vm_state, &value, &access, &base, &size, CheckResult::Failed)
+        Self::allocation_covers_access(
+            vm_state,
+            &value,
+            &access,
+            &base,
+            &size,
+            CheckResult::Failed,
+            elem_size.as_ref(),
+        )
     }
 
     /// Prove that `value + access` fits within `[base, base + size)`.
     ///
     /// `on_sat` is the result when the overflow is satisfiable: `Failed` for
     /// concrete sizes, `Unknown` for generic-element allocations whose byte
-    /// layout cannot be resolved.
+    /// layout cannot be resolved.  `elem_size`, when present, is the *generic*
+    /// element-size term: the check is then discharged by a case split on `S = 0`
+    /// (ZST) vs `S ≥ 1` (non-ZST) rather than a single nonlinear query.
     fn allocation_covers_access<'ctx, 'tcx>(
         vm_state: &VmState<'ctx, 'tcx>,
         value: &VmValue<'ctx, 'tcx>,
@@ -494,13 +506,20 @@ impl PropertyChecker {
         base: &Int<'ctx>,
         size: &Int<'ctx>,
         on_sat: CheckResult,
+        elem_size: Option<&Int<'ctx>>,
     ) -> CheckResult {
+        let bound = Int::add(vm_state.ctx, &[base, size]);
+        let covered = Int::add(vm_state.ctx, &[&value.term, access]);
+        let negated = covered.le(&bound).not();
+
+        if let Some(s) = elem_size {
+            return Self::smt_check_size_split(vm_state, s, &negated, on_sat);
+        }
+
         let solver = Solver::new(vm_state.ctx);
         solver.push();
         vm_state.assert_all(&solver);
-        let bound = Int::add(vm_state.ctx, &[base, size]);
-        let covered = Int::add(vm_state.ctx, &[&value.term, access]);
-        solver.assert(&covered.le(&bound).not());
+        solver.assert(&negated);
         let r = match solver.check() {
             SatResult::Unsat => CheckResult::ProvedBySmt,
             SatResult::Sat => on_sat,

@@ -285,6 +285,41 @@ impl PropertyChecker {
         r
     }
 
+    /// Prove `goal_negated` is unsatisfiable under a case split on a *generic*
+    /// element size `S`: the ZST branch (`S = 0`) and the non-ZST branch
+    /// (`S ≥ 1`, where the `S` factor cancels).  Both branches must be UNSAT.
+    /// `on_sat` is the result when either branch is satisfiable.
+    pub(super) fn smt_check_size_split<'ctx, 'tcx>(
+        vm_state: &VmState<'ctx, 'tcx>,
+        elem_size: &Int<'ctx>,
+        goal_negated: &Bool<'ctx>,
+        on_sat: CheckResult,
+    ) -> CheckResult {
+        let solver = Solver::new(vm_state.ctx);
+        let zero = Int::from_u64(vm_state.ctx, 0);
+        let one = Int::from_u64(vm_state.ctx, 1);
+
+        solver.push();
+        vm_state.assert_all(&solver);
+        solver.assert(&elem_size._eq(&zero));
+        solver.assert(goal_negated);
+        let r_zst = solver.check();
+        solver.pop(1);
+
+        solver.push();
+        vm_state.assert_all(&solver);
+        solver.assert(&elem_size.ge(&one));
+        solver.assert(goal_negated);
+        let r_non_zst = solver.check();
+        solver.pop(1);
+
+        match (r_zst, r_non_zst) {
+            (SatResult::Unsat, SatResult::Unsat) => CheckResult::ProvedBySmt,
+            (SatResult::Sat, _) | (_, SatResult::Sat) => on_sat,
+            _ => CheckResult::Unknown,
+        }
+    }
+
     pub(super) fn resolve_arg_term<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,

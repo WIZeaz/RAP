@@ -687,6 +687,31 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 .unwrap_or_else(|| self.unknown_value_for_place(place)),
             Operand::Constant(constant) => {
                 let text = format!("{:?}", constant.const_);
+                // `size_of::<T>()` / `align_of::<T>()` lower to the
+                // `SizedTypeProperties::SIZE`/`::ALIGN` associated consts for a
+                // generic `T`.  Bind them to the shared symbolic `sizeof_T` /
+                // `align_T` (created by `size_sym`/`align_sym` during
+                // `init_parameters`) so they agree with allocation sizes and
+                // pointer strides instead of being unrelated fresh constants.
+                if let rustc_middle::mir::Const::Unevaluated(uneval, _) = constant.const_ {
+                    let def_name = self.tcx.def_path_str(uneval.def);
+                    let is_size = def_name.ends_with("SizedTypeProperties::SIZE");
+                    let is_align = def_name.ends_with("SizedTypeProperties::ALIGN");
+                    if (is_size || is_align) && !uneval.args.is_empty() {
+                        let ty = uneval.args.type_at(0);
+                        let term = if is_size {
+                            self.size_sym_read(ty)
+                        } else {
+                            self.align_sym_read(ty)
+                        };
+                        return VmValue {
+                            term,
+                            ty: constant.const_.ty(),
+                            provenance: None,
+                            invariants: ValueInvariants::default(),
+                        };
+                    }
+                }
                 let int_val = crate::helpers::mir_utils::eval_const_scalar_int(
                     self.tcx,
                     &constant.const_,

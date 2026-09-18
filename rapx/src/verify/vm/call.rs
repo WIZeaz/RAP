@@ -182,6 +182,18 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
         let summary = call_summary::effect_summary(self.tcx, caller_def_id, func, destination);
 
+        // A `size_of::<T>()` / `align_of::<T>()` on a *generic* `T` has no
+        // concrete layout, so `eff_layout_const` produces no effect and the
+        // result would otherwise be an unrelated fresh value.  Bind it to the
+        // shared symbolic `sizeof_T` / `align_T` so it agrees with allocation
+        // sizes and pointer strides.
+        if self.try_size_align_effect(func, destination) {
+            self.last_call_name = summary.name.clone();
+            self.last_call_callee = callee;
+            self.materialize_const_bytes_after_call(args, destination);
+            return;
+        }
+
         self.last_call_name = summary.name.clone();
         self.last_call_callee = callee;
 
@@ -1281,6 +1293,51 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         val.invariants.aligned = true;
         val.invariants.init = true;
         self.set_local(dest, val);
+    }
+
+    /// For a `size_of::<T>()` / `align_of::<T>()` call whose `T` is generic (no
+    /// concrete layout), bind the destination to the shared symbolic
+    /// `sizeof_T` / `align_T` so it agrees with `size_sym`/`align_sym`.  Returns
+    /// `true` when handled.  Concrete layouts are left to `eff_layout_const`.
+    fn try_size_align_effect(&mut self, func: &Operand<'tcx>, destination: Local) -> bool {
+        let Some(ty) = crate::helpers::mir_utils::fn_def_first_type_arg(func) else {
+            return false;
+        };
+        let Some(callee) = crate::helpers::mir_utils::dep_callee_def_id(func) else {
+            return false;
+        };
+        let is_size = crate::def_id::contains(
+            &[crate::def_id::mem_size_of(), crate::def_id::intrinsics_size_of()],
+            callee,
+        );
+        let is_align = crate::def_id::contains(
+            &[crate::def_id::mem_align_of(), crate::def_id::intrinsics_align_of()],
+            callee,
+        );
+        if !is_size && !is_align {
+            return false;
+        }
+        // A concrete layout is already modelled as `ReturnConst` by
+        // `eff_layout_const`; only the generic (symbolic) case needs binding here.
+        if crate::helpers::mir_utils::type_layout(self.tcx, self.caller_def_id, ty).is_some() {
+            return false;
+        }
+        let term = if is_size {
+            self.size_sym(ty)
+        } else {
+            self.align_sym(ty)
+        };
+        let dest_ty = self.body.local_decls[destination].ty;
+        self.set_local(
+            destination,
+            VmValue {
+                term,
+                ty: dest_ty,
+                provenance: None,
+                invariants: ValueInvariants::default(),
+            },
+        );
+        true
     }
 
     /// Apply a single call effect to the VM state.
@@ -2579,7 +2636,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let dest_ty = self.body.local_decls[dest].ty;
                 let pointee = crate::helpers::mir_utils::pointee_ty(dest_ty);
                 let size = pointee
-                    .map(|ty| self.size_sym_read(ty))
+                    .map(|ty| self.size_sym(ty))
                     .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                 let align = pointee.map(|ty| self.align_sym(ty)).unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                 let (alloc_id, base) = self.allocate(size, align, pointee);

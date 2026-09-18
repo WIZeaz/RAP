@@ -153,6 +153,10 @@ sound_tests! {
     // `index - 1` is in bounds when `index >= 1` and `InBound(data, index)`
     // records the numeric `index < len` bound.
     inbound_sound_12: "verify_units/inbound_derived_index_1" => "derived_index_minus_one",
+    // ZST elements (`()`) have byte size 0, but slice length is tracked by
+    // `slice_len` (element count), not `size / elem_size`.
+    inbound_sound_13: "verify_units/inbound_sound_zst" => "sound_zst_slice_len",
+    inbound_sound_14: "verify_units/inbound_sound_zst" => "sound_zst_index_in_bounds",
 }
 
 // ================ InBound Unsound Cases =============

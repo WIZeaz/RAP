@@ -1196,6 +1196,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let arr_align = self.align_sym(*elem_ty);
                 let (fa, fb) = self.allocate(arr_size, arr_align, Some(*elem_ty));
                 self.alloc_mut(fa).initialized = true;
+                // Materialize the array length so `len()` reads the constant `n`
+                // directly rather than `size / elem_size`, which is ill-defined
+                // when the element type is a generic ZST (`elem_size = 0`).
+                self.alloc_mut(fa).slice_len = Some(Int::from_u64(self.ctx, n));
                 self.alloc_field_values.insert(
                     (alloc_id, root_ty, path.clone()),
                     VmValue {

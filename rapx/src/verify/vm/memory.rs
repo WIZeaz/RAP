@@ -293,8 +293,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         }
         let s = self.fresh_int(&format!("sizeof_{ty}"));
         self.sym_sizes.insert(ty, s.clone());
-        let one = Int::from_u64(self.ctx, 1);
-        self.path_conditions.push(s.ge(&one));
+        let zero = Int::from_u64(self.ctx, 0);
+        self.path_conditions.push(s.ge(&zero));
         s
     }
 
@@ -326,6 +326,22 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             .get(&ty)
             .cloned()
             .unwrap_or_else(|| Int::from_u64(self.ctx, 1))
+    }
+
+    /// The *symbolic* element-size term of `alloc_id`'s element type, when it is
+    /// a generic type parameter (so it may be `0` for a ZST or `≥ 1` for a
+    /// non-ZST).  Returns `None` for concrete element types, where the size is a
+    /// known constant and no case split is needed.
+    pub(crate) fn generic_elem_size(&self, alloc_id: AllocId) -> Option<Int<'ctx>> {
+        let elem_ty = self.alloc(alloc_id).element_ty?;
+        if !crate::helpers::mir_utils::ty_has_type_param(elem_ty) {
+            return None;
+        }
+        let s = self.size_sym_read(elem_ty);
+        if s.simplify().as_u64().is_some() {
+            return None;
+        }
+        Some(s)
     }
 
     /// Alignment of `ty` as a symbolic Z3 term.  For a concrete type this is
@@ -388,6 +404,16 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         crate::helpers::mir_utils::field_ty(self.tcx, field, substs);
                     let field_align = self.align_sym(field_ty);
                     self.path_conditions.push(a.rem(&field_align)._eq(&zero));
+                }
+                // A struct's size is at least the sum of its fields (padding may
+                // add more).  This relates the symbolic `sizeof_Struct` constant
+                // to the field-sum that `size_of::<Struct>()` lowers to (e.g.
+                // `SIZE<LeafNode> + SIZE<[...; 12]>` for `InternalNode`), so
+                // `Allocated(p, u8, layout.size)` is discharged against the
+                // allocation size.
+                if let Some(sum) = self.struct_size_sym(ty) {
+                    let size = self.size_sym(ty);
+                    self.path_conditions.push(size.ge(&sum));
                 }
             }
         }
