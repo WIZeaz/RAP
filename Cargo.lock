@@ -803,7 +803,7 @@ dependencies = [
 
 [[package]]
 name = "rapx"
-version = "0.7.40"
+version = "0.7.41"
 dependencies = [
  "annotate-snippets",
  "anyhow",
@@ -843,7 +843,7 @@ dependencies = [
 
 [[package]]
 name = "rapx-macros"
-version = "0.7.40"
+version = "0.7.41"
 dependencies = [
  "quote",
 ]
