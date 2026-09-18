@@ -409,13 +409,22 @@ impl<'tcx> VerifyTargetCollector<'tcx> {
                         &mut visited,
                     );
                     if requires.is_empty() {
-                        let path = crate::helpers::name::get_cleaned_def_path_name(
-                            self.tcx,
-                            callee_def_id,
-                        );
-                        rap_warn!(
-                            "no safety contracts found for callee \"{path}\""
-                        );
+                        // Only warn for genuinely `unsafe` callees: a safe
+                        // function has no caller-side safety contract, so an
+                        // empty entry here is expected (e.g. a safe
+                        // `#[rapx::verify]` target whose body uses raw-pointer
+                        // derefs rather than unsafe callee calls).
+                        if self.tcx.fn_sig(callee_def_id).skip_binder().safety()
+                            == rustc_hir::Safety::Unsafe
+                        {
+                            let path = crate::helpers::name::get_cleaned_def_path_name(
+                                self.tcx,
+                                callee_def_id,
+                            );
+                            rap_warn!(
+                                "no safety contracts found for callee \"{path}\""
+                            );
+                        }
                     } else {
                         let path = crate::helpers::name::get_cleaned_def_path_name(
                             self.tcx,

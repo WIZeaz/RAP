@@ -6397,5 +6397,28 @@
         "T"
       ]
     }
+  ],
+  "alloc::raw_vec::from_nonnull_in": [
+    {
+      "tag": "Allocated",
+      "args": [
+        "ptr",
+        "T",
+        "capacity"
+      ]
+    },
+    {
+      "tag": "Align",
+      "args": [
+        "ptr",
+        "T"
+      ]
+    },
+    {
+      "tag": "ValidNum",
+      "args": [
+        "size_of(T) * capacity <= isize::MAX"
+      ]
+    }
   ]
 }
