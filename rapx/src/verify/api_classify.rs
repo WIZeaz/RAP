@@ -416,6 +416,7 @@ pub fn is_vec_from_box(callee: Option<DefId>) -> bool {
         callee,
         &[
             crate::def_id::slice_into_vec(),
+            #[cfg(rapx_ge_100)]
             crate::def_id::box_assume_init_into_vec_unsafe(),
         ],
     )

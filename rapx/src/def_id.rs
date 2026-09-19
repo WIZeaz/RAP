@@ -844,10 +844,12 @@ fn init_inner(tcx: TyCtxt) -> Intrinsics {
         );
     };
 
+    let mut loaded_crates = std::collections::HashSet::new();
     for krate in std::iter::once(rustc_public::local_crate())
         .chain(rustc_public::external_crates().into_iter())
         .filter(|krate| CRATES.iter().any(|name| *name == krate.name))
     {
+        loaded_crates.insert(krate.name.clone());
         for fn_def in krate.fn_defs() {
             try_insert(&fn_def.name(), fn_def.def_id());
         }
@@ -863,22 +865,36 @@ fn init_inner(tcx: TyCtxt) -> Intrinsics {
         // cc https://github.com/Artisan-Lab/RAPx/issues/190#issuecomment-3303049000
         let not_found = indices
             .iter()
-            .filter_map(|(&idx, &found)| (!found).then_some(INTRINSICS[idx]))
+            .filter_map(|(&idx, &found)| {
+                if found {
+                    return None;
+                }
+                // Only report entries whose crate was actually loaded for this
+                // compilation. Entries pointing solely at unloaded crates (e.g.
+                // `alloc` when verifying `core`) are expected to be absent.
+                let in_loaded_crate = INTRINSICS[idx].iter().any(|p| {
+                    p.split("::").next().is_some_and(|pfx| loaded_crates.contains(pfx))
+                });
+                in_loaded_crate.then_some(INTRINSICS[idx])
+            })
             .collect::<Vec<_>>();
-        rap_warn!(
-            "Intrinsic functions is incompletely retrieved.\n\
-             {} fn ids are not found: {not_found:#?}",
-            not_found.len()
-        );
+        if !not_found.is_empty() {
+            rap_warn!(
+                "Intrinsic functions is incompletely retrieved.\n\
+                 {} fn ids are not found: {not_found:#?}",
+                not_found.len()
+            );
+        }
     }
 
     Intrinsics { map }
 }
 
 macro_rules! intrinsics {
-    ($( $id:ident : $paths:expr ,)+) => {
-        const INTRINSICS: &[&[&str]] = &[$( $paths ,)+];
+    ($( $(#[$attr:meta])* $id:ident : $paths:expr ,)+) => {
+        const INTRINSICS: &[&[&str]] = &[$( $(#[$attr])* $paths ,)+];
         $(
+            $(#[$attr])*
             pub fn $id() -> Option<DefId> {
                 let map = &INIT.get().expect("Intrinsics DefIds haven't been initialized.").map;
                 for path in $paths {
@@ -1063,19 +1079,27 @@ intrinsics! {
     ],
     nonnull_align_offset: &[
         "std::ptr::NonNull::<T>::align_offset",
-        "core::ptr::NonNull::<T>::align_offset"
+        "core::ptr::NonNull::<T>::align_offset",
+        "std::ptr::non_null::NonNull::<T>::align_offset",
+        "core::ptr::non_null::NonNull::<T>::align_offset"
     ],
     nonnull_as_ref: &[
         "std::ptr::NonNull::<T>::as_ref",
-        "core::ptr::NonNull::<T>::as_ref"
+        "core::ptr::NonNull::<T>::as_ref",
+        "std::ptr::non_null::NonNull::<T>::as_ref",
+        "core::ptr::non_null::NonNull::<T>::as_ref"
     ],
     nonnull_as_mut: &[
         "std::ptr::NonNull::<T>::as_mut",
-        "core::ptr::NonNull::<T>::as_mut"
+        "core::ptr::NonNull::<T>::as_mut",
+        "std::ptr::non_null::NonNull::<T>::as_mut",
+        "core::ptr::non_null::NonNull::<T>::as_mut"
     ],
     nonnull_new: &[
         "std::ptr::NonNull::<T>::new",
-        "core::ptr::NonNull::<T>::new"
+        "core::ptr::NonNull::<T>::new",
+        "std::ptr::non_null::NonNull::<T>::new",
+        "core::ptr::non_null::NonNull::<T>::new"
     ],
     const_ptr_align_offset: &[
         "std::ptr::const_ptr::<impl *const T>::align_offset",
@@ -1183,27 +1207,39 @@ intrinsics! {
     ],
     nonnull_add: &[
         "std::ptr::NonNull::<T>::add",
-        "core::ptr::NonNull::<T>::add"
+        "core::ptr::NonNull::<T>::add",
+        "std::ptr::non_null::NonNull::<T>::add",
+        "core::ptr::non_null::NonNull::<T>::add"
     ],
     nonnull_sub: &[
         "std::ptr::NonNull::<T>::sub",
-        "core::ptr::NonNull::<T>::sub"
+        "core::ptr::NonNull::<T>::sub",
+        "std::ptr::non_null::NonNull::<T>::sub",
+        "core::ptr::non_null::NonNull::<T>::sub"
     ],
     nonnull_byte_add: &[
         "std::ptr::NonNull::<T>::byte_add",
-        "core::ptr::NonNull::<T>::byte_add"
+        "core::ptr::NonNull::<T>::byte_add",
+        "std::ptr::non_null::NonNull::<T>::byte_add",
+        "core::ptr::non_null::NonNull::<T>::byte_add"
     ],
     nonnull_byte_sub: &[
         "std::ptr::NonNull::<T>::byte_sub",
-        "core::ptr::NonNull::<T>::byte_sub"
+        "core::ptr::NonNull::<T>::byte_sub",
+        "std::ptr::non_null::NonNull::<T>::byte_sub",
+        "core::ptr::non_null::NonNull::<T>::byte_sub"
     ],
     nonnull_offset: &[
         "std::ptr::NonNull::<T>::offset",
-        "core::ptr::NonNull::<T>::offset"
+        "core::ptr::NonNull::<T>::offset",
+        "std::ptr::non_null::NonNull::<T>::offset",
+        "core::ptr::non_null::NonNull::<T>::offset"
     ],
     nonnull_byte_offset: &[
         "std::ptr::NonNull::<T>::byte_offset",
-        "core::ptr::NonNull::<T>::byte_offset"
+        "core::ptr::NonNull::<T>::byte_offset",
+        "std::ptr::non_null::NonNull::<T>::byte_offset",
+        "core::ptr::non_null::NonNull::<T>::byte_offset"
     ],
     option_unwrap: &[
         "std::option::Option::<T>::unwrap",
@@ -1239,15 +1275,21 @@ intrinsics! {
     ],
     cstr_from_ptr: &[
         "std::ffi::CStr::from_ptr",
-        "core::ffi::CStr::from_ptr"
+        "core::ffi::CStr::from_ptr",
+        "std::ffi::c_str::CStr::from_ptr",
+        "core::ffi::c_str::CStr::from_ptr"
     ],
     cstr_from_bytes_with_nul_unchecked: &[
         "std::ffi::CStr::from_bytes_with_nul_unchecked",
-        "core::ffi::CStr::from_bytes_with_nul_unchecked"
+        "core::ffi::CStr::from_bytes_with_nul_unchecked",
+        "std::ffi::c_str::CStr::from_bytes_with_nul_unchecked",
+        "core::ffi::c_str::CStr::from_bytes_with_nul_unchecked"
     ],
     cstring_from_vec_with_nul_unchecked: &[
         "std::ffi::CString::from_vec_with_nul_unchecked",
-        "alloc::ffi::CString::from_vec_with_nul_unchecked"
+        "alloc::ffi::CString::from_vec_with_nul_unchecked",
+        "std::ffi::c_str::CString::from_vec_with_nul_unchecked",
+        "alloc::ffi::c_str::CString::from_vec_with_nul_unchecked"
     ],
     vec_push: &[
         "std::vec::Vec::<T, A>::push",
@@ -1295,7 +1337,9 @@ intrinsics! {
     ],
     cstring_from_raw: &[
         "std::ffi::CString::from_raw",
-        "alloc::ffi::CString::from_raw"
+        "alloc::ffi::CString::from_raw",
+        "std::ffi::c_str::CString::from_raw",
+        "alloc::ffi::c_str::CString::from_raw"
     ],
     arc_from_raw: &[
         "std::sync::Arc::<T>::from_raw",
@@ -1331,7 +1375,9 @@ intrinsics! {
     ],
     cstring_into_raw: &[
         "std::ffi::CString::into_raw",
-        "alloc::ffi::CString::into_raw"
+        "alloc::ffi::CString::into_raw",
+        "std::ffi::c_str::CString::into_raw",
+        "alloc::ffi::c_str::CString::into_raw"
     ],
     arc_into_raw: &[
         "std::sync::Arc::<T>::into_raw",
@@ -1365,6 +1411,7 @@ intrinsics! {
         "std::slice::<impl [T]>::into_vec",
         "core::slice::<impl [T]>::into_vec"
     ],
+    #[cfg(rapx_ge_100)]
     box_assume_init_into_vec_unsafe: &[
         "std::boxed::box_assume_init_into_vec_unsafe",
         "alloc::boxed::box_assume_init_into_vec_unsafe"
@@ -1427,27 +1474,39 @@ intrinsics! {
     ],
     nonnull_addr: &[
         "std::ptr::NonNull::<T>::addr",
-        "core::ptr::NonNull::<T>::addr"
+        "core::ptr::NonNull::<T>::addr",
+        "std::ptr::non_null::NonNull::<T>::addr",
+        "core::ptr::non_null::NonNull::<T>::addr"
     ],
     nonnull_cast: &[
         "std::ptr::NonNull::<T>::cast",
-        "core::ptr::NonNull::<T>::cast"
+        "core::ptr::NonNull::<T>::cast",
+        "std::ptr::non_null::NonNull::<T>::cast",
+        "core::ptr::non_null::NonNull::<T>::cast"
     ],
     nonnull_as_ptr: &[
         "std::ptr::NonNull::<T>::as_ptr",
-        "core::ptr::NonNull::<T>::as_ptr"
+        "core::ptr::NonNull::<T>::as_ptr",
+        "std::ptr::non_null::NonNull::<T>::as_ptr",
+        "core::ptr::non_null::NonNull::<T>::as_ptr"
     ],
     nonnull_slice_is_empty: &[
         "std::ptr::NonNull::<[T]>::is_empty",
-        "core::ptr::NonNull::<[T]>::is_empty"
+        "core::ptr::NonNull::<[T]>::is_empty",
+        "std::ptr::non_null::NonNull::<[T]>::is_empty",
+        "core::ptr::non_null::NonNull::<[T]>::is_empty"
     ],
     nonnull_slice_len: &[
         "std::ptr::NonNull::<[T]>::len",
-        "core::ptr::NonNull::<[T]>::len"
+        "core::ptr::NonNull::<[T]>::len",
+        "std::ptr::non_null::NonNull::<[T]>::len",
+        "core::ptr::non_null::NonNull::<[T]>::len"
     ],
     nonnull_slice_as_mut_ptr: &[
         "std::ptr::NonNull::<[T]>::as_mut_ptr",
-        "core::ptr::NonNull::<[T]>::as_mut_ptr"
+        "core::ptr::NonNull::<[T]>::as_mut_ptr",
+        "std::ptr::non_null::NonNull::<[T]>::as_mut_ptr",
+        "core::ptr::non_null::NonNull::<[T]>::as_mut_ptr"
     ],
     slice_len: &[
         "std::slice::<impl [T]>::len",
@@ -1511,11 +1570,15 @@ intrinsics! {
     ],
     cstr_as_ptr: &[
         "std::ffi::CStr::as_ptr",
-        "core::ffi::CStr::as_ptr"
+        "core::ffi::CStr::as_ptr",
+        "std::ffi::c_str::CStr::as_ptr",
+        "core::ffi::c_str::CStr::as_ptr"
     ],
     cstr_is_empty: &[
         "std::ffi::CStr::is_empty",
-        "core::ffi::CStr::is_empty"
+        "core::ffi::CStr::is_empty",
+        "std::ffi::c_str::CStr::is_empty",
+        "core::ffi::c_str::CStr::is_empty"
     ],
 }
 
