@@ -1,7 +1,7 @@
 //! The contract IR: places, expressions, predicates, and the property model.
 //!
 //! `Property` is a DNF form (only `Atom` and `Or`; conjunction is a list), with
-//! a `PropertyKind` vocabulary of ~24 safety tags. All contract front-ends
+//! a `PropertyKind` vocabulary of safety tags. All contract front-ends
 //! (attributes, JSON, compound-property macros, pest DSL) produce this IR.
 
 use rustc_middle::mir::Local;

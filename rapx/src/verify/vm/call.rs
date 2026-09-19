@@ -2568,12 +2568,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     if let Some(ref dest_alloc_id) = self.local_alloc_ids.get(&dest).copied() {
                         self.alloc_mut(*dest_alloc_id).slice_data = Some(alloc_id);
                     }
-                    // Propagate init status and byte-level tracking from the source pointer
-                    // For fresh allocations, the init status is inherited from the source.
-                    let is_external = self.alloc(alloc_id).is_external;
-                    if is_external {
-                        self.alloc_mut(alloc_id).initialized = true;
-                    }
+                    // Propagate init status and byte-level tracking from the source pointer.
                     if let Some(ref source_prov) = ptr_val.provenance {
                         if !self.alloc(source_prov.alloc_id).dead {
                             self.alloc_mut(alloc_id).initialized = true;
@@ -2717,10 +2712,17 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 elem_size,
             } => {
                 if let Some(size_val) = args.get(*size_arg) {
-                    let elem_sz = Int::from_u64(self.ctx, *elem_size);
-                    let total = Int::mul(self.ctx, &[&size_val.term, &elem_sz]);
                     let dest_ty = self.body.local_decls[dest].ty;
                     let elem_ty = crate::verify::call_summary::vec_elem_ty(self.tcx, dest_ty);
+                    // A generic element type (`elem_size == 0`) uses the shared
+                    // symbolic `sizeof_T` so the allocation size stays consistent
+                    // with pointer strides (mirrors `ReturnFreshAllocation`).
+                    let elem_sz = if *elem_size == 0 {
+                        self.size_sym(elem_ty.unwrap_or(dest_ty))
+                    } else {
+                        Int::from_u64(self.ctx, *elem_size)
+                    };
+                    let total = Int::mul(self.ctx, &[&size_val.term, &elem_sz]);
                     let heap_align = elem_ty.map(|ty| self.align_sym(ty)).unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                     let (alloc_id, base) = self.allocate_external(total, heap_align, elem_ty);
                     let dest_alloc_id = self.local_alloc_ids.get(&dest).copied();
@@ -2778,10 +2780,17 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
             CallEffect::ReturnNewAllocationFromCap { cap_arg, elem_size } => {
                 if let Some(cap_val) = args.get(*cap_arg) {
-                    let elem_sz = Int::from_u64(self.ctx, *elem_size);
-                    let total = Int::mul(self.ctx, &[&cap_val.term, &elem_sz]);
                     let dest_ty = self.body.local_decls[dest].ty;
                     let elem_ty = crate::verify::call_summary::vec_elem_ty(self.tcx, dest_ty);
+                    // A generic element type (`elem_size == 0`) uses the shared
+                    // symbolic `sizeof_T` so the allocation size stays consistent
+                    // with pointer strides (mirrors `ReturnFreshAllocation`).
+                    let elem_sz = if *elem_size == 0 {
+                        self.size_sym(elem_ty.unwrap_or(dest_ty))
+                    } else {
+                        Int::from_u64(self.ctx, *elem_size)
+                    };
+                    let total = Int::mul(self.ctx, &[&cap_val.term, &elem_sz]);
                     let heap_align = elem_ty.map(|ty| self.align_sym(ty)).unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                     let (alloc_id, base) = self.allocate_external(total, heap_align, elem_ty);
                     let dest_alloc_id = self.local_alloc_ids.get(&dest).copied();

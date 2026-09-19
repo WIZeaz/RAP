@@ -280,8 +280,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// Element size of `ty` as a symbolic Z3 term.  For concrete types this is
     /// the constant byte size; for a generic type whose `size_of` is unknown
     /// (an unconstrained `T`) it is a single reusable symbolic constant with
-    /// `>= 1`.  Using the same constant everywhere (ptr strides, access counts,
-    /// allocation sizes) lets SMT cancel the factor in `InBound`.
+    /// `>= 0` (so `T` may be a ZST).  Using the same constant everywhere (ptr
+    /// strides, access counts, allocation sizes) lets SMT cancel the factor in
+    /// `InBound`.
     pub(crate) fn size_sym(&mut self, ty: Ty<'tcx>) -> Int<'ctx> {
         let ty = peel_slice_elem(ty);
         let size = self.size_of_ty(ty);
@@ -315,7 +316,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// Read-only sibling of [`size_sym`](Self::size_sym): returns the symbolic
     /// size for `ty`, falling back to `1` when the symbolic constant has not
     /// been created yet (e.g. a checker invoked before the exec phase created
-    /// it).  Concrete types still return their constant byte size.
+    /// it).  Non-ZST concrete types return their constant byte size; a concrete
+    /// ZST or a not-yet-created generic constant falls back to `1` — a non-zero
+    /// element size keeps `size / elem_size` derivations from dividing by zero.
     pub(crate) fn size_sym_read(&self, ty: Ty<'tcx>) -> Int<'ctx> {
         let ty = peel_slice_elem(ty);
         let size = self.size_of_ty(ty);
