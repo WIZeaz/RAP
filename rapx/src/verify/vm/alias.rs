@@ -140,9 +140,8 @@ pub(crate) enum VmAliasResult {
     Unknown,
 }
 
-/// Run the full alias hazard check for the VM backend.
-///
-/// This is the function the `PropertyChecker::check_alias` delegates to.
+/// Whether a contract property tree contains an `Alias` atom (used to detect a
+/// caller-declared `Alias`/`Ptr2Ref` precondition).
 fn property_contains_alias(property: &Property<'_>) -> bool {
     match property {
         Property::Atom(a) => a.kind == PropertyKind::Alias,
@@ -161,6 +160,9 @@ fn fn_has_alias_requires(tcx: rustc_middle::ty::TyCtxt<'_>, def_id: DefId) -> bo
         .any(property_contains_alias)
 }
 
+/// Run the full alias hazard check for the VM backend.
+///
+/// This is the function the `PropertyChecker::check_alias` delegates to.
 pub(crate) fn check_alias_vm<'ctx, 'tcx>(
     vm_state: &VmState<'ctx, 'tcx>,
     checkpoint: &Checkpoint<'tcx>,
@@ -270,14 +272,26 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
                     return VmAliasResult::Proved;
                 }
                 // An *independent* raw-pointer *parameter* (`*const T` / `*mut T`)
-                // carries no borrow information: it must be assumed to alias every
-                // live reference (shared or mutable), so a Ptr2Ref from it cannot
-                // be proven safe.  A raw-pointer *field copy* (`_tmp = self.head`)
-                // is a temp local above `arg_count`, derived from a borrow field —
-                // it falls through to the field-type-aware check below.
+                // carries no borrow information. An `Alias`/`Ptr2Ref` precondition
+                // discharges the hazard (the caller guarantees no aliasing), and a
+                // local (non-escaping) view is safe; only an escaping view without
+                // such a precondition remains an unresolved hazard. A raw-pointer
+                // *field copy* (`_tmp = self.head`) is a temp local above
+                // `arg_count`, derived from a borrow field — it falls through to
+                // the field-type-aware check below.
                 if matches!(origin.kind, VmOriginKind::RawPtr)
                     && origin.local.as_usize() <= vm_state.body.arg_count
                 {
+                    if fn_has_alias_requires(vm_state.tcx, checkpoint.caller) {
+                        return VmAliasResult::Proved;
+                    }
+                    if !alias_hazard::destination_flows_to_return(
+                        vm_state.tcx,
+                        checkpoint.caller,
+                        checkpoint.destination,
+                    ) {
+                        return VmAliasResult::Proved;
+                    }
                     return VmAliasResult::Unknown;
                 }
             }

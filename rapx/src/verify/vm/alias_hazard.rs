@@ -317,6 +317,9 @@ pub(super) fn any_struct_field_origin(
     resolve_any_field_origin(tcx, caller, local, &place.fields).map(SelfFieldOrigin::from)
 }
 
+/// The mutability (`Not` / `Mut`) of the borrow carried by `self_local`'s type
+/// (a `&T` / `&mut T`), or `None` if it is not a reference. `self_local` is
+/// `_1` for a method receiver, and any parameter for a free function.
 fn self_borrow_mutability(tcx: TyCtxt<'_>, def_id: DefId, self_local: Local) -> Option<ty::Mutability> {
     let body = tcx.optimized_mir(def_id);
     match body.local_decls[self_local].ty.kind() {
@@ -388,6 +391,11 @@ pub(super) fn escaped_self_field_violation(
     None
 }
 
+/// Check whether `item` (a struct method or a same-module free function) writes
+/// or exposes the raw field `origin` through the borrow carried by `self_local`.
+/// A shared current borrow (`&self`) is not invalidated by a mutable item borrow
+/// (`&mut self`), and a mutable/mutable pair is likewise fine; any other
+/// combination is a violation. Returns the violation description, or `None`.
 fn check_fn_against_field(
     tcx: TyCtxt<'_>,
     item: DefId,
@@ -468,6 +476,10 @@ fn impls_for_struct(tcx: TyCtxt<'_>, struct_def_id: DefId) -> Vec<DefId> {
     impls
 }
 
+/// Collect the free functions in the struct's own module that take a
+/// `&Struct` / `&mut Struct` parameter. Rust privacy is module-scoped, so only
+/// those can reach a private raw field. Each entry pairs the function with the
+/// parameter locals that carry the struct reference.
 fn free_fns_for_struct(tcx: TyCtxt<'_>, struct_def_id: DefId) -> Vec<(DefId, Vec<Local>)> {
     let Some(struct_local) = struct_def_id.as_local() else {
         return Vec::new();
@@ -494,6 +506,8 @@ fn free_fns_for_struct(tcx: TyCtxt<'_>, struct_def_id: DefId) -> Vec<(DefId, Vec
     fns
 }
 
+/// Return the parameter locals of `def_id` whose type is a `&Struct` /
+/// `&mut Struct` reference to `struct_def_id`.
 fn struct_ref_param_locals(
     tcx: TyCtxt<'_>,
     def_id: DefId,
@@ -514,6 +528,8 @@ fn struct_ref_param_locals(
         .collect()
 }
 
+/// Whether `method` writes through the raw field `field_index` of the struct
+/// borrowed via `self_local` (`_1` for a method, any parameter for a free fn).
 fn method_writes_self_field(
     tcx: TyCtxt<'_>,
     method: DefId,
@@ -548,6 +564,8 @@ fn method_writes_self_field(
     false
 }
 
+/// Whether `place` is a raw-pointer deref whose operand traces back to the
+/// field `field_index` of the struct borrowed via `self_local`.
 fn place_raw_accesses_self_field(
     tcx: TyCtxt<'_>,
     method: DefId,
@@ -579,6 +597,8 @@ fn place_raw_accesses_self_field(
     )
 }
 
+/// Backward-traces `local` through MIR assignments to check whether its value
+/// is derived from `(*self_local).field_index`.
 fn local_traces_to_self_field(
     tcx: TyCtxt<'_>,
     method: DefId,
@@ -626,6 +646,9 @@ fn local_traces_to_self_field(
     false
 }
 
+/// Whether `method` returns a raw-pointer-bearing value derived from the field
+/// `field_index` of the struct borrowed via `self_local`, i.e. it leaks the raw
+/// field to the caller.
 fn method_exposes_self_field(
     tcx: TyCtxt<'_>,
     method: DefId,
@@ -678,6 +701,7 @@ fn rvalue_mentions_origin(
     })
 }
 
+/// The `PlaceKey` for `(*self_local).field_index`.
 fn self_field_key(self_local: Local, field_index: usize) -> PlaceKey {
     PlaceKey {
         base: PlaceBaseKey::Local(self_local.as_usize()),
