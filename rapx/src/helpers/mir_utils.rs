@@ -906,7 +906,20 @@ pub(crate) fn eval_array_len<'tcx>(
         let ConstKind::Alias(_, alias_const) = c.kind() else {
             return None;
         };
-        alias_const.kind.opt_def_id()?
+        #[cfg(not(rapx_alias_const_inherent_self))]
+        let def_id = alias_const.kind.opt_def_id()?;
+        #[cfg(rapx_alias_const_inherent_self)]
+        let def_id = {
+            use rustc_middle::ty::AliasConstKind;
+            match alias_const.kind {
+                AliasConstKind::Projection { def_id } => def_id.into(),
+                AliasConstKind::InherentSelf { def_id } => def_id.into(),
+                AliasConstKind::InherentImpl { def_id } => def_id.into(),
+                AliasConstKind::Free { def_id } => def_id.into(),
+                AliasConstKind::Anon { def_id } => def_id.into(),
+            }
+        };
+        def_id
     };
     #[cfg(not(rapx_constkind_alias))]
     let def_id = {

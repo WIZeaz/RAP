@@ -17,6 +17,7 @@ fn main() {
     emit_check_cfg("rapx_has_maybe_dangling_lang_item");
     emit_check_cfg("rapx_rvalue_has_nullary_op");
     emit_check_cfg("rapx_constkind_alias");
+    emit_check_cfg("rapx_alias_const_inherent_self");
     emit_check_cfg("rapx_has_deeply_resolve_ignoring_regions");
 
     emit_cfg("rapx_ge_95", minor >= 95);
@@ -79,6 +80,15 @@ fn main() {
         rustc_src_contains_path(
             "compiler/rustc_type_ir/src/const_kind.rs",
             "Alias(ty::IsRigid",
+        ),
+    );
+    // `AliasConstKind::Inherent` split into `InherentSelf` + `InherentImpl` and
+    // `opt_def_id` was dropped (extract the def_id by matching) around 2026-09.
+    emit_cfg(
+        "rapx_alias_const_inherent_self",
+        rustc_src_contains_path(
+            "compiler/rustc_type_ir/src/const_kind.rs",
+            "InherentSelf",
         ),
     );
     // `InferCtxt::resolve_vars_if_possible` was renamed to
