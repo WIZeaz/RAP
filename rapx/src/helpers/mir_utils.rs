@@ -1002,7 +1002,7 @@ pub fn is_u8_array_or_slice(ty: Ty<'_>) -> bool {
 /// Whether a type transitively contains a reference.
 ///
 /// This is a shallow check: it recurses only through `Adt` generic arguments,
-/// not through tuple elements or `Adt` fields. See [`type_contains_ref_or_ptr`]
+/// not through tuple elements or `Adt` fields. See [`type_contains_raw_ptr`]
 /// for a deeper check that also matches raw pointers.
 pub fn type_contains_reference(ty: Ty<'_>) -> bool {
     match ty.kind() {
@@ -1012,17 +1012,18 @@ pub fn type_contains_reference(ty: Ty<'_>) -> bool {
     }
 }
 
-/// Whether a type transitively contains a reference or raw pointer,
-/// recursing through tuple elements and `Adt` fields. Unlike
-/// [`type_contains_reference`], this also matches raw pointers.
-pub fn type_contains_ref_or_ptr<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> bool {
+/// Whether a type transitively contains a raw pointer, recursing through tuple
+/// elements and `Adt` fields. Unlike [`type_contains_reference`], this does not
+/// match references — a method returning `&*self.raw` re-borrows the pointee
+/// (safe) rather than leaking the raw pointer value itself (unsafe).
+pub fn type_contains_raw_ptr<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> bool {
     match ty.kind() {
-        TyKind::Ref(_, _, _) | TyKind::RawPtr(_, _) => true,
-        TyKind::Tuple(elems) => elems.iter().any(|t| type_contains_ref_or_ptr(tcx, t)),
+        TyKind::RawPtr(_, _) => true,
+        TyKind::Tuple(elems) => elems.iter().any(|t| type_contains_raw_ptr(tcx, t)),
         TyKind::Adt(def, args) => {
             if args.iter().any(|arg| {
                 if let Some(t) = arg.as_type() {
-                    type_contains_ref_or_ptr(tcx, t)
+                    type_contains_raw_ptr(tcx, t)
                 } else {
                     false
                 }
@@ -1030,8 +1031,7 @@ pub fn type_contains_ref_or_ptr<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> bool {
                 return true;
             }
             let adt = tcx.adt_def(def.did());
-            adt.all_fields()
-                .any(|field| type_contains_ref_or_ptr(tcx, field_ty(tcx, field, args)))
+            adt.all_fields().any(|field| type_contains_raw_ptr(tcx, field_ty(tcx, field, args)))
         }
         _ => false,
     }

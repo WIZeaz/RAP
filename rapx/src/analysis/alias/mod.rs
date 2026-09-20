@@ -250,6 +250,37 @@ pub fn resolve_place(place: &Place<'_>, origins: &LocalOriginMap) -> (usize, Vec
 
 /// If `local` (typically `1` = self) with `fields` in `def_id`'s body
 /// corresponds to a struct field, return its identity.
+/// Trace a multi-level field path (`self.node.ptr`, `self.mid.leaf.ptr`) down
+/// to the innermost raw-pointer field, so the encapsulation check targets
+/// `Inner::ptr` / `Leaf::ptr` rather than the intermediate `Outer::node` /
+/// `Outer::mid` field. Intermediate reference and ADT layers are dereferenced
+/// through; if the path ends without reaching a raw pointer, `None` is returned.
+fn resolve_field_origin_inner<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    root_ty: Ty<'tcx>,
+    fields: &[usize],
+) -> Option<FieldOrigin> {
+    let (mut struct_def_id, mut args) = adt_from_ty(root_ty)?;
+    for &idx in fields {
+        let adt = tcx.adt_def(struct_def_id);
+        let field = adt.all_fields().nth(idx)?;
+        let field_ty = crate::helpers::mir_utils::field_ty(tcx, field, args);
+        if matches!(field_ty.kind(), TyKind::RawPtr(..)) {
+            return Some(FieldOrigin {
+                struct_def_id,
+                field_index: idx,
+                field_name: field.name.to_string(),
+            });
+        }
+        let Some((did, a)) = adt_from_ty(field_ty) else {
+            return None;
+        };
+        struct_def_id = did;
+        args = a;
+    }
+    None
+}
+
 pub fn resolve_self_field_origin<'tcx>(
     tcx: TyCtxt<'tcx>,
     def_id: DefId,
@@ -261,15 +292,7 @@ pub fn resolve_self_field_origin<'tcx>(
     }
     let body = tcx.optimized_mir(def_id);
     let self_ty = body.local_decls[Local::from_usize(1)].ty;
-    let (struct_def_id, _) = adt_from_ty(self_ty)?;
-    let field_index = fields[0];
-    let adt = tcx.adt_def(struct_def_id);
-    let field = adt.all_fields().nth(field_index)?;
-    Some(FieldOrigin {
-        struct_def_id,
-        field_index,
-        field_name: field.name.to_string(),
-    })
+    resolve_field_origin_inner(tcx, self_ty, fields)
 }
 
 /// Like `resolve_self_field_origin` but uses the type of `local` instead
@@ -285,15 +308,7 @@ pub fn resolve_any_field_origin<'tcx>(
     }
     let body = tcx.optimized_mir(def_id);
     let self_ty = body.local_decls[Local::from_usize(local)].ty;
-    let (struct_def_id, _) = adt_from_ty(self_ty)?;
-    let field_index = fields[0];
-    let adt = tcx.adt_def(struct_def_id);
-    let field = adt.all_fields().nth(field_index)?;
-    Some(FieldOrigin {
-        struct_def_id,
-        field_index,
-        field_name: field.name.to_string(),
-    })
+    resolve_field_origin_inner(tcx, self_ty, fields)
 }
 
 /// AliasPair is used to store the alias relationships between two places.

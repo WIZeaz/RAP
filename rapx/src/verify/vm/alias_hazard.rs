@@ -317,12 +317,9 @@ pub(super) fn any_struct_field_origin(
     resolve_any_field_origin(tcx, caller, local, &place.fields).map(SelfFieldOrigin::from)
 }
 
-fn self_borrow_mutability(tcx: TyCtxt<'_>, def_id: DefId) -> Option<ty::Mutability> {
+fn self_borrow_mutability(tcx: TyCtxt<'_>, def_id: DefId, self_local: Local) -> Option<ty::Mutability> {
     let body = tcx.optimized_mir(def_id);
-    if body.arg_count == 0 {
-        return None;
-    }
-    match body.local_decls[Local::from_usize(1)].ty.kind() {
+    match body.local_decls[self_local].ty.kind() {
         TyKind::Ref(_, _, m) => Some(*m),
         _ => None,
     }
@@ -339,7 +336,7 @@ pub(super) fn escaped_self_field_violation(
             origin.field_name
         ));
     }
-    let current_self = self_borrow_mutability(tcx, current);
+    let current_self = self_borrow_mutability(tcx, current, Local::from_usize(1));
     for impl_def_id in impls_for_struct(tcx, origin.struct_def_id) {
         for item in tcx.associated_item_def_ids(impl_def_id) {
             if *item == current {
@@ -360,43 +357,73 @@ pub(super) fn escaped_self_field_violation(
             if !tcx.is_mir_available(*item) {
                 continue;
             }
-            let item_self = self_borrow_mutability(tcx, *item);
-            if method_writes_self_field(tcx, *item, origin.field_index) {
-                if current_self.is_none() || item_self.is_none() {
-                    continue;
-                }
-                if let (Some(ty::Mutability::Not), Some(ty::Mutability::Mut)) =
-                    (current_self, item_self)
-                {
-                    continue;
-                }
-                return Some(format!(
-                    "safe method `{}` writes through raw field `{}`",
-                    tcx.def_path_str(*item),
-                    origin.field_name
-                ));
-            }
-            if method_exposes_self_field(tcx, *item, origin.field_index) {
-                if current_self.is_none() || item_self.is_none() {
-                    continue;
-                }
-                if let (Some(ty::Mutability::Not), Some(ty::Mutability::Mut)) =
-                    (current_self, item_self)
-                {
-                    continue;
-                }
-                if let (Some(ty::Mutability::Mut), Some(ty::Mutability::Mut)) =
-                    (current_self, item_self)
-                {
-                    continue;
-                }
-                return Some(format!(
-                    "safe method `{}` exposes raw field `{}`",
-                    tcx.def_path_str(*item),
-                    origin.field_name
-                ));
+            if let Some(reason) =
+                check_fn_against_field(tcx, *item, origin, current_self, Local::from_usize(1))
+            {
+                return Some(reason);
             }
         }
+    }
+    // A raw field is also reachable from free functions in the same module
+    // (Rust privacy is module-scoped), so a free fn that writes or exposes the
+    // field breaks encapsulation exactly like a method would.
+    for (fn_def_id, param_locals) in free_fns_for_struct(tcx, origin.struct_def_id) {
+        if fn_def_id == current {
+            continue;
+        }
+        if check_safety(tcx, fn_def_id) == Safety::Unsafe {
+            continue;
+        }
+        if !tcx.is_mir_available(fn_def_id) {
+            continue;
+        }
+        for param_local in param_locals {
+            if let Some(reason) =
+                check_fn_against_field(tcx, fn_def_id, origin, current_self, param_local)
+            {
+                return Some(reason);
+            }
+        }
+    }
+    None
+}
+
+fn check_fn_against_field(
+    tcx: TyCtxt<'_>,
+    item: DefId,
+    origin: &SelfFieldOrigin,
+    current_self: Option<ty::Mutability>,
+    self_local: Local,
+) -> Option<String> {
+    let item_self = self_borrow_mutability(tcx, item, self_local);
+    if method_writes_self_field(tcx, item, self_local, origin.field_index) {
+        if current_self.is_none() || item_self.is_none() {
+            return None;
+        }
+        if let (Some(ty::Mutability::Not), Some(ty::Mutability::Mut)) = (current_self, item_self) {
+            return None;
+        }
+        return Some(format!(
+            "safe fn `{}` writes through raw field `{}`",
+            tcx.def_path_str(item),
+            origin.field_name
+        ));
+    }
+    if method_exposes_self_field(tcx, item, self_local, origin.field_index) {
+        if current_self.is_none() || item_self.is_none() {
+            return None;
+        }
+        if let (Some(ty::Mutability::Not), Some(ty::Mutability::Mut)) = (current_self, item_self) {
+            return None;
+        }
+        if let (Some(ty::Mutability::Mut), Some(ty::Mutability::Mut)) = (current_self, item_self) {
+            return None;
+        }
+        return Some(format!(
+            "safe fn `{}` exposes raw field `{}`",
+            tcx.def_path_str(item),
+            origin.field_name
+        ));
     }
     None
 }
@@ -441,10 +468,61 @@ fn impls_for_struct(tcx: TyCtxt<'_>, struct_def_id: DefId) -> Vec<DefId> {
     impls
 }
 
-fn method_writes_self_field(tcx: TyCtxt<'_>, method: DefId, field_index: usize) -> bool {
+fn free_fns_for_struct(tcx: TyCtxt<'_>, struct_def_id: DefId) -> Vec<(DefId, Vec<Local>)> {
+    let Some(struct_local) = struct_def_id.as_local() else {
+        return Vec::new();
+    };
+    let struct_module = tcx.parent_module_from_def_id(struct_local);
+    let mut fns = Vec::new();
+    for item_id in tcx.hir_crate_items(()).free_items() {
+        let item = tcx.hir_item(item_id);
+        let rustc_hir::ItemKind::Fn { .. } = &item.kind else {
+            continue;
+        };
+        let fn_def_id = item_id.owner_id.to_def_id();
+        let Some(fn_local) = fn_def_id.as_local() else {
+            continue;
+        };
+        if tcx.parent_module_from_def_id(fn_local) != struct_module {
+            continue;
+        }
+        let param_locals = struct_ref_param_locals(tcx, fn_def_id, struct_def_id);
+        if !param_locals.is_empty() {
+            fns.push((fn_def_id, param_locals));
+        }
+    }
+    fns
+}
+
+fn struct_ref_param_locals(
+    tcx: TyCtxt<'_>,
+    def_id: DefId,
+    struct_def_id: DefId,
+) -> Vec<Local> {
+    let body = tcx.optimized_mir(def_id);
+    (1..=body.arg_count)
+        .filter_map(|i| {
+            let local = Local::from_usize(i);
+            match body.local_decls[local].ty.kind() {
+                TyKind::Ref(_, pointee, _) => match pointee.kind() {
+                    TyKind::Adt(adt_def, _) => (adt_def.did() == struct_def_id).then_some(local),
+                    _ => None,
+                },
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+fn method_writes_self_field(
+    tcx: TyCtxt<'_>,
+    method: DefId,
+    self_local: Local,
+    field_index: usize,
+) -> bool {
     let body = tcx.optimized_mir(method);
     let aliases = collect_place_aliases(tcx, method);
-    let origin = self_field_key(field_index);
+    let origin = self_field_key(self_local, field_index);
 
     for block in body.basic_blocks.iter() {
         for statement in &block.statements {
@@ -453,7 +531,7 @@ fn method_writes_self_field(tcx: TyCtxt<'_>, method: DefId, field_index: usize) 
             };
             let (target, _) = assign.as_ref();
             if place_is_raw_access_to_origin(target, &origin, &aliases, &body.local_decls)
-                || place_raw_accesses_self_field(tcx, method, target, field_index)
+                || place_raw_accesses_self_field(tcx, method, target, self_local, field_index)
             {
                 return true;
             }
@@ -474,6 +552,7 @@ fn place_raw_accesses_self_field(
     tcx: TyCtxt<'_>,
     method: DefId,
     place: &Place<'_>,
+    self_local: Local,
     field_index: usize,
 ) -> bool {
     let body = tcx.optimized_mir(method);
@@ -490,13 +569,21 @@ fn place_raw_accesses_self_field(
     if !has_raw_deref {
         return false;
     }
-    local_traces_to_self_field(tcx, method, place.local, field_index, &mut HashSet::new())
+    local_traces_to_self_field(
+        tcx,
+        method,
+        place.local,
+        self_local,
+        field_index,
+        &mut HashSet::new(),
+    )
 }
 
 fn local_traces_to_self_field(
     tcx: TyCtxt<'_>,
     method: DefId,
     local: Local,
+    self_local: Local,
     field_index: usize,
     seen: &mut HashSet<Local>,
 ) -> bool {
@@ -517,13 +604,20 @@ fn local_traces_to_self_field(
                 continue;
             };
             let source_key = PlaceKey::from_mir_place(source);
-            if source_key.base == PlaceBaseKey::Local(1)
+            if source_key.base == PlaceBaseKey::Local(self_local.as_usize())
                 && source_key.fields.first() == Some(&field_index)
             {
                 return true;
             }
             if source_key.fields.is_empty()
-                && local_traces_to_self_field(tcx, method, source.local, field_index, seen)
+                && local_traces_to_self_field(
+                    tcx,
+                    method,
+                    source.local,
+                    self_local,
+                    field_index,
+                    seen,
+                )
             {
                 return true;
             }
@@ -532,23 +626,26 @@ fn local_traces_to_self_field(
     false
 }
 
-fn method_exposes_self_field(tcx: TyCtxt<'_>, method: DefId, field_index: usize) -> bool {
+fn method_exposes_self_field(
+    tcx: TyCtxt<'_>,
+    method: DefId,
+    self_local: Local,
+    field_index: usize,
+) -> bool {
     let body = tcx.optimized_mir(method);
 
-    if body.arg_count >= 1 {
-        let self_ty = body.local_decls[Local::from_usize(1)].ty;
-        if !matches!(self_ty.kind(), TyKind::Ref(_, _, _)) {
-            return false;
-        }
+    let self_ty = body.local_decls[self_local].ty;
+    if !matches!(self_ty.kind(), TyKind::Ref(_, _, _)) {
+        return false;
     }
 
     let ret_ty = body.local_decls[Local::from_usize(0)].ty;
-    if !crate::helpers::mir_utils::type_contains_ref_or_ptr(tcx, ret_ty) {
+    if !crate::helpers::mir_utils::type_contains_raw_ptr(tcx, ret_ty) {
         return false;
     }
 
     let aliases = collect_place_aliases(tcx, method);
-    let origin = self_field_key(field_index);
+    let origin = self_field_key(self_local, field_index);
 
     for block in body.basic_blocks.iter() {
         for statement in &block.statements {
@@ -581,9 +678,9 @@ fn rvalue_mentions_origin(
     })
 }
 
-fn self_field_key(field_index: usize) -> PlaceKey {
+fn self_field_key(self_local: Local, field_index: usize) -> PlaceKey {
     PlaceKey {
-        base: PlaceBaseKey::Local(1),
+        base: PlaceBaseKey::Local(self_local.as_usize()),
         fields: vec![field_index],
     }
 }

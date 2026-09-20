@@ -9,7 +9,8 @@ use super::alias_hazard::{self, AliasProducer, HazardKind};
 use crate::analysis::alias::collect_local_origins;
 use crate::helpers::mir_scan::Checkpoint;
 use crate::verify::api_classify;
-use crate::verify::{contract::Property, def_use::PlaceKey};
+use crate::verify::contract::{Property, PropertyKind};
+use crate::verify::def_use::PlaceKey;
 use rustc_hir::def_id::DefId;
 use rustc_middle::mir::{Local, Operand, ProjectionElem, Rvalue, StatementKind};
 
@@ -142,6 +143,24 @@ pub(crate) enum VmAliasResult {
 /// Run the full alias hazard check for the VM backend.
 ///
 /// This is the function the `PropertyChecker::check_alias` delegates to.
+fn property_contains_alias(property: &Property<'_>) -> bool {
+    match property {
+        Property::Atom(a) => a.kind == PropertyKind::Alias,
+        Property::And(and) => and.conjuncts.iter().any(|p| property_contains_alias(p)),
+        Property::Or(or) => or.disjuncts.iter().any(|p| property_contains_alias(p)),
+    }
+}
+
+/// Whether the caller declares an `Alias` assumption in its `#[rapx::requires]`
+/// (directly or via a compound like `Ptr2Ref`). Such a function relies on its
+/// caller-guaranteed precondition rather than on field encapsulation, so the
+/// field-encapsulation escape check must not fire on it.
+fn fn_has_alias_requires(tcx: rustc_middle::ty::TyCtxt<'_>, def_id: DefId) -> bool {
+    crate::verify::target::get_contract_from_annotation(tcx, def_id)
+        .iter()
+        .any(property_contains_alias)
+}
+
 pub(crate) fn check_alias_vm<'ctx, 'tcx>(
     vm_state: &VmState<'ctx, 'tcx>,
     checkpoint: &Checkpoint<'tcx>,
@@ -157,11 +176,15 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
             let origin_val = vm_state.value_of_operand(origin_arg);
             if let Some(origin) = vm_state.resolve_origin(&origin_val) {
                 if origin.is_mut_ref() {
-                    // A `&mut` origin at the return place means the mut view is
-                    // produced through a raw field of a reference parameter
-                    // (`(*self).next`). Trace to that parameter and reject a
-                    // shared-reference origin.
-                    if origin.local == rustc_middle::mir::RETURN_PLACE
+                    // A mut view produced through a raw field of a reference
+                    // parameter (`(*self).next`). When it escapes, trace to the
+                    // root parameter and reject a shared-reference origin.
+                    let dest_escapes = alias_hazard::destination_flows_to_return(
+                        vm_state.tcx,
+                        checkpoint.caller,
+                        checkpoint.destination,
+                    );
+                    if dest_escapes
                         && let Some(mir_place) =
                             crate::helpers::mir_utils::operand_mir_place(origin_arg)
                     {
@@ -198,6 +221,48 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
                         return VmAliasResult::Failed(
                             "&mut deref through a shared reference writes immutable data".into(),
                         );
+                    }
+                    // A shared view (`&*self.next`) produced through a raw field
+                    // of a reference parameter. When the view escapes (flows to
+                    // the return place), deep-resolve to that field and apply the
+                    // same encapsulation check used by the view-producer path: a
+                    // public or safe-code-exposed raw field cannot uphold the
+                    // returned `&T`.
+                    let dest_escapes = alias_hazard::destination_flows_to_return(
+                        vm_state.tcx,
+                        checkpoint.caller,
+                        checkpoint.destination,
+                    );
+                    if dest_escapes
+                        && let Some(mir_place) =
+                            crate::helpers::mir_utils::operand_mir_place(origin_arg)
+                    {
+                        let origin_map =
+                            collect_local_origins(vm_state.tcx, checkpoint.caller);
+                        let (root, fields) =
+                            alias_hazard::deep_resolve_place(mir_place.local.as_usize(), &origin_map);
+                        if !fields.is_empty() && root >= 1 && root <= vm_state.body.arg_count {
+                            let resolved = PlaceKey::from_origin(root, fields);
+                            if let Some(sfo) =
+                                alias_hazard::self_field_origin(vm_state.tcx, checkpoint.caller, &resolved)
+                            {
+                                // A caller that already declares an `Alias`
+                                // precondition (e.g. `Ptr2Ref`) relies on its
+                                // caller rather than field encapsulation, so the
+                                // encapsulation check must not fire there.
+                                if !fn_has_alias_requires(vm_state.tcx, checkpoint.caller) {
+                                    if let Some(reason) =
+                                        alias_hazard::escaped_self_field_violation(
+                                            vm_state.tcx,
+                                            checkpoint.caller,
+                                            &sfo,
+                                        )
+                                    {
+                                        return VmAliasResult::Failed(reason);
+                                    }
+                                }
+                            }
+                        }
                     }
                     return VmAliasResult::Proved;
                 }

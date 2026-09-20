@@ -274,6 +274,10 @@ unsound_hazard_tests! {
     alias_unsound_16: "verify_units/alias_unsound_16" => "unsound_vec_reserve_while_raw_slice_live" => "Alias",
     alias_unsound_18: "verify_units/alias_unsound_18" => "as_bytes_mut_unsound" => "Alias",
     alias_unsound_19: "verify_units/alias_unsound_19" => "as_bytes_mut_ptr_missing_alias" => "Alias",
+    alias_unsound_23: "verify_units/alias_unsound_23" => "unsound_const_slice_then_cast_write" => "Alias",
+    alias_unsound_25: "verify_units/alias_unsound_25" => "Node::next_mut" => "Alias",
+    alias_unsound_26: "verify_units/alias_unsound_26" => "Node::get_next" => "Alias",
+    alias_unsound_27: "verify_units/alias_unsound_27" => "Outer::get" => "Alias",
 }
 
 // An *independent* `*mut T` must be assumed to alias the shared `&[T]`
@@ -662,34 +666,12 @@ fn alias_unsound_22() {
 }
 
 #[test]
-fn alias_unsound_23() {
-    let output = run_with_args("verify_units/alias_unsound_23", CMD_VERIFY_TARGETED);
-    assert_unproved_exclusive_with_result(
-        &output,
-        "unsound_const_slice_then_cast_write",
-        &["Alias"],
-        "UNSOUND",
-    );
-}
-
-#[test]
 fn alias_unsound_24() {
     let output = run_with_args("verify_units/alias_unsound_24", CMD_VERIFY_TARGETED);
     assert_unproved_exclusive_with_result(
         &output,
         "unsound_shared_slice_cast_write",
         &["Alias", "Allocated"],
-        "UNSOUND",
-    );
-}
-
-#[test]
-fn alias_unsound_25() {
-    let output = run_with_args("verify_units/alias_unsound_25", CMD_VERIFY_TARGETED);
-    assert_unproved_exclusive_with_result(
-        &output,
-        "Node::next_mut",
-        &["Alias"],
         "UNSOUND",
     );
 }
