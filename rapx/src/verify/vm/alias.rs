@@ -28,8 +28,10 @@ pub(crate) struct VmOrigin {
 pub(crate) enum VmOriginKind {
     MutRef,
     SharedRef,
-    RawMutPtr,
-    RawConstPtr,
+    /// A raw pointer (`*const T` / `*mut T`). The const/mut distinction is
+    /// compile-time-only (the casts are safe in both directions), so both are
+    /// treated as one origin kind for alias analysis.
+    RawPtr,
     Owned(DefId),
     Unknown,
 }
@@ -121,10 +123,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             rustc_middle::ty::TyKind::Ref(_, _, rustc_middle::ty::Mutability::Not) => {
                 VmOriginKind::SharedRef
             }
-            rustc_middle::ty::TyKind::RawPtr(_, rustc_middle::ty::Mutability::Mut) => {
-                VmOriginKind::RawMutPtr
-            }
-            rustc_middle::ty::TyKind::RawPtr(..) => VmOriginKind::RawConstPtr,
+            rustc_middle::ty::TyKind::RawPtr(..) => VmOriginKind::RawPtr,
             rustc_middle::ty::TyKind::Adt(adt_def, _) => VmOriginKind::Owned(adt_def.did()),
             _ => VmOriginKind::Unknown,
         }
@@ -177,10 +176,8 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
                 // be proven safe.  A raw-pointer *field copy* (`_tmp = self.head`)
                 // is a temp local above `arg_count`, derived from a borrow field —
                 // it falls through to the field-type-aware check below.
-                if matches!(
-                    origin.kind,
-                    VmOriginKind::RawMutPtr | VmOriginKind::RawConstPtr
-                ) && origin.local.as_usize() <= vm_state.body.arg_count
+                if matches!(origin.kind, VmOriginKind::RawPtr)
+                    && origin.local.as_usize() <= vm_state.body.arg_count
                 {
                     return VmAliasResult::Unknown;
                 }
@@ -344,11 +341,6 @@ fn check_view_alias<'ctx, 'tcx>(
         match (kind, origin.kind) {
             (HazardKind::UniqueView, VmOriginKind::MutRef) => return VmAliasResult::Proved,
             (HazardKind::SharedView, VmOriginKind::SharedRef) => return VmAliasResult::Proved,
-            (HazardKind::UniqueView, VmOriginKind::RawConstPtr) => {
-                return VmAliasResult::Failed(
-                    "const raw pointer cannot safely create a unique mutable view".into(),
-                );
-            }
             (HazardKind::UniqueView, VmOriginKind::SharedRef) => {
                 // `&T` → `&mut T` violates shared-XOR-mutable regardless of
                 // field encapsulation: the caller can re-enter the method and
@@ -357,9 +349,8 @@ fn check_view_alias<'ctx, 'tcx>(
                     "shared reference cannot produce a unique mutable view".into(),
                 );
             }
-            // SharedView × RawConstPtr also defers: a safe cast to *mut can
-            // write through the same pointer, so the local hazard scan must
-            // catch it instead of a fast-path Proved.
+            // Raw-pointer origins (*const / *mut, compile-time-equivalent)
+            // defer: the local hazard scan / escape / field analysis decides.
             _ => {}
         }
         if origin.is_owned() {

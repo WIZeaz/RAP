@@ -793,11 +793,8 @@ impl PropertyChecker {
                 return CheckResult::Failed;
             }
             if let Some(origin) = vm_state.resolve_origin(&value) {
-                let is_raw_ptr = matches!(
-                    origin.kind,
-                    crate::verify::vm::alias::VmOriginKind::RawMutPtr
-                        | crate::verify::vm::alias::VmOriginKind::RawConstPtr
-                );
+                let is_raw_ptr =
+                    matches!(origin.kind, crate::verify::vm::alias::VmOriginKind::RawPtr);
                 if is_raw_ptr {
                     let is_field = origin.local.as_usize() > vm_state.body.arg_count;
                     if is_field {
