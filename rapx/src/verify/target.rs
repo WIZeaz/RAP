@@ -1554,6 +1554,7 @@ fn build_raw_ptr_deref_checks<'tcx>(
                     args: vec![info.ptr_operand],
                     kind: crate::helpers::mir_scan::CheckpointKind::RawPtrDeref,
                     destination: Some(info.destination),
+                    is_mut_ref: info.is_mut_ref,
                 },
                 properties,
             )
@@ -1603,6 +1604,7 @@ fn build_static_mut_checks<'tcx>(
                     args: vec![info.ptr_operand],
                     kind: crate::helpers::mir_scan::CheckpointKind::StaticMutAccess,
                     destination: None,
+                    is_mut_ref: false,
                 },
                 properties,
             )

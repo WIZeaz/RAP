@@ -157,7 +157,15 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
             };
             let origin_val = vm_state.value_of_operand(origin_arg);
             if let Some(origin) = vm_state.resolve_origin(&origin_val) {
-                if origin.is_mut_ref() || origin.is_shared_ref() {
+                if origin.is_mut_ref() {
+                    return VmAliasResult::Proved;
+                }
+                if origin.is_shared_ref() {
+                    if checkpoint.is_mut_ref {
+                        return VmAliasResult::Failed(
+                            "&mut deref through a shared reference writes immutable data".into(),
+                        );
+                    }
                     return VmAliasResult::Proved;
                 }
                 if origin.is_owned() {
@@ -482,14 +490,9 @@ fn check_view_alias<'ctx, 'tcx>(
                 return VmAliasResult::Proved;
             }
         }
-        // For &self/&mut self methods, the borrow prevents concurrent access
-        // so a local-only view is safe even when we can't identify the field.
         let body = tcx.optimized_mir(caller);
         if body.arg_count >= 1 {
             let self_ty = body.local_decls[Local::from_usize(1)].ty;
-            if matches!(self_ty.kind(), rustc_middle::ty::TyKind::Ref(..)) {
-                return VmAliasResult::Proved;
-            }
             // A `NonNull<T>` consumed by value (e.g. `NonNull::as_uninit_mut(self)`)
             // transfers exclusive ownership of its pointer, so producing a unique
             // view is safe even though the receiver is not a `&mut self`.

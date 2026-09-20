@@ -44,6 +44,9 @@ pub struct Checkpoint<'tcx> {
     pub args: Vec<Operand<'tcx>>,
     pub kind: CheckpointKind,
     pub destination: Option<Local>,
+    /// For `RawPtrDeref` checkpoints: whether the deref produces a mutable
+    /// reference (`&mut *ptr`) rather than a shared one (`&*ptr`).
+    pub is_mut_ref: bool,
 }
 
 impl<'tcx> Checkpoint<'tcx> {
@@ -284,6 +287,7 @@ pub fn collect_unsafe_callsites<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> Vec<C
             args: args.iter().map(|arg| arg.node.clone()).collect(),
             kind: CheckpointKind::UnsafeCall,
             destination: None,
+            is_mut_ref: false,
         });
     }
 
@@ -301,6 +305,8 @@ pub struct RawPtrDerefInfo<'tcx> {
     /// (`&*raw_ptr` / `&mut *raw_ptr`), i.e. an `Rvalue::Ref` whose place has a
     /// raw-pointer deref projection. This is the `Ptr2Ref` operation.
     pub is_ptr2ref: bool,
+    /// Whether the Ptr2Ref produces a mutable reference (`&mut *raw_ptr`).
+    pub is_mut_ref: bool,
     pub destination: Local,
 }
 
@@ -340,12 +346,16 @@ pub fn collect_raw_ptr_deref_info<'tcx>(
             let (lhs, rhs) = &**assign;
 
             let is_write = place_has_raw_deref(&body, lhs);
-            let (is_read, is_ptr2ref) = match rhs {
+            let (is_read, is_ptr2ref, is_mut_ref) = match rhs {
                 Rvalue::Use(Operand::Copy(place) | Operand::Move(place), ..) => {
-                    (place_has_raw_deref(&body, place), false)
+                    (place_has_raw_deref(&body, place), false, false)
                 }
-                Rvalue::Ref(_, _borrow_kind, place) => (place_has_raw_deref(&body, place), true),
-                _ => (false, false),
+                Rvalue::Ref(_, borrow_kind, place) => (
+                    place_has_raw_deref(&body, place),
+                    true,
+                    matches!(borrow_kind, rustc_middle::mir::BorrowKind::Mut { .. }),
+                ),
+                _ => (false, false, false),
             };
 
             if !is_write && !is_read {
@@ -376,6 +386,7 @@ pub fn collect_raw_ptr_deref_info<'tcx>(
                 pointee_ty: pointee,
                 is_read,
                 is_ptr2ref,
+                is_mut_ref,
                 destination: lhs.local,
             });
         }
