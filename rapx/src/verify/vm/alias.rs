@@ -350,8 +350,12 @@ fn check_view_alias<'ctx, 'tcx>(
                 );
             }
             (HazardKind::UniqueView, VmOriginKind::SharedRef) => {
-                // Shared-ref + unique view is only safe when backed by a private
-                // struct field — defer to the struct field / escape analysis below.
+                // `&T` → `&mut T` violates shared-XOR-mutable regardless of
+                // field encapsulation: the caller can re-enter the method and
+                // obtain a second `&mut` to the same data.
+                return VmAliasResult::Failed(
+                    "shared reference cannot produce a unique mutable view".into(),
+                );
             }
             // SharedView × RawConstPtr also defers: a safe cast to *mut can
             // write through the same pointer, so the local hazard scan must
