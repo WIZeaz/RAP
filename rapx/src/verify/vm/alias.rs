@@ -157,6 +157,40 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
             let origin_val = vm_state.value_of_operand(origin_arg);
             if let Some(origin) = vm_state.resolve_origin(&origin_val) {
                 if origin.is_mut_ref() {
+                    // A `&mut` origin at the return place means the mut view is
+                    // produced through a raw field of a reference parameter
+                    // (`(*self).next`). Trace to that parameter and reject a
+                    // shared-reference origin.
+                    if origin.local == rustc_middle::mir::RETURN_PLACE
+                        && let Some(mir_place) =
+                            crate::helpers::mir_utils::operand_mir_place(origin_arg)
+                    {
+                        let origin_map = collect_local_origins(vm_state.tcx, checkpoint.caller);
+                        let (root, fields) = alias_hazard::deep_resolve_place(
+                            mir_place.local.as_usize(),
+                            &origin_map,
+                        );
+                        if !fields.is_empty()
+                            && root >= 1
+                            && root <= vm_state.body.arg_count
+                        {
+                            let root_ty = vm_state.body.local_decls
+                                [rustc_middle::mir::Local::from_usize(root)]
+                                .ty;
+                            if let rustc_middle::ty::TyKind::Ref(
+                                _,
+                                _,
+                                rustc_middle::ty::Mutability::Not,
+                            ) = root_ty.kind()
+                                && checkpoint.is_mut_ref
+                            {
+                                return VmAliasResult::Failed(
+                                    "&mut deref through a shared reference writes immutable data"
+                                        .into(),
+                                );
+                            }
+                        }
+                    }
                     return VmAliasResult::Proved;
                 }
                 if origin.is_shared_ref() {
@@ -438,6 +472,13 @@ fn check_view_alias<'ctx, 'tcx>(
             if let Some(reason) = alias_hazard::escaped_self_field_violation(tcx, caller, &sfo) {
                 return VmAliasResult::Failed(reason);
             }
+            if kind == HazardKind::UniqueView {
+                // A `&mut` escaping through a private raw field is still unsound:
+                // the caller can re-enter the method and obtain a second `&mut`.
+                return VmAliasResult::Failed(
+                    "unique view escapes through a private raw field".into(),
+                );
+            }
             return VmAliasResult::Proved;
         }
         let any_field = alias_hazard::any_struct_field_origin(tcx, caller, &resolved_origin)
@@ -445,6 +486,11 @@ fn check_view_alias<'ctx, 'tcx>(
         if let Some(sfo) = any_field {
             if let Some(reason) = alias_hazard::escaped_self_field_violation(tcx, caller, &sfo) {
                 return VmAliasResult::Failed(reason);
+            }
+            if kind == HazardKind::UniqueView {
+                return VmAliasResult::Failed(
+                    "unique view escapes through a private raw field".into(),
+                );
             }
             return VmAliasResult::Proved;
         }

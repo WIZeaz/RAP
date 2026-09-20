@@ -683,6 +683,17 @@ fn alias_unsound_24() {
     );
 }
 
+#[test]
+fn alias_unsound_25() {
+    let output = run_with_args("verify_units/alias_unsound_25", CMD_VERIFY_TARGETED);
+    assert_unproved_exclusive_with_result(
+        &output,
+        "Node::next_mut",
+        &["Alias"],
+        "UNSOUND",
+    );
+}
+
 // Custom test: from_raw_parts wrong element type causes multiple failures
 #[test]
 fn init_std_unsound_07() {

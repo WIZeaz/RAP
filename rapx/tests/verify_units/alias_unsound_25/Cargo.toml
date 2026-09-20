@@ -1,0 +1,8 @@
+[package]
+name = "alias_unsound_25"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[workspace]

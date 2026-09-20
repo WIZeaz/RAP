@@ -11,9 +11,9 @@ impl PrivateSlot {
         Self { ptr: value }
     }
 
-    // SOUND: the safe API returns a unique view and does not expose the raw pointer.
+    // SOUND: a &mut self returns a unique view through the private raw field.
     #[rapx::verify]
-    pub fn as_slice_mut<'a>(&self) -> &'a mut [u32] {
+    pub fn as_slice_mut(&mut self) -> &mut [u32] {
         unsafe { std::slice::from_raw_parts_mut(self.ptr, 1) }
     }
 }
