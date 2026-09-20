@@ -336,8 +336,6 @@ fn check_view_alias<'ctx, 'tcx>(
         match (kind, origin.kind) {
             (HazardKind::UniqueView, VmOriginKind::MutRef) => return VmAliasResult::Proved,
             (HazardKind::SharedView, VmOriginKind::SharedRef) => return VmAliasResult::Proved,
-            // Shared view from const raw pointer is safe: can't write through *const.
-            (HazardKind::SharedView, VmOriginKind::RawConstPtr) => return VmAliasResult::Proved,
             (HazardKind::UniqueView, VmOriginKind::RawConstPtr) => {
                 return VmAliasResult::Failed(
                     "const raw pointer cannot safely create a unique mutable view".into(),
@@ -347,6 +345,9 @@ fn check_view_alias<'ctx, 'tcx>(
                 // Shared-ref + unique view is only safe when backed by a private
                 // struct field — defer to the struct field / escape analysis below.
             }
+            // SharedView × RawConstPtr also defers: a safe cast to *mut can
+            // write through the same pointer, so the local hazard scan must
+            // catch it instead of a fast-path Proved.
             _ => {}
         }
         if origin.is_owned() {
