@@ -213,6 +213,7 @@ pub(crate) struct InlineFrame<'ctx, 'tcx> {
     pub def_id: DefId,
     pub saved_locals: FxHashMap<Local, VmValue<'ctx, 'tcx>>,
     pub saved_field_values: FxHashMap<(Local, Vec<usize>), VmValue<'ctx, 'tcx>>,
+    pub saved_move_sources: FxHashMap<Local, Local>,
 }
 
 /// The full symbolic execution state at a program point.
@@ -281,6 +282,12 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     /// place keys.  Kept separately from `binary_op_sources` so guard inference
     /// (infer_guard_non_null) does not treat these as pointer comparisons.
     pub(crate) other_op_sources: FxHashMap<PlaceKey, (Option<PlaceKey>, Option<PlaceKey>)>,
+
+    /// Move-alias chain: `local → source` for a whole-place move (`_3 = move _4`).
+    /// Lets `Owning` tell the call's own rebuilt owner (`boxed = move dest`) from
+    /// a *previous* call's owner (also a shallow field, but tracing to a
+    /// different destination).
+    pub(crate) move_sources: FxHashMap<Local, Local>,
 
     /// One-shot execution/contract flags accumulated while stepping a path.
     pub(crate) contract_flags: ContractFlags,
@@ -388,6 +395,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             comparison_conds: FxHashMap::default(),
             discriminant_terms: FxHashMap::default(),
             other_op_sources: FxHashMap::default(),
+            move_sources: FxHashMap::default(),
             contract_flags: ContractFlags::default(),
             field_values: FxHashMap::default(),
             alloc_field_values: FxHashMap::default(),
@@ -486,6 +494,20 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// Get the value of a specific field within an aggregate local.
     pub(crate) fn field_value(&self, local: Local, path: &[usize]) -> Option<&VmValue<'ctx, 'tcx>> {
         self.field_values.get(&(local, path.to_vec()))
+    }
+
+    /// The field carrying an owned value's heap pointer (`Box.0.0`/`Vec.0.0`,
+    /// and for nested owners like `String` the deeper data field). Prefer the
+    /// canonical `[0, 0]`; fall back to the first field with heap provenance.
+    pub(crate) fn owner_ptr_field(&self, local: Local) -> Option<&VmValue<'ctx, 'tcx>> {
+        self.field_value(local, &[0, 0])
+            .filter(|v| v.provenance_alloc_id().is_some())
+            .or_else(|| {
+                self.field_values
+                    .iter()
+                    .find(|((l, _), v)| *l == local && v.provenance_alloc_id().is_some())
+                    .map(|(_, v)| v)
+            })
     }
 
     /// Set the value of a specific field within an aggregate local.

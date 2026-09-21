@@ -170,6 +170,9 @@ impl<'tcx> BackwardSlicer<'tcx> {
         let keep_inv = property
             .kind()
             .is_some_and(|k| needs_invalidation_tracking(&k));
+        // Only `Owning` needs the owner's construction chain; other invalidations
+        // (Allocated/Init/…) must not be perturbed by the extra needs_drop keeps.
+        let keep_owner = matches!(property.kind(), Some(contract::PropertyKind::Owning));
         let block_data = &body.basic_blocks[block];
         let mut results = Vec::new();
 
@@ -195,6 +198,7 @@ impl<'tcx> BackwardSlicer<'tcx> {
                     &mut relevant,
                     &mut items,
                     keep_inv,
+                    keep_owner,
                 );
             }
             // Pass 2: re-visit definitions that became relevant only
@@ -208,6 +212,7 @@ impl<'tcx> BackwardSlicer<'tcx> {
                 &mut relevant,
                 &mut items,
                 keep_inv,
+                keep_owner,
             );
             (items, relevant)
         } else {
@@ -257,6 +262,7 @@ impl<'tcx> BackwardSlicer<'tcx> {
                         &mut relevant,
                         &mut items,
                         keep_inv,
+                        keep_owner,
                     );
                 }
                 let block_stmt_count = block_data.statements.len();
@@ -270,6 +276,7 @@ impl<'tcx> BackwardSlicer<'tcx> {
                         &mut relevant,
                         &mut items,
                         keep_inv,
+                        keep_owner,
                     );
                 }
                 // Leaving an inlined callee entry: remap the callee's parameter
@@ -296,6 +303,7 @@ impl<'tcx> BackwardSlicer<'tcx> {
                         &mut relevant,
                         &mut items,
                         keep_inv,
+                        keep_owner,
                     );
                 }
                 child_path.insert(0, node.block);
@@ -328,6 +336,7 @@ impl<'tcx> BackwardSlicer<'tcx> {
         relevant: &mut RelevantPlaces,
         items: &mut Vec<RelevantItem<'tcx>>,
         keep_inv: bool,
+        keep_owner: bool,
     ) {
         let newly_added = std::mem::take(&mut relevant.just_added);
         if newly_added.is_empty() {
@@ -347,7 +356,7 @@ impl<'tcx> BackwardSlicer<'tcx> {
                 .iter()
                 .any(|dp| newly_added.iter().any(|np| dp.local() == np.local()));
             if any_new {
-                visitor.visit_statement(def_id, block, si, stmt, flow, relevant, items, keep_inv);
+                visitor.visit_statement(def_id, block, si, stmt, flow, relevant, items, keep_inv, keep_owner);
             }
         }
     }
@@ -363,6 +372,7 @@ impl<'tcx> BackwardSlicer<'tcx> {
         relevant: &mut RelevantPlaces,
         items: &mut Vec<RelevantItem<'tcx>>,
         keep_invalidations: bool,
+        keep_owner: bool,
     ) {
         if keep_invalidations
             && matches!(
@@ -376,6 +386,32 @@ impl<'tcx> BackwardSlicer<'tcx> {
                 statement_index,
             });
             return;
+        }
+
+        // Keep the definition of a `needs_drop` local (an owner's construction
+        // chain) so `Owning` can trace its field provenance.
+        if keep_owner {
+            if let StatementKind::Assign(assign) = &statement.kind {
+                let (place, _) = &**assign;
+                let body = self.tcx.optimized_mir(def_id);
+                let ty = body.local_decls[place.local].ty;
+                let typing_env =
+                    rustc_middle::ty::TypingEnv::non_body_analysis(self.tcx, def_id);
+                if ty.needs_drop(self.tcx, typing_env) {
+                    let mut defs = RelevantPlaces::new();
+                    defs.insert_mir_place(place);
+                    let uses =
+                        collect_statement_uses(statement, block, statement_index, flow, &defs);
+                    items.push(RelevantItem::Statement {
+                        def_id,
+                        block,
+                        statement_index,
+                    });
+                    relevant.remove_all(&defs);
+                    relevant.extend(uses);
+                    return;
+                }
+            }
         }
 
         let mut defs = RelevantPlaces::new();
@@ -432,6 +468,7 @@ impl<'tcx> BackwardSlicer<'tcx> {
         relevant: &mut RelevantPlaces,
         items: &mut Vec<RelevantItem<'tcx>>,
         keep_invalidations: bool,
+        keep_owner: bool,
     ) {
         if keep_invalidations && matches!(terminator.kind, TerminatorKind::Drop { .. }) {
             items.push(RelevantItem::Terminator { def_id, block });
@@ -445,6 +482,21 @@ impl<'tcx> BackwardSlicer<'tcx> {
             ..
         } = &terminator.kind
         {
+            // `Owning` traces an owner's construction chain: keep a call whose
+            // destination is a `needs_drop` value even when that local is not
+            // itself relevant, so its field provenance survives.
+            if keep_owner {
+                let dest_ty = body.local_decls[destination.local].ty;
+                let typing_env =
+                    rustc_middle::ty::TypingEnv::non_body_analysis(self.tcx, def_id);
+                if dest_ty.needs_drop(self.tcx, typing_env) {
+                    let use_def = terminator_use_def(terminator);
+                    items.push(RelevantItem::Terminator { def_id, block });
+                    relevant.remove_all(&use_def.defs);
+                    relevant.extend(use_def.uses);
+                    return;
+                }
+            }
             call_visit::visit(
                 self.tcx,
                 def_id,

@@ -1411,6 +1411,10 @@ intrinsics! {
         "std::slice::<impl [T]>::into_vec",
         "alloc::slice::<impl [T]>::into_vec"
     ],
+    slice_to_vec: &[
+        "std::slice::<impl [T]>::to_vec_in::ConvertVec::to_vec",
+        "alloc::slice::<impl [T]>::to_vec_in::ConvertVec::to_vec"
+    ],
     #[cfg(rapx_ge_100)]
     box_assume_init_into_vec_unsafe: &[
         "std::boxed::box_assume_init_into_vec_unsafe",

@@ -2847,13 +2847,20 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
             }
             CallEffect::ReturnNewAllocationFromBox => {
-                // Box→Vec conversion (into_vec, box_assume_init_into_vec_unsafe).
+                // Box→Vec conversion (into_vec, box_assume_init_into_vec_unsafe)
+                // and `slice::to_vec` (a fresh copy of a slice).
                 self.ensure_local_allocation(dest);
                 let dest_ty = self.body.local_decls[dest].ty;
                 let elem_ty = crate::verify::call_summary::vec_elem_ty(self.tcx, dest_ty);
                 let heap_align = elem_ty.map(|ty| self.align_sym(ty)).unwrap_or_else(|| Int::from_u64(self.ctx, 1));
-                let max = Int::from_u64(self.ctx, i64::MAX as u64);
-                let (alloc_id, base) = self.allocate_external(max, heap_align, elem_ty);
+                // Use the receiver's slice length as the allocation size when
+                // known (`to_vec`/`into_vec`), else a symbolic upper bound.
+                let size = args
+                    .first()
+                    .and_then(|v| v.provenance.as_ref())
+                    .and_then(|p| self.alloc(p.alloc_id).slice_len.clone())
+                    .unwrap_or_else(|| Int::from_u64(self.ctx, i64::MAX as u64));
+                let (alloc_id, base) = self.allocate_external(size, heap_align, elem_ty);
                 let dest_alloc_id = self.local_alloc_ids.get(&dest).copied();
                 if let Some(ref dest_alloc_id) = dest_alloc_id {
                     self.alloc_mut(*dest_alloc_id).slice_data = Some(alloc_id);

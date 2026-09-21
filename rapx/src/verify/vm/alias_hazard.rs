@@ -940,14 +940,23 @@ fn reverse_postorder_blocks<'a, 'tcx>(
 /// the function in execution order up to that point. Used by the callsite
 /// shared-XOR-mutable check to ignore temporaries that have already gone dead
 /// (e.g. a method call's `&self` receiver).
-pub(super) fn live_locals_at(
+pub(crate) fn live_locals_at(
     tcx: TyCtxt<'_>,
     caller: DefId,
     call_block: BasicBlock,
     statement_index: usize,
+    seed_params: bool,
+    track_moves: bool,
 ) -> HashSet<Local> {
     let body = tcx.optimized_mir(caller);
-    let mut live = HashSet::new();
+    // Parameters (`_1..=arg_count`) are live on entry and have no explicit
+    // `StorageLive`; seed them so a `&self`/`String`/`Box` parameter is treated
+    // as live until its `StorageDead`.
+    let mut live: HashSet<Local> = if seed_params {
+        (1..=body.arg_count).map(Local::from_usize).collect()
+    } else {
+        HashSet::new()
+    };
     for (block, data) in reverse_postorder_blocks(body) {
         let reached = block == call_block;
         for (i, statement) in data.statements.iter().enumerate() {
@@ -961,11 +970,32 @@ pub(super) fn live_locals_at(
                 StatementKind::StorageDead(local) => {
                     live.remove(local);
                 }
+                StatementKind::Assign(assign) if track_moves => {
+                    // A move out of a local (`std::mem::forget(data)` inlined as
+                    // `_x = move data`) consumes it even without a `StorageDead`.
+                    let (_, rvalue) = &**assign;
+                    if let rustc_middle::mir::Rvalue::Use(operand, ..) = rvalue {
+                        if let Operand::Move(place) = operand {
+                            live.remove(&place.local);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
         if reached {
             break;
+        }
+        // A call that *moves* a local out (`Box::into_raw(value)`) consumes it,
+        // even though its `StorageDead` may only appear at the end of the body.
+        if track_moves {
+            if let TerminatorKind::Call { args, .. } = &data.terminator().kind {
+                for arg in args {
+                    if let Operand::Move(place) = &arg.node {
+                        live.remove(&place.local);
+                    }
+                }
+            }
         }
     }
     live

@@ -421,6 +421,11 @@ pub fn is_vec_from_box(callee: Option<DefId>) -> bool {
         ],
     )
 }
+/// `slice::to_vec` (`<[T]>::to_vec` via `to_vec_in::ConvertVec::to_vec`) —
+/// allocates a fresh buffer and copies the slice's elements.
+pub fn is_slice_to_vec(callee: Option<DefId>) -> bool {
+    any_of(callee, &[crate::def_id::slice_to_vec()])
+}
 /// `Vec::with_capacity` — matched by `DefId` via
 /// [`crate::def_id::with_capacity_fns`].
 pub fn is_vec_with_capacity(callee: Option<DefId>) -> bool {

@@ -182,6 +182,8 @@ fn callsite_xor_violation<'ctx, 'tcx>(
         vm_state.caller_def_id,
         call_block,
         statement_index,
+        false,
+        false,
     );
     for (local, val) in &vm_state.locals {
         if !live.contains(local) {

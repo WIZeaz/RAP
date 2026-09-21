@@ -64,6 +64,10 @@ static REGISTRY: &[Entry] = &[
     // `into_vec` / `box_assume_init_into_vec_unsafe`: needed on older
     // toolchains where `vec![…]` literals lower to `into_vec` (not `from_elem`).
     ED!(api_classify::is_vec_from_box, eff_vec_from_box),
+    // `slice::to_vec` allocates a fresh buffer and copies the slice — model it
+    // like `into_vec`/`box_assume_init_into_vec_unsafe` (fresh allocation, len
+    // == cap), so `String::from(&str)`'s internal Vec buffer gets provenance.
+    ED!(api_classify::is_slice_to_vec, eff_vec_from_box),
     ED!(
         api_classify::is_vec_with_capacity,
         eff_new_allocation_from_cap

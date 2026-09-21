@@ -87,6 +87,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let saved_def_id = self.caller_def_id;
         let saved_locals = std::mem::take(&mut self.locals);
         let saved_field_values = std::mem::take(&mut self.field_values);
+        let saved_move_sources = std::mem::take(&mut self.move_sources);
 
         // Collect the caller argument fields from the saved map, so the callee's
         // parameters inherit them (e.g. NonZero's non-zero inner value).
@@ -125,6 +126,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             def_id: saved_def_id,
             saved_locals,
             saved_field_values,
+            saved_move_sources,
         });
     }
 
@@ -143,6 +145,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             self.caller_def_id = frame.def_id;
             self.locals = frame.saved_locals;
             self.field_values = frame.saved_field_values;
+            self.move_sources = frame.saved_move_sources;
         }
         if let Some(mut v) = ret {
             let dest_ty = self.body.local_decls[Local::from_usize(dest)].ty;
@@ -1750,6 +1753,24 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             value.invariants.init = true;
             self.set_local(place.local, value);
             self.forward_assigned.insert(place.local);
+            // Record a whole-place move (`_3 = move _4`) so `Owning` can trace
+            // the move-alias chain back to the destination.
+            let moved_from = match rvalue {
+                #[cfg(rapx_rvalue_use_with_retag)]
+                Rvalue::Use(operand, _) => match operand {
+                    Operand::Move(p) if p.projection.is_empty() => Some(p.local),
+                    _ => None,
+                },
+                #[cfg(not(rapx_rvalue_use_with_retag))]
+                Rvalue::Use(operand) => match operand {
+                    Operand::Move(p) if p.projection.is_empty() => Some(p.local),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(src) = moved_from {
+                self.move_sources.insert(place.local, src);
+            }
             // Propagate field values for aggregate copies (e.g. `_4 = copy _1`)
             // so downstream field accesses (NonZero::get -> self.0) resolve to
             // the same symbolic field terms.  A projected source (`_11 = move
@@ -4422,26 +4443,43 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             return false;
         }
         let dest_ty = self.body.local_decls[dest].ty;
-        let prov = first_arg_val.provenance.clone().or_else(|| {
-            if let Operand::Move(place) | Operand::Copy(place) = first_arg_op {
-                self.local_alloc_ids
-                    .get(&place.local)
-                    .map(|&id| Provenance {
-                        alloc_id: id,
-                        offset: Int::from_u64(self.ctx, 0),
-                        is_field_offset: false,
-                        element_offset: None,
-                    })
-            } else {
-                None
-            }
-        });
+        // An owned receiver (`Box`/`Vec`/`Arc`…) exposes its allocation through
+        // a field (e.g. `Box.0.0`), not its whole-provenance. Prefer the tracked
+        // field so `into_raw` chains keep the real allocation — and its term,
+        // which may still point at the ultimate owner — across checkpoints.
+        let field_val = if let Operand::Move(place) | Operand::Copy(place) = first_arg_op {
+            self.owner_ptr_field(place.local).cloned()
+        } else {
+            None
+        };
+        let prov = first_arg_val
+            .provenance
+            .clone()
+            .or_else(|| field_val.as_ref().and_then(|v| v.provenance.clone()))
+            .or_else(|| {
+                if let Operand::Move(place) | Operand::Copy(place) = first_arg_op {
+                    self.local_alloc_ids
+                        .get(&place.local)
+                        .map(|&id| Provenance {
+                            alloc_id: id,
+                            offset: Int::from_u64(self.ctx, 0),
+                            is_field_offset: false,
+                            element_offset: None,
+                        })
+                } else {
+                    None
+                }
+            });
+        let term = field_val
+            .as_ref()
+            .map(|v| v.term.clone())
+            .unwrap_or_else(|| first_arg_val.term.clone());
         if let Some(ref prov) = prov {
             self.alloc_mut(prov.alloc_id).initialized = true;
             self.set_local(
                 dest,
                 VmValue {
-                    term: first_arg_val.term.clone(),
+                    term,
                     ty: dest_ty,
                     provenance: Some(prov.clone()),
                     invariants: ValueInvariants {
