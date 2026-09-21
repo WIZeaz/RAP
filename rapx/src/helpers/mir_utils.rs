@@ -451,7 +451,9 @@ pub fn deep_resolve_place(mut local: usize, origins: &LocalOriginMap) -> (usize,
 
 // ── Block reachability ───────────────────────────────────────────
 
-/// Collect all basic blocks reachable after (and including) a call block.
+/// Collect all basic blocks reachable after a call block's normal return, or —
+/// for a non-call block such as a raw-pointer deref statement — after the block
+/// itself (all of its successors).
 pub fn blocks_reachable_after_call(
     tcx: TyCtxt<'_>,
     caller: DefId,
@@ -463,6 +465,8 @@ pub fn blocks_reachable_after_call(
         && let Some(target) = target
     {
         starts.push(*target);
+    } else {
+        starts.extend(body.basic_blocks[call_block].terminator().successors());
     }
 
     let mut seen = HashSet::new();

@@ -390,6 +390,7 @@ impl<'tcx> VerifyEngine<'tcx> {
                 kind: crate::helpers::mir_scan::CheckpointKind::UnsafeCall,
                 destination: None,
                 is_mut_ref: false,
+                statement_index: 0,
             };
             let result = self.checker.check(&vm_state, &fake_checkpoint, invariant);
             results.push((result, path_desc));

@@ -47,6 +47,9 @@ pub struct Checkpoint<'tcx> {
     /// For `RawPtrDeref` checkpoints: whether the deref produces a mutable
     /// reference (`&mut *ptr`) rather than a shared one (`&*ptr`).
     pub is_mut_ref: bool,
+    /// For `RawPtrDeref` checkpoints: statement index within `block`, used for
+    /// reverse liveness at the deref point.
+    pub statement_index: usize,
 }
 
 impl<'tcx> Checkpoint<'tcx> {
@@ -288,6 +291,7 @@ pub fn collect_unsafe_callsites<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> Vec<C
             kind: CheckpointKind::UnsafeCall,
             destination: None,
             is_mut_ref: false,
+            statement_index: 0,
         });
     }
 
@@ -308,6 +312,8 @@ pub struct RawPtrDerefInfo<'tcx> {
     /// Whether the Ptr2Ref produces a mutable reference (`&mut *raw_ptr`).
     pub is_mut_ref: bool,
     pub destination: Local,
+    /// Statement index within `block` (for reverse liveness at the deref point).
+    pub statement_index: usize,
 }
 
 /// Collect all raw pointer dereference operations in `def_id` as
@@ -328,7 +334,7 @@ pub fn collect_raw_ptr_deref_info<'tcx>(
     let local_file = tcx.sess.source_map().lookup_char_pos(fn_span.lo()).file;
 
     for (bb, data) in body.basic_blocks.iter_enumerated() {
-        for stmt in &data.statements {
+        for (stmt_index, stmt) in data.statements.iter().enumerate() {
             let stmt_file = tcx
                 .sess
                 .source_map()
@@ -388,6 +394,7 @@ pub fn collect_raw_ptr_deref_info<'tcx>(
                 is_ptr2ref,
                 is_mut_ref,
                 destination: lhs.local,
+                statement_index: stmt_index,
             });
         }
     }

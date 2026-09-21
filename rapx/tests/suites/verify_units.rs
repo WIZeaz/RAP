@@ -676,6 +676,17 @@ fn alias_unsound_24() {
     );
 }
 
+#[test]
+fn alias_unsound_28() {
+    let output = run_with_args("verify_units/alias_unsound_28", CMD_VERIFY_TARGETED);
+    assert_unproved_exclusive_with_result(
+        &output,
+        "shared_then_mut",
+        &["Alias", "Init"],
+        "UNSOUND",
+    );
+}
+
 // Custom test: from_raw_parts wrong element type causes multiple failures
 #[test]
 fn init_std_unsound_07() {

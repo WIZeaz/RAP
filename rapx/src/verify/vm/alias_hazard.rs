@@ -715,7 +715,13 @@ fn rvalue_mentions_local(
     aliases: &HashMap<Local, PlaceKey>,
 ) -> bool {
     crate::helpers::mir_utils::rvalue_any_place_matching(rvalue, &mut |place| {
-        place.local == local || aliases.contains_key(&place.local)
+        // A deref of `local` reads the pointee rather than flowing `local`'s
+        // value toward the return place, so it does not count as a copy.
+        let has_deref = place
+            .projection
+            .iter()
+            .any(|p| matches!(p, ProjectionElem::Deref));
+        !has_deref && (place.local == local || aliases.contains_key(&place.local))
     })
 }
 
@@ -927,6 +933,42 @@ fn reverse_postorder_blocks<'a, 'tcx>(
     body: &'a rustc_middle::mir::Body<'tcx>,
 ) -> impl Iterator<Item = (BasicBlock, &'a rustc_middle::mir::BasicBlockData<'tcx>)> {
     rustc_middle::mir::traversal::reverse_postorder(body).map(|(block, data)| (block, data))
+}
+
+/// Compute the set of locals that are live (between `StorageLive` and
+/// `StorageDead`) at the deref point `(call_block, statement_index)`, scanning
+/// the function in execution order up to that point. Used by the callsite
+/// shared-XOR-mutable check to ignore temporaries that have already gone dead
+/// (e.g. a method call's `&self` receiver).
+pub(super) fn live_locals_at(
+    tcx: TyCtxt<'_>,
+    caller: DefId,
+    call_block: BasicBlock,
+    statement_index: usize,
+) -> HashSet<Local> {
+    let body = tcx.optimized_mir(caller);
+    let mut live = HashSet::new();
+    for (block, data) in reverse_postorder_blocks(body) {
+        let reached = block == call_block;
+        for (i, statement) in data.statements.iter().enumerate() {
+            if reached && i >= statement_index {
+                break;
+            }
+            match &statement.kind {
+                StatementKind::StorageLive(local) => {
+                    live.insert(*local);
+                }
+                StatementKind::StorageDead(local) => {
+                    live.remove(local);
+                }
+                _ => {}
+            }
+        }
+        if reached {
+            break;
+        }
+    }
+    live
 }
 
 fn expand_origin_aliases(aliases: &HashMap<Local, PlaceKey>, origins: &mut Vec<PlaceKey>) {

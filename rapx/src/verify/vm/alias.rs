@@ -160,6 +160,71 @@ fn fn_has_alias_requires(tcx: rustc_middle::ty::TyCtxt<'_>, def_id: DefId) -> bo
         .any(property_contains_alias)
 }
 
+/// Collect `p`'s alias set from the VM's provenance (every live local pointing
+/// to the same allocation) and check the callsite's shared-XOR-mutable
+/// invariant: a `&*p` must not be produced while a live `&mut` aliases `*p`,
+/// and a `&mut *p` must not be produced while a live `&` aliases `*p`.
+/// Liveness is decided by MIR `StorageLive`/`StorageDead` at the deref point.
+/// `destination` (the view being produced), `operand_local` (the deref operand's
+/// origin) and the return place are excluded.
+fn callsite_xor_violation<'ctx, 'tcx>(
+    vm_state: &VmState<'ctx, 'tcx>,
+    origin_val: &VmValue<'ctx, 'tcx>,
+    is_mut_ref: bool,
+    destination: Option<Local>,
+    operand_local: Option<Local>,
+    call_block: rustc_middle::mir::BasicBlock,
+    statement_index: usize,
+) -> Option<String> {
+    let alloc_id = origin_val.provenance_alloc_id()?;
+    let live = alias_hazard::live_locals_at(
+        vm_state.tcx,
+        vm_state.caller_def_id,
+        call_block,
+        statement_index,
+    );
+    for (local, val) in &vm_state.locals {
+        if !live.contains(local) {
+            continue;
+        }
+        if Some(*local) == destination
+            || Some(*local) == operand_local
+            || *local == rustc_middle::mir::RETURN_PLACE
+        {
+            continue;
+        }
+        let Some(val_prov) = &val.provenance else {
+            continue;
+        };
+        if val_prov.alloc_id != alloc_id {
+            continue;
+        }
+        let ty = vm_state.body.local_decls[*local].ty;
+        let rustc_middle::ty::TyKind::Ref(_, _, mutability) = ty.kind() else {
+            continue;
+        };
+        // shared-XOR-mutable: a `&*p` must not coexist with a live `&mut`,
+        // a `&mut *p` must not coexist with a live `&`.
+        let conflicts = if is_mut_ref {
+            *mutability == rustc_middle::ty::Mutability::Not
+        } else {
+            *mutability == rustc_middle::ty::Mutability::Mut
+        };
+        if conflicts {
+            let live_kind = if *mutability == rustc_middle::ty::Mutability::Mut {
+                "&mut"
+            } else {
+                "&"
+            };
+            let produced = if is_mut_ref { "&mut" } else { "&" };
+            return Some(format!(
+                "producing {produced} while a live {live_kind} aliases the same data"
+            ));
+        }
+    }
+    None
+}
+
 /// Run the full alias hazard check for the VM backend.
 ///
 /// This is the function the `PropertyChecker::check_alias` delegates to.
@@ -176,7 +241,44 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
                 return VmAliasResult::Unknown;
             };
             let origin_val = vm_state.value_of_operand(origin_arg);
+            // Step 4 (forward check): while the produced view is live, a later
+            // raw access through the same origin violates shared-XOR-mutable.
+            if let Some(origin_place) = alias_hazard::operand_place(origin_arg) {
+                let kind = if checkpoint.is_mut_ref {
+                    HazardKind::UniqueView
+                } else {
+                    HazardKind::SharedView
+                };
+                if let Some(reason) = alias_hazard::local_hazard_violation(
+                    vm_state.tcx,
+                    checkpoint.caller,
+                    checkpoint.block,
+                    checkpoint.destination,
+                    &[origin_place],
+                    kind,
+                    None,
+                ) {
+                    return VmAliasResult::Failed(reason);
+                }
+            }
             if let Some(origin) = vm_state.resolve_origin(&origin_val) {
+                // Step 3 (callsite check): unless an `Alias`/`Ptr2Ref` precondition
+                // discharges the hazard, the deref must not violate shared-XOR-mutable
+                // against a live alias of the opposite mutability. The deref
+                // operand's own origin is excluded.
+                if !fn_has_alias_requires(vm_state.tcx, checkpoint.caller) {
+                    if let Some(reason) = callsite_xor_violation(
+                        vm_state,
+                        &origin_val,
+                        checkpoint.is_mut_ref,
+                        checkpoint.destination,
+                        Some(origin.local),
+                        checkpoint.block,
+                        checkpoint.statement_index,
+                    ) {
+                        return VmAliasResult::Failed(reason);
+                    }
+                }
                 if origin.is_mut_ref() {
                     // A mut view produced through a raw field of a reference
                     // parameter (`(*self).next`). When it escapes, trace to the
@@ -274,8 +376,8 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
                 // An *independent* raw-pointer *parameter* (`*const T` / `*mut T`)
                 // carries no borrow information. An `Alias`/`Ptr2Ref` precondition
                 // discharges the hazard (the caller guarantees no aliasing), and a
-                // local (non-escaping) view is safe; only an escaping view without
-                // such a precondition remains an unresolved hazard. A raw-pointer
+                // local (non-escaping) view is safe; an escaping view without such
+                // a precondition is an undeclared aliasing hazard. A raw-pointer
                 // *field copy* (`_tmp = self.head`) is a temp local above
                 // `arg_count`, derived from a borrow field — it falls through to
                 // the field-type-aware check below.
@@ -285,14 +387,18 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
                     if fn_has_alias_requires(vm_state.tcx, checkpoint.caller) {
                         return VmAliasResult::Proved;
                     }
-                    if !alias_hazard::destination_flows_to_return(
+                    let escapes = alias_hazard::destination_flows_to_return(
                         vm_state.tcx,
                         checkpoint.caller,
                         checkpoint.destination,
-                    ) {
+                    );
+                    if !escapes {
                         return VmAliasResult::Proved;
                     }
-                    return VmAliasResult::Unknown;
+                    return VmAliasResult::Failed(
+                        "returned view aliases a raw-pointer parameter without an `Alias` declaration"
+                            .into(),
+                    );
                 }
             }
             // A raw-pointer deref in a method whose `self` is a *by-value*
