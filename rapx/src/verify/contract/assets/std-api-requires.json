@@ -4564,7 +4564,7 @@
     {
       "tag": "ValidNum",
       "args": [
-        "size_of(T) * count <= isize::MAX"
+        "size_of(T) * length <= isize::MAX"
       ]
     },
     {
@@ -4611,7 +4611,7 @@
     {
       "tag": "ValidNum",
       "args": [
-        "size_of(T) * count <= isize::MAX"
+        "size_of(T) * length <= isize::MAX"
       ]
     },
     {
@@ -4672,7 +4672,7 @@
     {
       "tag": "ValidNum",
       "args": [
-        "size_of(T) * count <= isize::MAX"
+        "size_of(T) * length <= isize::MAX"
       ]
     },
     {
