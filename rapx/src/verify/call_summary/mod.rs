@@ -256,6 +256,9 @@ pub(crate) enum CallEffect {
     /// `mem::replace(dest, src)` returns `*dest` (the old value), so the return
     /// is the *pointee* of the reference argument, not the reference itself.
     ReturnDerefArg { arg: usize },
+    /// The call *frees* the heap allocation behind `pointer_arg` (a `&mut`
+    /// reference to a `Box`/`Vec`/`String` pointee). Models `ManuallyDrop::drop`.
+    DropMemory { pointer_arg: usize },
 }
 
 /// Return dependency information for a MIR call terminator.

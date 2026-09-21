@@ -17,7 +17,9 @@ use crate::analysis::dataflow::types::DataflowGraph;
 
 use super::super::{
     contract,
-    def_use::{RelevantPlaces, bind_callsite_roots, operand_uses, terminator_use_def},
+    def_use::{
+        RelevantPlaces, bind_callsite_roots, call_args_uses_at, operand_uses, terminator_use_def,
+    },
     path_extractor::{Path, PathStep},
 };
 use crate::helpers::mir_scan::{Checkpoint, CheckpointLocation};
@@ -489,10 +491,20 @@ impl<'tcx> BackwardSlicer<'tcx> {
                 let dest_ty = body.local_decls[destination.local].ty;
                 let typing_env =
                     rustc_middle::ty::TypingEnv::non_body_analysis(self.tcx, def_id);
-                if dest_ty.needs_drop(self.tcx, typing_env) {
+                // A `ManuallyDrop::drop` frees the owner's heap; `Owning` must see
+                // it to detect a second drop. Its destination is `()`, so the
+                // `needs_drop` check below would otherwise prune it.
+                let is_manual_drop = crate::helpers::mir_utils::dep_callee_def_id(func)
+                    .is_some_and(|c| crate::verify::api_classify::is_manually_drop_drop(Some(c)));
+                if dest_ty.needs_drop(self.tcx, typing_env) || is_manual_drop {
                     let use_def = terminator_use_def(terminator);
                     items.push(RelevantItem::Terminator { def_id, block });
                     relevant.remove_all(&use_def.defs);
+                    // `terminator_use_def` returns nothing for `Call`, so keep
+                    // the drop argument's own definition chain relevant.
+                    if is_manual_drop {
+                        relevant.extend(call_args_uses_at(args, &[0]));
+                    }
                     relevant.extend(use_def.uses);
                     return;
                 }

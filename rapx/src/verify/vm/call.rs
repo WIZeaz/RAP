@@ -201,6 +201,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             for effect in &summary.effects {
                 self.apply_call_effect(effect, &arg_values, &caller_arg_locals, destination);
             }
+            // Mark the call destination as forward-assigned so the backward
+            // `propagate_pass` does not re-apply the effect. Allocation effects
+            // (`ReturnBoxAllocation`, `ReturnFreshAllocation`, ...) consume a
+            // fresh `next_alloc_id` on each application, so a second application
+            // would allocate a *different* heap object and the pointer derived
+            // before it (`&mut *boxed`) would keep stale provenance.
+            self.forward_assigned.insert(destination);
         } else {
             self.notes
                 .push(format!("unsupported call: {}", summary.name));
@@ -2968,6 +2975,23 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         }
                     }
                     self.set_local(dest, val);
+                }
+            }
+            CallEffect::DropMemory { pointer_arg } => {
+                // `ManuallyDrop::drop(slot)` frees the heap allocation behind
+                // `slot`. The first drop marks the allocation dead; a second drop
+                // (already dead) records a double free.
+                if let Some(arg_val) = args.get(*pointer_arg) {
+                    let referent = self.find_local_by_address(&arg_val.term);
+                    if let Some(heap_field) = referent.and_then(|r| self.owner_ptr_field(r)) {
+                        if let Some(alloc_id) = heap_field.provenance_alloc_id() {
+                            if self.alloc(alloc_id).dead {
+                                self.double_freed.insert(alloc_id);
+                            } else {
+                                self.alloc_mut(alloc_id).dead = true;
+                            }
+                        }
+                    }
                 }
             }
             CallEffect::ReturnPowerOfTwo => {

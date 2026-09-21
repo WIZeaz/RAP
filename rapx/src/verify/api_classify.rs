@@ -52,6 +52,13 @@ pub fn is_ownership_reconstruction(callee: Option<DefId>) -> bool {
     )
 }
 
+/// Whether `callee` is `ManuallyDrop::<T>::drop` — the *manual* drop that frees
+/// the pointee's allocation without the `ManuallyDrop` wrapper's own (no-op)
+/// drop glue.
+pub fn is_manually_drop_drop(callee: Option<DefId>) -> bool {
+    any_of(callee, &[crate::def_id::manually_drop()])
+}
+
 // ── Pointer extraction / cast ─────────────────────────────────────
 
 /// Whether `callee` produces a raw pointer (or `NonNull`) alias of its first

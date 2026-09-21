@@ -244,6 +244,10 @@ pub(crate) struct VmState<'ctx, 'tcx> {
     /// instead of leaving the destination at its stack-address default.
     pub(crate) forward_assigned: FxHashSet<Local>,
 
+    /// Heap allocations dropped twice (a `DropMemory` saw the allocation
+    /// already `dead`).  `check_owning` reports these as a double free.
+    pub(crate) double_freed: FxHashSet<AllocId>,
+
     /// Known address for each stack-allocated local.
     pub(crate) local_addresses: FxHashMap<Local, Int<'ctx>>,
 
@@ -385,6 +389,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             caller_def_id,
             locals: FxHashMap::default(),
             forward_assigned: FxHashSet::default(),
+            double_freed: FxHashSet::default(),
             local_addresses: FxHashMap::default(),
             local_alloc_ids: FxHashMap::default(),
             allocations: Vec::new(),

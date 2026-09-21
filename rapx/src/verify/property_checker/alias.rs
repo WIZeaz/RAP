@@ -39,17 +39,42 @@ impl PropertyChecker {
         // `p` may be a pointer just derived from an owner (`Box::into_raw` /
         // `as_mut_ptr`), whose term still points at the owner's address but whose
         // own provenance slot is empty. Fall back to the owner's field provenance.
-        let alloc_id = value.provenance_alloc_id().or_else(|| {
+        // A *reference* target carries the *stack* provenance of the referent;
+        // the owned heap lives deeper inside the pointee, so resolve through the
+        // referent's heap field first.
+        let alloc_id = if matches!(value.ty.kind(), rustc_middle::ty::TyKind::Ref(..)) {
             vm_state
                 .find_local_by_address(&value.term)
                 .and_then(|owner| vm_state.owner_ptr_field(owner))
                 .and_then(|v| v.provenance_alloc_id())
-        });
+                .or_else(|| value.provenance_alloc_id())
+        } else {
+            value.provenance_alloc_id().or_else(|| {
+                vm_state
+                    .find_local_by_address(&value.term)
+                    .and_then(|owner| vm_state.owner_ptr_field(owner))
+                    .and_then(|v| v.provenance_alloc_id())
+            })
+        };
         let Some(alloc_id) = alloc_id else {
-            // No allocation to double-free (the pointer's provenance was not
-            // materialized) — treat as safe rather than unknown.
             return CheckResult::ProvedByRule;
         };
+        // A loop-unrolled path repeats the same block (the SCC body), so its
+        // second `DropMemory` is an unrolled iteration rather than a genuine
+        // same-iteration double free. Only the non-unrolled path distinguishes
+        // them (uaf_10 drops twice in one iteration; uaf_false_2 drops once).
+        if vm_state.path.as_ref().is_some_and(|p| {
+            let mut seen = std::collections::HashSet::new();
+            p.steps.iter().any(|s| match s {
+                crate::verify::path_extractor::PathStep::Block(b) => !seen.insert(b.as_usize()),
+                _ => false,
+            })
+        }) {
+            return CheckResult::ProvedByRule;
+        }
+        if vm_state.double_freed.contains(&alloc_id) {
+            return CheckResult::Failed;
+        }
         // Owning(p): p is the sole carrier of *p's ownership. A live `needs_drop`
         // owner whose buffer aliases `alloc_id` means a second owner will drop the
         // same allocation — a double free. The reconstructed owner (the call's

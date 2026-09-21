@@ -134,6 +134,8 @@ static REGISTRY: &[Entry] = &[
         api_classify::is_ownership_reconstruction,
         eff_ownership_recon
     ),
+    // `ManuallyDrop::drop` releases the pointee's heap allocation.
+    ED!(api_classify::is_manually_drop_drop, eff_drop_memory),
     // Slice helpers.
     ED!(api_classify::is_split_at, eff_split_at),
     ED!(api_classify::is_from_raw_parts, eff_from_raw_parts),
@@ -378,6 +380,10 @@ fn eff_ownership_recon(_: &EffCtx<'_, '_>) -> Vec<CallEffect> {
         CallEffect::ReturnNonZero,
         CallEffect::OwnsInitMemory { arg: 0 },
     ]
+}
+
+fn eff_drop_memory(_: &EffCtx<'_, '_>) -> Vec<CallEffect> {
+    vec![CallEffect::DropMemory { pointer_arg: 0 }]
 }
 
 fn eff_align_to(_: &EffCtx<'_, '_>) -> Vec<CallEffect> {

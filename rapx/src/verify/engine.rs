@@ -148,7 +148,7 @@ impl<'tcx> VerifyEngine<'tcx> {
         // Start in the caller so a path that begins inside an inlined callee
         // still emits its CalleeEntry on the first item.
         let mut prev_def_id: Option<DefId> = Some(caller);
-        let mut active: Option<(DefId, usize)> = None;
+        let mut active: Vec<(DefId, usize)> = Vec::new();
 
         for item in items {
             let cur_def_id = match &item {
@@ -161,7 +161,7 @@ impl<'tcx> VerifyEngine<'tcx> {
                 if let Some(prev) = prev_def_id {
                     if prev != cur {
                         if cur == caller {
-                            if let Some((_, dest)) = active.take() {
+                            if let Some((_, dest)) = active.pop() {
                                 out.push(RelevantItem::CalleeExit { dest });
                             }
                         } else {
@@ -176,7 +176,7 @@ impl<'tcx> VerifyEngine<'tcx> {
                                         callee: cur,
                                         args: binding.arg_locals.clone(),
                                     });
-                                    active = Some((cur, binding.dest_local));
+                                    active.push((cur, binding.dest_local));
                                 }
                             }
                         }
@@ -188,7 +188,7 @@ impl<'tcx> VerifyEngine<'tcx> {
             out.push(item);
         }
 
-        if let Some((_, dest)) = active.take() {
+        while let Some((_, dest)) = active.pop() {
             out.push(RelevantItem::CalleeExit { dest });
         }
 
