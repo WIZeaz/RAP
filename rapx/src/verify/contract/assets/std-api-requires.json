@@ -4515,6 +4515,12 @@
       ]
     },
     {
+      "tag": "Owning",
+      "args": [
+        "ptr"
+      ]
+    },
+    {
       "tag": "Alias",
       "kind": "hazard",
       "args": [
@@ -4614,6 +4620,12 @@
         "ptr",
         "T",
         "capacity"
+      ]
+    },
+    {
+      "tag": "Owning",
+      "args": [
+        "ptr"
       ]
     },
     {
@@ -5325,6 +5337,12 @@
       "tag": "ValidNum",
       "args": [
         "size_of(u8) * length <= isize::MAX"
+      ]
+    },
+    {
+      "tag": "Owning",
+      "args": [
+        "buf"
       ]
     },
     {
