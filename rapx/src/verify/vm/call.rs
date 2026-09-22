@@ -2978,18 +2978,26 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
             }
             CallEffect::DropMemory { pointer_arg } => {
-                // `ManuallyDrop::drop(slot)` frees the heap allocation behind
-                // `slot`. The first drop marks the allocation dead; a second drop
+                // `ManuallyDrop::drop(slot)` / `drop_in_place(x)` frees the heap
+                // allocation behind the argument. A reference argument carries the
+                // *stack* provenance of the referent (penetrate to its heap field);
+                // a value argument (`Box`/`Vec`) carries the heap provenance
+                // directly. The first drop marks the allocation dead; a second drop
                 // (already dead) records a double free.
                 if let Some(arg_val) = args.get(*pointer_arg) {
-                    let referent = self.find_local_by_address(&arg_val.term);
-                    if let Some(heap_field) = referent.and_then(|r| self.owner_ptr_field(r)) {
-                        if let Some(alloc_id) = heap_field.provenance_alloc_id() {
-                            if self.alloc(alloc_id).dead {
-                                self.double_freed.insert(alloc_id);
-                            } else {
-                                self.alloc_mut(alloc_id).dead = true;
-                            }
+                    let alloc_id = if matches!(arg_val.ty.kind(), rustc_middle::ty::TyKind::Ref(..))
+                    {
+                        self.find_local_by_address(&arg_val.term)
+                            .and_then(|r| self.owner_ptr_field(r))
+                            .and_then(|v| v.provenance_alloc_id())
+                    } else {
+                        arg_val.provenance_alloc_id()
+                    };
+                    if let Some(alloc_id) = alloc_id {
+                        if self.alloc(alloc_id).dead {
+                            self.double_freed.insert(alloc_id);
+                        } else {
+                            self.alloc_mut(alloc_id).dead = true;
                         }
                     }
                 }

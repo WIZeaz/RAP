@@ -59,6 +59,30 @@ impl PropertyChecker {
         if align.simplify().as_u64() == Some(1) {
             return CheckResult::ProvedByRule;
         }
+        // A pointer whose term is a known local's *stack address* is aligned to
+        // that local's own type alignment, regardless of the value's provenance.
+        // A borrow of a `Box`/`Vec` local (`&mut _1` / `&raw mut (*&mut _1)`)
+        // carries the pointee's *heap* provenance, so the provenance-based
+        // alignment below would compare against the pointee's alignment; the
+        // pointer itself, however, is aligned to the stack slot's type
+        // (`align_of::<Box<i32>>() = 8`).  Require a provenance so a pointer
+        // local whose value fell back to its own stack-address default (and is
+        // really some unaligned offset) is not mistaken for a stack borrow.
+        if value.provenance.is_some() {
+            if let Some(local) = vm_state.find_local_by_address(&value.term) {
+                let local_ty = vm_state.body.local_decls[local].ty;
+                let local_align = vm_state.align_sym_read(local_ty);
+                if let Some(local_align_u64) = local_align.simplify().as_u64() {
+                    if local_align_u64 != 1 {
+                        if let Some(align_u64) = align.simplify().as_u64() {
+                            if local_align_u64 >= align_u64 {
+                                return CheckResult::ProvedByRule;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         // Symbolic fast-path: if the value is known to be at least `align`-aligned
         // (its effective alignment satisfies `align_n >= align`, both powers of
         // two), the check holds without a modulo query — Z3 cannot discharge
@@ -321,6 +345,7 @@ impl PropertyChecker {
         let Some(value) = self.target_value(vm_state, checkpoint, property) else {
             return CheckResult::Unknown;
         };
+        let value = self.resolve_pointer_provenance(vm_state, value);
 
         if self.zst_guard(vm_state, checkpoint, property) {
             return CheckResult::ProvedByRule;

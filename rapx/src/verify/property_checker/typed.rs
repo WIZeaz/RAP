@@ -238,6 +238,7 @@ impl PropertyChecker {
     pub(super) fn check_size<'ctx, 'tcx>(
         &self,
         vm_state: &VmState<'ctx, 'tcx>,
+        checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> CheckResult {
         let ty = match property.args().iter().find_map(|a| match a {
@@ -247,6 +248,10 @@ impl PropertyChecker {
             Some(t) => t,
             None => return CheckResult::Unknown,
         };
+        // Resolve a generic `T` to the call-site concrete type (e.g. `Box<i32>`
+        // for `drop_in_place::<Box<i32>>`), so `Size(T, 0)` is decided rather
+        // than left `Unknown` and dragged through `ValidPtr`'s `Size || Deref`.
+        let resolved_ty = self.instantiate_callsite_ty(vm_state, checkpoint, ty);
 
         match property.args().last() {
             Some(PropertyArg::Ident(id)) if id == "sized" => {
@@ -270,6 +275,7 @@ impl PropertyChecker {
                 _ => CheckResult::Unknown,
             },
             Some(PropertyArg::Expr(ContractExpr::Const(c))) => {
+                let ty = resolved_ty;
                 if self.is_generic_ty(ty) {
                     return CheckResult::Unknown;
                 }

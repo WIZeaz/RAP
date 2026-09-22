@@ -136,6 +136,8 @@ static REGISTRY: &[Entry] = &[
     ),
     // `ManuallyDrop::drop` releases the pointee's heap allocation.
     ED!(api_classify::is_manually_drop_drop, eff_drop_memory),
+    // `std::mem::drop` frees the argument's heap allocation.
+    ED!(api_classify::is_std_drop, eff_drop_memory),
     // Slice helpers.
     ED!(api_classify::is_split_at, eff_split_at),
     ED!(api_classify::is_from_raw_parts, eff_from_raw_parts),

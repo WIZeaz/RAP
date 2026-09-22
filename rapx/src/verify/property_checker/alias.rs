@@ -36,26 +36,16 @@ impl PropertyChecker {
         let Some(value) = self.target_value(vm_state, checkpoint, property) else {
             return CheckResult::Unknown;
         };
+        let value = self.resolve_pointer_provenance(vm_state, value);
         // `p` may be a pointer just derived from an owner (`Box::into_raw` /
         // `as_mut_ptr`), whose term still points at the owner's address but whose
         // own provenance slot is empty. Fall back to the owner's field provenance.
-        // A *reference* target carries the *stack* provenance of the referent;
-        // the owned heap lives deeper inside the pointee, so resolve through the
-        // referent's heap field first.
-        let alloc_id = if matches!(value.ty.kind(), rustc_middle::ty::TyKind::Ref(..)) {
+        let alloc_id = value.provenance_alloc_id().or_else(|| {
             vm_state
                 .find_local_by_address(&value.term)
                 .and_then(|owner| vm_state.owner_ptr_field(owner))
                 .and_then(|v| v.provenance_alloc_id())
-                .or_else(|| value.provenance_alloc_id())
-        } else {
-            value.provenance_alloc_id().or_else(|| {
-                vm_state
-                    .find_local_by_address(&value.term)
-                    .and_then(|owner| vm_state.owner_ptr_field(owner))
-                    .and_then(|v| v.provenance_alloc_id())
-            })
-        };
+        });
         let Some(alloc_id) = alloc_id else {
             return CheckResult::ProvedByRule;
         };

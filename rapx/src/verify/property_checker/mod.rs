@@ -115,7 +115,7 @@ impl PropertyChecker {
                     self.check_split_transmute(vm_state, solver, checkpoint, property)
                 }
                 PropertyKind::Trait => self.check_trait(vm_state, solver, checkpoint, property),
-                PropertyKind::Size => self.check_size(vm_state, property),
+                PropertyKind::Size => self.check_size(vm_state, checkpoint, property),
                 PropertyKind::NoPadding => {
                     self.check_no_padding(vm_state, solver, checkpoint, property)
                 }

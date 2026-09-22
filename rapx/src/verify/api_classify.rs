@@ -59,6 +59,12 @@ pub fn is_manually_drop_drop(callee: Option<DefId>) -> bool {
     any_of(callee, &[crate::def_id::manually_drop()])
 }
 
+/// Whether `callee` is `std::mem::drop` / `core::mem::drop` — the value drop
+/// that frees the argument's heap allocation.
+pub fn is_std_drop(callee: Option<DefId>) -> bool {
+    any_of(callee, &[crate::def_id::drop()])
+}
+
 // ── Pointer extraction / cast ─────────────────────────────────────
 
 /// Whether `callee` produces a raw pointer (or `NonNull`) alias of its first

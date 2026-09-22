@@ -472,9 +472,27 @@ impl<'tcx> BackwardSlicer<'tcx> {
         keep_invalidations: bool,
         keep_owner: bool,
     ) {
-        if keep_invalidations && matches!(terminator.kind, TerminatorKind::Drop { .. }) {
-            items.push(RelevantItem::Terminator { def_id, block });
-            return;
+        if keep_invalidations {
+            if matches!(terminator.kind, TerminatorKind::Drop { .. }) {
+                items.push(RelevantItem::Terminator { def_id, block });
+                return;
+            }
+            // A manual drop (`std::mem::drop` / `ManuallyDrop::drop`) also frees
+            // the pointee's heap: keep the call and its argument's construction
+            // chain so `Allocated`/`Owning` can see the freed allocation and
+            // detect a later use / second drop.
+            if let TerminatorKind::Call { func, args, .. } = &terminator.kind {
+                let is_drop_call = crate::helpers::mir_utils::dep_callee_def_id(func)
+                    .is_some_and(|c| {
+                        crate::verify::api_classify::is_manually_drop_drop(Some(c))
+                            || crate::verify::api_classify::is_std_drop(Some(c))
+                    });
+                if is_drop_call {
+                    items.push(RelevantItem::Terminator { def_id, block });
+                    relevant.extend(call_args_uses_at(args, &[0]));
+                    return;
+                }
+            }
         }
 
         if let TerminatorKind::Call {
@@ -491,20 +509,10 @@ impl<'tcx> BackwardSlicer<'tcx> {
                 let dest_ty = body.local_decls[destination.local].ty;
                 let typing_env =
                     rustc_middle::ty::TypingEnv::non_body_analysis(self.tcx, def_id);
-                // A `ManuallyDrop::drop` frees the owner's heap; `Owning` must see
-                // it to detect a second drop. Its destination is `()`, so the
-                // `needs_drop` check below would otherwise prune it.
-                let is_manual_drop = crate::helpers::mir_utils::dep_callee_def_id(func)
-                    .is_some_and(|c| crate::verify::api_classify::is_manually_drop_drop(Some(c)));
-                if dest_ty.needs_drop(self.tcx, typing_env) || is_manual_drop {
+                if dest_ty.needs_drop(self.tcx, typing_env) {
                     let use_def = terminator_use_def(terminator);
                     items.push(RelevantItem::Terminator { def_id, block });
                     relevant.remove_all(&use_def.defs);
-                    // `terminator_use_def` returns nothing for `Call`, so keep
-                    // the drop argument's own definition chain relevant.
-                    if is_manual_drop {
-                        relevant.extend(call_args_uses_at(args, &[0]));
-                    }
                     relevant.extend(use_def.uses);
                     return;
                 }

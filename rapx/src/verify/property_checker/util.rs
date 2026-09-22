@@ -40,6 +40,17 @@ impl PropertyChecker {
         checkpoint: &Checkpoint<'tcx>,
         property: &Property<'tcx>,
     ) -> Option<VmValue<'ctx, 'tcx>> {
+        self.target_value_raw(vm_state, checkpoint, property)
+    }
+
+    /// Resolve the target place to a `VmValue`, without pointer provenance
+    /// penetration (see [`Self::resolve_pointer_provenance`]).
+    fn target_value_raw<'ctx, 'tcx>(
+        &self,
+        vm_state: &VmState<'ctx, 'tcx>,
+        checkpoint: &Checkpoint<'tcx>,
+        property: &Property<'tcx>,
+    ) -> Option<VmValue<'ctx, 'tcx>> {
         let cp = match property.args().first()? {
             PropertyArg::Expr(ContractExpr::Const(n)) => {
                 let idx = usize::try_from(*n).ok()?;
@@ -187,6 +198,33 @@ impl PropertyChecker {
             }
         }
         None
+    }
+
+    /// Penetrate a reference/raw-pointer target down to the owned heap behind
+    /// it.  A target like `&mut ManuallyDrop<Box<T>>` or `*mut Box<T>` carries
+    /// the *stack* provenance of the referent; the properties that matter
+    /// (`Allocated`/`Owning`/`ValidPtr`) concern the heap object inside, so
+    /// resolve through the referent local's owned heap field.
+    pub(super) fn resolve_pointer_provenance<'ctx, 'tcx>(
+        &self,
+        vm_state: &VmState<'ctx, 'tcx>,
+        mut value: VmValue<'ctx, 'tcx>,
+    ) -> VmValue<'ctx, 'tcx> {
+        if matches!(
+            value.ty.kind(),
+            rustc_middle::ty::TyKind::Ref(..) | rustc_middle::ty::TyKind::RawPtr(..)
+        ) {
+            if let Some(owner) = vm_state.find_local_by_address(&value.term) {
+                if let Some(heap_field) = vm_state.owner_ptr_field(owner) {
+                    if heap_field.provenance.is_some() {
+                        value.term = heap_field.term.clone();
+                        value.provenance = heap_field.provenance.clone();
+                        value.invariants = heap_field.invariants.clone();
+                    }
+                }
+            }
+        }
+        value
     }
 
     /// Implicit vacuous truth for projected targets.
