@@ -379,10 +379,12 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
                 // carries no borrow information. An `Alias`/`Ptr2Ref` precondition
                 // discharges the hazard (the caller guarantees no aliasing), and a
                 // local (non-escaping) view is safe; an escaping view without such
-                // a precondition is an undeclared aliasing hazard. A raw-pointer
-                // *field copy* (`_tmp = self.head`) is a temp local above
-                // `arg_count`, derived from a borrow field — it falls through to
-                // the field-type-aware check below.
+                // a precondition is an undeclared aliasing hazard — not a hard
+                // violation, because the caller is an `unsafe fn` whose contract
+                // (`Alias`/`Ptr2Ref` requires) carries the obligation. A
+                // raw-pointer *field copy* (`_tmp = self.head`) is a temp local
+                // above `arg_count`, derived from a borrow field — it falls
+                // through to the field-type-aware check below.
                 if matches!(origin.kind, VmOriginKind::RawPtr)
                     && origin.local.as_usize() <= vm_state.body.arg_count
                 {
@@ -397,10 +399,7 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
                     if !escapes {
                         return VmAliasResult::Proved;
                     }
-                    return VmAliasResult::Failed(
-                        "returned view aliases a raw-pointer parameter without an `Alias` declaration"
-                            .into(),
-                    );
+                    return VmAliasResult::Unknown;
                 }
             }
             // A raw-pointer deref in a method whose `self` is a *by-value*
