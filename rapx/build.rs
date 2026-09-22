@@ -18,6 +18,7 @@ fn main() {
     emit_check_cfg("rapx_rvalue_has_nullary_op");
     emit_check_cfg("rapx_constkind_alias");
     emit_check_cfg("rapx_alias_const_inherent_self");
+    emit_check_cfg("rapx_alias_ty_structured_kind");
     emit_check_cfg("rapx_has_deeply_resolve_ignoring_regions");
 
     emit_cfg("rapx_ge_95", minor >= 95);
@@ -95,6 +96,15 @@ fn main() {
         rustc_src_contains_path(
             "compiler/rustc_infer/src/infer/mod.rs",
             "deeply_resolve_ignoring_regions",
+        ),
+    );
+    // `AliasTyKind` variants gained named fields (`Projection { def_id }`) and
+    // `AliasTy::kind` changed from a method to a field around 2026-07.
+    emit_cfg(
+        "rapx_alias_ty_structured_kind",
+        rustc_src_contains_path(
+            "compiler/rustc_type_ir/src/ty_kind.rs",
+            "Projection { def_id",
         ),
     );
 }

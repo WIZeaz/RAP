@@ -1,8 +1,8 @@
 nodes:
-- type: Api
+- type: api
   path: dummy
   generic_args: []
-- type: Ty
+- type: ty
   path: A
 edges:
 - from: 1

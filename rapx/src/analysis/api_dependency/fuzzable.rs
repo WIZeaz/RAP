@@ -2,6 +2,8 @@
 use rustc_hir::LangItem;
 #[cfg(rapx_ge_100)]
 use rustc_hir::attrs::lang_items::LangItem;
+#[cfg(not(rapx_has_skip_norm_wip))]
+use crate::compat::SkipNormWip;
 use rustc_hir::find_attr;
 use rustc_middle::ty::{self, Ty, TyCtxt, TyKind};
 use rustc_span::sym;
@@ -61,19 +63,19 @@ pub fn has_non_exhaustive_attr(tcx: TyCtxt<'_>, adt: ty::AdtDef<'_>) -> bool {
     adt.is_variant_list_non_exhaustive()
         || find_attr!(
             crate::compat::get_all_attrs(tcx, adt.did()),
-            NonExhaustive(..)
+            rustc_hir::attrs::AttributeKind::NonExhaustive(..)
         )
         || adt.variants().iter().any(|variant_def| {
             variant_def.is_field_list_non_exhaustive()
                 || find_attr!(
                     crate::compat::get_all_attrs(tcx, variant_def.def_id),
-                    NonExhaustive(..)
+                    rustc_hir::attrs::AttributeKind::NonExhaustive(..)
                 )
         })
         || adt.all_fields().any(|field_def| {
             find_attr!(
                 crate::compat::get_all_attrs(tcx, field_def.did),
-                NonExhaustive(..)
+                rustc_hir::attrs::AttributeKind::NonExhaustive(..)
             )
         })
 }
