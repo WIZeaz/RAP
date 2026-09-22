@@ -2,8 +2,10 @@
 use rustc_hir::LangItem;
 #[cfg(rapx_ge_100)]
 use rustc_hir::attrs::lang_items::LangItem;
+use rustc_hir::find_attr;
 use rustc_middle::ty::{self, Ty, TyCtxt, TyKind};
 use rustc_span::sym;
+use rustc_type_ir::TypeVisitable;
 
 fn is_fuzzable_std_ty<'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'tcx>, depth: usize) -> bool {
     match ty.kind() {
@@ -34,6 +36,46 @@ fn is_non_fuzzable_std_ty<'tcx>(ty: Ty<'tcx>, _tcx: TyCtxt<'tcx>) -> bool {
         _ => {}
     }
     false
+}
+
+fn ty_contains_region<'tcx>(ty: Ty<'tcx>) -> bool {
+    struct Visitor {
+        contains_region: bool,
+    }
+    impl<'tcx> ty::TypeVisitor<TyCtxt<'tcx>> for Visitor {
+        fn visit_region(&mut self, _: ty::Region<'tcx>) -> Self::Result {
+            self.contains_region = true;
+        }
+    }
+    let mut visitor = Visitor {
+        contains_region: false,
+    };
+    ty.visit_with(&mut visitor);
+    visitor.contains_region
+}
+
+/// Checks whether the given ADT, or any of its fields/variants, are marked as `#[non_exhaustive]`
+///
+/// This function is copied from Clippy
+pub fn has_non_exhaustive_attr(tcx: TyCtxt<'_>, adt: ty::AdtDef<'_>) -> bool {
+    adt.is_variant_list_non_exhaustive()
+        || find_attr!(
+            crate::compat::get_all_attrs(tcx, adt.did()),
+            NonExhaustive(..)
+        )
+        || adt.variants().iter().any(|variant_def| {
+            variant_def.is_field_list_non_exhaustive()
+                || find_attr!(
+                    crate::compat::get_all_attrs(tcx, variant_def.def_id),
+                    NonExhaustive(..)
+                )
+        })
+        || adt.all_fields().any(|field_def| {
+            find_attr!(
+                crate::compat::get_all_attrs(tcx, field_def.did),
+                NonExhaustive(..)
+            )
+        })
 }
 
 const MAX_DEPTH: usize = 64;
@@ -86,23 +128,18 @@ pub fn is_fuzzable_ty<'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'tcx>, depth: usize) -> bo
 
         // ADT
         TyKind::Adt(adt_def, args) => {
-            if adt_def.is_union() {
+            if adt_def.is_union() || has_non_exhaustive_attr(tcx, *adt_def) {
                 return false;
             }
-
-            if adt_def.is_variant_list_non_exhaustive() {
-                return false;
-            }
-
             // if adt contain region, then we consider it non-fuzzable
-            if args.iter().any(|arg| arg.as_region().is_some()) {
+            if ty_contains_region(ty) {
                 return false;
             }
 
             // if any field is not public or not fuzzable, then we consider it non-fuzzable
             if !adt_def.all_fields().all(|field| {
-                let field_ty = crate::helpers::mir_utils::field_ty(tcx, field, args);
-                field.vis.is_public() && is_fuzzable_ty(field_ty, tcx, depth + 1)
+                field.vis.is_public()
+                    && is_fuzzable_ty(field.ty(tcx, args).skip_norm_wip(), tcx, depth + 1)
             }) {
                 return false;
             }
@@ -114,8 +151,6 @@ pub fn is_fuzzable_ty<'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'tcx>, depth: usize) -> bo
 
             true
         }
-
-        // Other types are not fuzzable by default
         _ => false,
     }
 }

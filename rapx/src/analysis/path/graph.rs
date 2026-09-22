@@ -561,9 +561,8 @@ impl<'tcx> PathGraph<'tcx> {
             // more accurate than inline execution). Otherwise fall back to CFG
             // inlining for cross-crate callees with available MIR.
             let has_fn_sim = crate::verify::call_summary::builtin_models::is_modeled(Some(callee));
-            let is_slice_summary =
-                crate::helpers::mir_utils::is_index_method(tcx, callee)
-                    || crate::verify::call_summary::interprocedural::is_slice_get_summary(tcx, callee);
+            let is_slice_summary = crate::helpers::mir_utils::is_index_method(tcx, callee)
+                || crate::verify::call_summary::interprocedural::is_slice_get_summary(tcx, callee);
             if callee != caller_def_id
                 && tcx.is_mir_available(callee)
                 && !is_intrinsic

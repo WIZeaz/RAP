@@ -23,6 +23,7 @@ use rustc_middle::ty::{
 };
 use rustc_span::DUMMY_SP;
 use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt as _;
+use rustc_type_ir::InferCtxtLike;
 use std::collections::HashSet;
 
 static MAX_STEP_SET_SIZE: usize = 1000;
@@ -238,9 +239,7 @@ fn unify_ty<'tcx>(
                 let mono = identity
                     .iter()
                     .map(|arg| match arg.kind() {
-                        ty::GenericArgKind::Lifetime(region) => {
-                            resolve_var(infcx, region).into()
-                        }
+                        ty::GenericArgKind::Lifetime(region) => resolve_var(infcx, region).into(),
                         ty::GenericArgKind::Type(ty) => resolve_var(infcx, ty).into(),
                         ty::GenericArgKind::Const(ct) => resolve_var(infcx, ct).into(),
                     })
@@ -559,11 +558,8 @@ pub fn resolve_mono_apis<'tcx>(
     let ret = ret.filter(|mono| {
         is_args_fit_trait_bound(fn_did, &mono.value, tcx)
             && mono.value.iter().all(|arg| {
-                if let GenericArgKind::Type(ty) = arg.kind() {
-                    !utils::is_ty_unstable(ty, tcx)
-                } else {
-                    true
-                }
+                arg.as_type()
+                    .map_or(true, |ty| !utils::is_ty_unstable(ty, tcx))
             })
     });
 
@@ -607,7 +603,7 @@ pub fn get_unbound_generic_candidates<'tcx>(tcx: TyCtxt<'tcx>) -> Vec<ty::Ty<'tc
 // complexity = sum of complexity of each type argument
 pub fn get_mono_complexity<'tcx>(args: &GenericArgsRef<'tcx>) -> usize {
     args.iter().fold(0, |acc, arg| {
-        if let GenericArgKind::Type(ty) = arg.kind() {
+        if let Some(ty) = arg.as_type() {
             acc + utils::ty_complexity(ty)
         } else {
             acc

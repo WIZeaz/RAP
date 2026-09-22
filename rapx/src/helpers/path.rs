@@ -2,7 +2,6 @@ use itertools::Itertools;
 use rustc_hir::def::DefKind;
 use rustc_hir::def_id::{DefId, LOCAL_CRATE};
 use rustc_middle::ty::{self, Ty, TyCtxt, TyKind};
-use rustc_span::Ident;
 use std::collections::HashMap;
 
 /// A utility to resolve the actual visible path for re-export items.
@@ -17,12 +16,8 @@ pub fn get_path_resolver<'tcx>(tcx: TyCtxt<'tcx>) -> PathResolver<'tcx> {
     resolver
 }
 
-fn join_path_with_ident(current_path: &str, ident: Ident) -> String {
-    if current_path.is_empty() {
-        ident.as_str().to_owned()
-    } else {
-        format!("{current_path}::{ident}")
-    }
+fn join_path_with_double_colon(parts: &[&str]) -> String {
+    parts.iter().filter(|s| !s.is_empty()).join("::")
 }
 
 impl<'tcx> PathResolver<'tcx> {
@@ -34,6 +29,7 @@ impl<'tcx> PathResolver<'tcx> {
     }
 
     fn build(&mut self, mod_id: DefId, current_path: String) {
+        rap_trace!("enter module: {:?}, path: {}", mod_id, current_path);
         let childs = if mod_id.is_local() {
             self.tcx.module_children_local(mod_id.expect_local())
         } else {
@@ -41,12 +37,17 @@ impl<'tcx> PathResolver<'tcx> {
         };
 
         for child in childs {
-            if !child.vis.is_public() {
+            rap_trace!(
+                "processing child: {:?}, ident = {}",
+                child.res,
+                child.ident.as_str()
+            );
+            if !child.vis.is_public() || child.ident.as_str() == "_" {
                 continue;
             }
             if let Some(did) = child.res.opt_def_id() {
-                let path = join_path_with_ident(&current_path, child.ident);
-                self.path_map.entry(did).or_insert_with(|| path.clone());
+                let path = join_path_with_double_colon(&[&current_path, child.ident.as_str()]);
+                self.path_map.entry(did).or_insert(path.clone());
                 if self.tcx.def_kind(did).is_module_like() {
                     self.build(did, path);
                 }
@@ -68,6 +69,41 @@ impl<'tcx> PathResolver<'tcx> {
                 }
                 self.tcx.def_path_str(def_id)
             }
+        }
+    }
+
+    pub fn path_exists(&self, did: DefId) -> bool {
+        let Some((assoc_id, kind)) = self.tcx.assoc_parent(did) else {
+            // check non associated item
+            return did.is_local() && self.path_map.contains_key(&did)
+            // for did from other crate, we rely on tcx.visibility, 
+            // which is not 100% accurate, but should be good enough in most cases.
+                || !did.is_local() && self.tcx.visibility(did).is_public();
+        };
+
+        if !self.tcx.visibility(did).is_public() {
+            return false;
+        }
+
+        match kind {
+            DefKind::Impl { .. } => {
+                let self_ty = self
+                    .tcx
+                    .type_of(assoc_id)
+                    .instantiate_identity()
+                    .skip_norm_wip();
+                match self_ty.kind() {
+                    // Theoretically, we need to check visibility of generic args.
+                    // However, it is a bit complicated and we currently do not consider it.
+                    TyKind::Adt(adt_def, _) => return self.path_exists(adt_def.did()),
+                    _ => return true,
+                }
+            }
+            DefKind::Trait => return self.path_exists(assoc_id),
+            _ => panic!(
+                "unexpected parent kind: {:?} for assoc item: {:?}",
+                kind, did
+            ),
         }
     }
 
@@ -94,8 +130,32 @@ impl<'tcx> PathResolver<'tcx> {
             TyKind::Slice(inner_ty) => {
                 format!("[{}]", self.ty_str(*inner_ty))
             }
+            TyKind::Alias(is_rigid, alias_ty) => match alias_ty.kind {
+                ty::AliasTyKind::Projection { def_id } => {
+                    self.path_str_with_args(def_id, alias_ty.args)
+                }
+                ty::AliasTyKind::Opaque { .. } => {
+                    let ty_str = alias_ty.to_ty(self.tcx, *is_rigid).to_string();
+                    rap_warn!(
+                        "encounter opaque type {}, type string might be private",
+                        ty_str
+                    );
+                    ty_str
+                }
+                kind => {
+                    panic!(
+                        "unexpected alias kind: {:?} for alias_ty: {:?}",
+                        kind, alias_ty
+                    );
+                }
+            },
             _ => ty.to_string(),
         }
+    }
+
+    #[allow(unused)]
+    pub fn path_str(&self, def_id: DefId) -> String {
+        self.path_str_with_args(def_id, ty::GenericArgs::identity_for_item(self.tcx, def_id))
     }
 
     pub fn path_str_with_args(&self, def_id: DefId, args: ty::GenericArgsRef<'tcx>) -> String {
@@ -149,26 +209,18 @@ impl<'tcx> PathResolver<'tcx> {
                 }
             };
 
-            if !own_args.is_empty() {
-                format!(
-                    "{}::{}::{}",
-                    parent_path_str,
-                    self.tcx.item_name(def_id),
-                    self.generic_args_str(own_args)
-                )
-            } else {
-                format!("{}::{}", parent_path_str, self.tcx.item_name(def_id))
-            }
+            let args_str = self.non_syn_generic_args_str(def_id, own_args);
+
+            join_path_with_double_colon(&[
+                &parent_path_str,
+                self.tcx.item_name(def_id).as_str(),
+                &args_str,
+            ])
         } else {
-            if !args.is_empty() {
-                format!(
-                    "{}::{}",
-                    self.non_assoc_path_str(def_id),
-                    self.generic_args_str(args)
-                )
-            } else {
-                format!("{}", self.non_assoc_path_str(def_id))
-            }
+            // non assoc item
+            let path_str = self.non_assoc_path_str(def_id);
+            let args_str = self.non_syn_generic_args_str(def_id, args);
+            join_path_with_double_colon(&[path_str.as_str(), args_str.as_str()])
         }
     }
 
@@ -208,6 +260,26 @@ impl<'tcx> PathResolver<'tcx> {
                 .iter()
                 .map(|arg| self.generic_arg_str(*arg))
                 .join(", ")
+        )
+    }
+
+    fn non_syn_generic_args_str(&self, def_id: DefId, args: &[ty::GenericArg<'tcx>]) -> String {
+        let defs = self.tcx.generics_of(def_id).own_params.as_slice();
+
+        assert!(defs.len() == args.len());
+
+        self.generic_args_str(
+            args.iter()
+                .zip(defs.iter())
+                .filter_map(|(arg, param)| {
+                    if param.kind.is_synthetic() {
+                        None
+                    } else {
+                        Some(*arg)
+                    }
+                })
+                .collect_vec()
+                .as_slice(),
         )
     }
 }

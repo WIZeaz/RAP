@@ -1,22 +1,61 @@
+use crate::rap_warn;
 use chrono::Local;
 use fern::colors::{Color, ColoredLevelConfig};
 use fern::{self, Dispatch};
 use log::LevelFilter;
 
-fn log_level() -> LevelFilter {
-    if let Ok(s) = std::env::var("RAPX_LOG") {
-        match s.parse() {
-            Ok(level) => return level,
-            Err(err) => eprintln!("RAPX_LOG is invalid: {err}"),
+fn parse_rapx_log() -> (LevelFilter, Vec<(String, LevelFilter)>) {
+    let mut global_level = LevelFilter::Info;
+    let mut module_levels = Vec::new();
+    let crate_name = env!("CARGO_PKG_NAME");
+
+    let Ok(raw) = std::env::var("RAPX_LOG") else {
+        return (global_level, module_levels);
+    };
+
+    for item in raw.split(',') {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+
+        // `module:LEVEL`
+        if let Some((module, level)) = item.rsplit_once(':') {
+            let module = module.trim();
+            let level = level.trim();
+            if module.is_empty() {
+                rap_warn!("RAPX_LOG module is empty in entry: {item}");
+                continue;
+            }
+            match level.parse() {
+                Ok(parsed) => module_levels.push((format!("{}::{}", crate_name, module), parsed)),
+                Err(err) => rap_warn!("RAPX_LOG entry is invalid: {item} ({err})"),
+            }
+            continue;
+        }
+
+        match item.parse() {
+            Ok(parsed) => global_level = parsed,
+            Err(err) => rap_warn!("RAPX_LOG entry is invalid: {item} ({err})"),
         }
     }
-    LevelFilter::Info
+
+    (global_level, module_levels)
 }
 
 /// Detect `RAPX_LOG` environment variable first; if it's not set,
 /// default to INFO level.
+///
+/// Supported forms:
+/// - `RAPX_LOG=TRACE` -> global level
+/// - `RAPX_LOG=some::module:DEBUG` -> module level
+/// - `RAPX_LOG=TRACE,some::module:INFO,other::module:DEBUG` -> mixed
 pub fn init_log() -> Result<(), fern::InitError> {
-    let dispatch = Dispatch::new().level(log_level());
+    let (global_level, module_levels) = parse_RAPX_LOG();
+    let mut dispatch = Dispatch::new().level(global_level);
+    for (module, level) in module_levels {
+        dispatch = dispatch.level_for(module, level);
+    }
 
     let color_line = ColoredLevelConfig::new()
         .error(Color::Red)
@@ -54,62 +93,62 @@ pub fn init_log() -> Result<(), fern::InitError> {
 #[macro_export]
 macro_rules! rap_trace {
     ($($arg:tt)+) => (
-        ::log::trace!(target: "RAPx", $($arg)+)
+        ::log::trace!($($arg)+)
     );
 }
 
 #[macro_export]
 macro_rules! rap_debug {
     ($($arg:tt)+) => (
-        ::log::debug!(target: "RAPx", $($arg)+)
+        ::log::debug!($($arg)+)
     );
 }
 
 #[macro_export]
 macro_rules! rap_info {
     (green, $($arg:tt)+) => (
-        ::log::info!(target: "RAPx", "\x1B[32m{}\x1B[0m", format_args!($($arg)+))
+        ::log::info!("\x1B[32m{}\x1B[0m", format_args!($($arg)+))
     );
     (yellow, $($arg:tt)+) => (
-        ::log::info!(target: "RAPx", "\x1B[33m{}\x1B[0m", format_args!($($arg)+))
+        ::log::info!("\x1B[33m{}\x1B[0m", format_args!($($arg)+))
     );
     (red, $($arg:tt)+) => (
-        ::log::info!(target: "RAPx", "\x1B[31m{}\x1B[0m", format_args!($($arg)+))
+        ::log::info!("\x1B[31m{}\x1B[0m", format_args!($($arg)+))
     );
     ($($arg:tt)+) => (
-        ::log::info!(target: "RAPx", $($arg)+)
+        ::log::info!($($arg)+)
     );
 }
 
 #[macro_export]
 macro_rules! rap_warn {
     (green, $($arg:tt)+) => (
-        ::log::warn!(target: "RAPx", "\x1B[32m{}\x1B[0m", format_args!($($arg)+))
+        ::log::warn!("\x1B[32m{}\x1B[0m", format_args!($($arg)+))
     );
     (yellow, $($arg:tt)+) => (
-        ::log::warn!(target: "RAPx", "\x1B[33m{}\x1B[0m", format_args!($($arg)+))
+        ::log::warn!("\x1B[33m{}\x1B[0m", format_args!($($arg)+))
     );
     (red, $($arg:tt)+) => (
-        ::log::warn!(target: "RAPx", "\x1B[31m{}\x1B[0m", format_args!($($arg)+))
+        ::log::warn!("\x1B[31m{}\x1B[0m", format_args!($($arg)+))
     );
     ($($arg:tt)+) => (
-        ::log::warn!(target: "RAPx", $($arg)+)
+        ::log::warn!($($arg)+)
     );
 }
 
 #[macro_export]
 macro_rules! rap_error {
     (green, $($arg:tt)+) => (
-        ::log::error!(target: "RAPx", "\x1B[32m{}\x1B[0m", format_args!($($arg)+))
+        ::log::error!("\x1B[32m{}\x1B[0m", format_args!($($arg)+))
     );
     (yellow, $($arg:tt)+) => (
-        ::log::error!(target: "RAPx", "\x1B[33m{}\x1B[0m", format_args!($($arg)+))
+        ::log::error!("\x1B[33m{}\x1B[0m", format_args!($($arg)+))
     );
     (red, $($arg:tt)+) => (
-        ::log::error!(target: "RAPx", "\x1B[31m{}\x1B[0m", format_args!($($arg)+))
+        ::log::error!("\x1B[31m{}\x1B[0m", format_args!($($arg)+))
     );
     ($($arg:tt)+) => (
-        ::log::error!(target: "RAPx", $($arg)+)
+        ::log::error!($($arg)+)
     );
 }
 

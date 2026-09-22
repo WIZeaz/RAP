@@ -93,18 +93,23 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             match &best {
                 None => best = Some(candidate),
                 Some(existing) => {
-                    let ex_is_param =
-                        existing.local.as_usize() >= 1
-                            && existing.local.as_usize() <= self.body.arg_count;
+                    let ex_is_param = existing.local.as_usize() >= 1
+                        && existing.local.as_usize() <= self.body.arg_count;
                     let ex_is_owned = existing.is_owned();
-                    let rank = |p: bool, o: bool| if p { 0 } else if o { 1 } else { 2 };
+                    let rank = |p: bool, o: bool| {
+                        if p {
+                            0
+                        } else if o {
+                            1
+                        } else {
+                            2
+                        }
+                    };
                     let cand_rank = rank(is_param, is_owned);
                     let ex_rank = rank(ex_is_param, ex_is_owned);
                     if cand_rank < ex_rank {
                         best = Some(candidate);
-                    } else if cand_rank == ex_rank
-                        && local.as_usize() < existing.local.as_usize()
-                    {
+                    } else if cand_rank == ex_rank && local.as_usize() < existing.local.as_usize() {
                         best = Some(candidate);
                     }
                 }
@@ -299,13 +304,10 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
                             mir_place.local.as_usize(),
                             &origin_map,
                         );
-                        if !fields.is_empty()
-                            && root >= 1
-                            && root <= vm_state.body.arg_count
-                        {
+                        if !fields.is_empty() && root >= 1 && root <= vm_state.body.arg_count {
                             let root_ty = vm_state.body.local_decls
                                 [rustc_middle::mir::Local::from_usize(root)]
-                                .ty;
+                            .ty;
                             if let rustc_middle::ty::TyKind::Ref(
                                 _,
                                 _,
@@ -343,27 +345,28 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
                         && let Some(mir_place) =
                             crate::helpers::mir_utils::operand_mir_place(origin_arg)
                     {
-                        let origin_map =
-                            collect_local_origins(vm_state.tcx, checkpoint.caller);
-                        let (root, fields) =
-                            alias_hazard::deep_resolve_place(mir_place.local.as_usize(), &origin_map);
+                        let origin_map = collect_local_origins(vm_state.tcx, checkpoint.caller);
+                        let (root, fields) = alias_hazard::deep_resolve_place(
+                            mir_place.local.as_usize(),
+                            &origin_map,
+                        );
                         if !fields.is_empty() && root >= 1 && root <= vm_state.body.arg_count {
                             let resolved = PlaceKey::from_origin(root, fields);
-                            if let Some(sfo) =
-                                alias_hazard::self_field_origin(vm_state.tcx, checkpoint.caller, &resolved)
-                            {
+                            if let Some(sfo) = alias_hazard::self_field_origin(
+                                vm_state.tcx,
+                                checkpoint.caller,
+                                &resolved,
+                            ) {
                                 // A caller that already declares an `Alias`
                                 // precondition (e.g. `Ptr2Ref`) relies on its
                                 // caller rather than field encapsulation, so the
                                 // encapsulation check must not fire there.
                                 if !fn_has_alias_requires(vm_state.tcx, checkpoint.caller) {
-                                    if let Some(reason) =
-                                        alias_hazard::escaped_self_field_violation(
-                                            vm_state.tcx,
-                                            checkpoint.caller,
-                                            &sfo,
-                                        )
-                                    {
+                                    if let Some(reason) = alias_hazard::escaped_self_field_violation(
+                                        vm_state.tcx,
+                                        checkpoint.caller,
+                                        &sfo,
+                                    ) {
                                         return VmAliasResult::Failed(reason);
                                     }
                                 }

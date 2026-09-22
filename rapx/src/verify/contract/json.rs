@@ -218,8 +218,7 @@ pub(crate) fn entry_to_property<'tcx>(
 ) -> Vec<Property<'tcx>> {
     if let Some(disjuncts) = &entry.any {
         if disjuncts.len() >= 2 {
-            let mut prop =
-                any_entry_to_property(tcx, def_id, disjuncts, param_names, has_names);
+            let mut prop = any_entry_to_property(tcx, def_id, disjuncts, param_names, has_names);
             prop.apply_kind(entry.kind.as_deref());
             return vec![prop];
         }
@@ -282,7 +281,12 @@ fn any_entry_to_property<'tcx>(
                 let mut group: Vec<Property<'tcx>> = Vec::new();
                 for entry in entries {
                     group.extend(resolve_entry_group(
-                        tcx, def_id, entry, param_names, has_names, true,
+                        tcx,
+                        def_id,
+                        entry,
+                        param_names,
+                        has_names,
+                        true,
                     ));
                 }
                 if !group.is_empty() {

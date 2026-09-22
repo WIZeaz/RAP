@@ -81,11 +81,10 @@ impl PropertyChecker {
         // The local the `Owning(p)` argument names (e.g. `raw` in
         // `Box::from_raw(raw)`), resolved to the caller's local.
         let raw_local = property.target_place().and_then(|cp| match cp.base {
-            crate::verify::contract::PlaceBase::Arg(n) => {
-                checkpoint.args.get(n).and_then(|op| {
-                    crate::helpers::mir_utils::operand_mir_place(op).map(|p| p.local)
-                })
-            }
+            crate::verify::contract::PlaceBase::Arg(n) => checkpoint
+                .args
+                .get(n)
+                .and_then(|op| crate::helpers::mir_utils::operand_mir_place(op).map(|p| p.local)),
             crate::verify::contract::PlaceBase::Local(n) => {
                 Some(rustc_middle::mir::Local::from_usize(n))
             }

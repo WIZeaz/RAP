@@ -444,7 +444,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let TyKind::Adt(adt, substs) = dest_ty.kind() else {
             return false;
         };
-        if !self.tcx.is_diagnostic_item(rustc_span::sym::Option, adt.did()) {
+        if !self
+            .tcx
+            .is_diagnostic_item(rustc_span::sym::Option, adt.did())
+        {
             return false;
         }
         let payload_ty = substs.type_at(0);
@@ -925,10 +928,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     .map(|(_, f)| f.clone())
                     .collect();
                 for fields in caller_field_keys {
-                    if let Some(fv) = saved_field_values
-                        .get(&(src, fields.clone()))
-                        .cloned()
-                    {
+                    if let Some(fv) = saved_field_values.get(&(src, fields.clone())).cloned() {
                         self.set_field_value(callee_param, fields, fv);
                     }
                 }
@@ -1320,11 +1320,17 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             return false;
         };
         let is_size = crate::def_id::contains(
-            &[crate::def_id::mem_size_of(), crate::def_id::intrinsics_size_of()],
+            &[
+                crate::def_id::mem_size_of(),
+                crate::def_id::intrinsics_size_of(),
+            ],
             callee,
         );
         let is_align = crate::def_id::contains(
-            &[crate::def_id::mem_align_of(), crate::def_id::intrinsics_align_of()],
+            &[
+                crate::def_id::mem_align_of(),
+                crate::def_id::intrinsics_align_of(),
+            ],
             callee,
         );
         if !is_size && !is_align {
@@ -1383,15 +1389,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     invariants: ValueInvariants::default(),
                 });
                 let arg_local = caller_arg_locals.get(*arg).copied().flatten();
-                let pointee = arg_local
-                    .and_then(|l| self.field_values.get(&(l, Vec::new())).cloned());
+                let pointee =
+                    arg_local.and_then(|l| self.field_values.get(&(l, Vec::new())).cloned());
                 if let Some(p) = pointee {
                     val = p;
                 } else if let Some(elem) = crate::helpers::mir_utils::pointee_ty(dest_ty) {
-                    let is_slice = matches!(
-                        elem.kind(),
-                        rustc_middle::ty::TyKind::Slice(_)
-                    );
+                    let is_slice = matches!(elem.kind(), rustc_middle::ty::TyKind::Slice(_));
                     if is_slice {
                         let elem_align = self.align_sym(elem);
                         let (alloc_id, base) = self.allocate_external(
@@ -1833,13 +1836,16 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let element_offset = if stride == Some(1) {
                         None
                     } else {
-                        match base.provenance.as_ref().and_then(|p| p.element_offset.clone()) {
+                        match base
+                            .provenance
+                            .as_ref()
+                            .and_then(|p| p.element_offset.clone())
+                        {
                             Some(e) => Some(Int::add(self.ctx, &[&e, &offset.term])),
-                            None
-                                if base
-                                    .provenance
-                                    .as_ref()
-                                    .is_some_and(|p| p.offset.as_u64() == Some(0)) =>
+                            None if base
+                                .provenance
+                                .as_ref()
+                                .is_some_and(|p| p.offset.as_u64() == Some(0)) =>
                             {
                                 Some(offset.term.clone())
                             }
@@ -1897,7 +1903,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let element_offset = if stride == Some(1) {
                         None
                     } else {
-                        match base.provenance.as_ref().and_then(|p| p.element_offset.clone()) {
+                        match base
+                            .provenance
+                            .as_ref()
+                            .and_then(|p| p.element_offset.clone())
+                        {
                             Some(e) => Some(Int::sub(self.ctx, &[&e, &offset.term])),
                             None => None,
                         }
@@ -2301,8 +2311,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // (reverse).
                 if let Some(slice) = args.get(*arg) {
                     if let Some(len) = self.slice_len_from_value(slice) {
-                        let payload =
-                            self.fresh_int(&format!("scan_idx_{}", dest.as_usize()));
+                        let payload = self.fresh_int(&format!("scan_idx_{}", dest.as_usize()));
                         self.path_conditions.push(payload.lt(&len));
                         let zero = Int::from_u64(self.ctx, 0);
                         self.path_conditions.push(payload.ge(&zero));
@@ -2473,8 +2482,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                 }
                                 _ => crate::verify::call_summary::vec_elem_ty(self.tcx, arg_val.ty),
                             };
-                            let heap_align =
-                                elem_ty.map(|ty| self.align_sym(ty)).unwrap_or_else(|| Int::from_u64(self.ctx, 1));
+                            let heap_align = elem_ty
+                                .map(|ty| self.align_sym(ty))
+                                .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                             if let Some(old_data) = self.alloc(prov.alloc_id).slice_data {
                                 // Subsequent mutation: invalidate old heap data.
                                 self.alloc_mut(old_data).dead = true;
@@ -2562,7 +2572,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         Int::from_u64(self.ctx, *elem_size)
                     };
                     let total = Int::mul(self.ctx, &[&size_val.term, &elem_sz_term]);
-                    let heap_align = elem_ty.map(|ty| self.align_sym(ty)).unwrap_or_else(|| Int::from_u64(self.ctx, 1));
+                    let heap_align = elem_ty
+                        .map(|ty| self.align_sym(ty))
+                        .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                     let (alloc_id, base) = self.allocate(total, heap_align, elem_ty);
                     self.alloc_mut(alloc_id).slice_len = Some(size_val.term.clone());
                     let prov = Provenance {
@@ -2660,7 +2672,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let size = pointee
                     .map(|ty| self.size_sym(ty))
                     .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
-                let align = pointee.map(|ty| self.align_sym(ty)).unwrap_or_else(|| Int::from_u64(self.ctx, 1));
+                let align = pointee
+                    .map(|ty| self.align_sym(ty))
+                    .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                 let (alloc_id, base) = self.allocate(size, align, pointee);
                 self.alloc_mut(alloc_id).initialized = true;
                 let align_n = pointee.map(|ty| self.align_sym(ty));
@@ -2730,7 +2744,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         Int::from_u64(self.ctx, *elem_size)
                     };
                     let total = Int::mul(self.ctx, &[&size_val.term, &elem_sz]);
-                    let heap_align = elem_ty.map(|ty| self.align_sym(ty)).unwrap_or_else(|| Int::from_u64(self.ctx, 1));
+                    let heap_align = elem_ty
+                        .map(|ty| self.align_sym(ty))
+                        .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                     let (alloc_id, base) = self.allocate_external(total, heap_align, elem_ty);
                     let dest_alloc_id = self.local_alloc_ids.get(&dest).copied();
                     if let Some(dest_alloc_id) = dest_alloc_id {
@@ -2798,7 +2814,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         Int::from_u64(self.ctx, *elem_size)
                     };
                     let total = Int::mul(self.ctx, &[&cap_val.term, &elem_sz]);
-                    let heap_align = elem_ty.map(|ty| self.align_sym(ty)).unwrap_or_else(|| Int::from_u64(self.ctx, 1));
+                    let heap_align = elem_ty
+                        .map(|ty| self.align_sym(ty))
+                        .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                     let (alloc_id, base) = self.allocate_external(total, heap_align, elem_ty);
                     let dest_alloc_id = self.local_alloc_ids.get(&dest).copied();
                     if let Some(dest_alloc_id) = dest_alloc_id {
@@ -2859,7 +2877,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 self.ensure_local_allocation(dest);
                 let dest_ty = self.body.local_decls[dest].ty;
                 let elem_ty = crate::verify::call_summary::vec_elem_ty(self.tcx, dest_ty);
-                let heap_align = elem_ty.map(|ty| self.align_sym(ty)).unwrap_or_else(|| Int::from_u64(self.ctx, 1));
+                let heap_align = elem_ty
+                    .map(|ty| self.align_sym(ty))
+                    .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                 // Use the receiver's slice length as the allocation size when
                 // known (`to_vec`/`into_vec`), else a symbolic upper bound.
                 let size = args
@@ -3385,7 +3405,10 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // (`_t = &mut (*self)`) whose local does not carry the field values,
         // while the parameter and the shared reborrow (`_t = &(*self)`) do.
         let mut candidates: Vec<Local> = Vec::new();
-        if let Some(l) = args.get(arg).and_then(|v| self.find_local_by_address(&v.term)) {
+        if let Some(l) = args
+            .get(arg)
+            .and_then(|v| self.find_local_by_address(&v.term))
+        {
             candidates.push(l);
         }
         if let Some(l) = caller_arg_locals.get(arg).copied().flatten() {

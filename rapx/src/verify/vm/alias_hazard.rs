@@ -320,7 +320,11 @@ pub(super) fn any_struct_field_origin(
 /// The mutability (`Not` / `Mut`) of the borrow carried by `self_local`'s type
 /// (a `&T` / `&mut T`), or `None` if it is not a reference. `self_local` is
 /// `_1` for a method receiver, and any parameter for a free function.
-fn self_borrow_mutability(tcx: TyCtxt<'_>, def_id: DefId, self_local: Local) -> Option<ty::Mutability> {
+fn self_borrow_mutability(
+    tcx: TyCtxt<'_>,
+    def_id: DefId,
+    self_local: Local,
+) -> Option<ty::Mutability> {
     let body = tcx.optimized_mir(def_id);
     match body.local_decls[self_local].ty.kind() {
         TyKind::Ref(_, _, m) => Some(*m),
@@ -508,11 +512,7 @@ fn free_fns_for_struct(tcx: TyCtxt<'_>, struct_def_id: DefId) -> Vec<(DefId, Vec
 
 /// Return the parameter locals of `def_id` whose type is a `&Struct` /
 /// `&mut Struct` reference to `struct_def_id`.
-fn struct_ref_param_locals(
-    tcx: TyCtxt<'_>,
-    def_id: DefId,
-    struct_def_id: DefId,
-) -> Vec<Local> {
+fn struct_ref_param_locals(tcx: TyCtxt<'_>, def_id: DefId, struct_def_id: DefId) -> Vec<Local> {
     let body = tcx.optimized_mir(def_id);
     (1..=body.arg_count)
         .filter_map(|i| {

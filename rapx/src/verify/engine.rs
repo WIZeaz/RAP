@@ -108,7 +108,8 @@ impl<'tcx> VerifyEngine<'tcx> {
             items.extend(backward.items);
             // Insert inlined-callee boundary markers (argument binding / return
             // write-back) based on def_id transitions across the path.
-            items = Self::inject_inline_boundaries(items, tree, &local_to_global, checkpoint.caller);
+            items =
+                Self::inject_inline_boundaries(items, tree, &local_to_global, checkpoint.caller);
 
             let wrapped = crate::verify::slicer::ProofGoal {
                 path: backward.path,
@@ -162,9 +163,8 @@ impl<'tcx> VerifyEngine<'tcx> {
             // and never uses `slot` again).
             let mut seen = std::collections::HashSet::new();
             let unrolled = path.iter().any(|&g| {
-                tree.block_fn_of(g).is_some_and(|(def, local)| {
-                    def == caller && !seen.insert(local)
-                })
+                tree.block_fn_of(g)
+                    .is_some_and(|(def, local)| def == caller && !seen.insert(local))
             });
             if unrolled {
                 continue;

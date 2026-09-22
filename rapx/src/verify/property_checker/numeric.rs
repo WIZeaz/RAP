@@ -130,11 +130,13 @@ impl PropertyChecker {
         // For a `SliceIndex` range (e.g. `..n`), `ValidNum(index < CAPACITY)`
         // must compare the range's *exclusive end* (`n <= CAPACITY`) rather than
         // the opaque range value. Detect ranges and adjust `<` to `<=`.
-        let (lhs, is_range) =
-            match self.range_end_of_lhs(vm_state, checkpoint, &pred.lhs) {
-                Some(end) => (end, true),
-                None => (self.eval_contract_expr(vm_state, checkpoint, &pred.lhs)?, false),
-            };
+        let (lhs, is_range) = match self.range_end_of_lhs(vm_state, checkpoint, &pred.lhs) {
+            Some(end) => (end, true),
+            None => (
+                self.eval_contract_expr(vm_state, checkpoint, &pred.lhs)?,
+                false,
+            ),
+        };
         let rhs = self.eval_contract_expr(vm_state, checkpoint, &pred.rhs)?;
         let condition = match pred.op {
             RelOp::Le => lhs.le(&rhs),

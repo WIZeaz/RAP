@@ -17,7 +17,6 @@ extern crate rustc_abi;
 extern crate rustc_ast;
 extern crate rustc_data_structures;
 extern crate rustc_driver;
-
 extern crate rustc_hir;
 extern crate rustc_hir_pretty;
 extern crate rustc_index;
@@ -29,9 +28,7 @@ extern crate rustc_mir_dataflow;
 extern crate rustc_public;
 extern crate rustc_session;
 extern crate rustc_span;
-
 extern crate rustc_trait_selection;
-
 extern crate rustc_type_ir;
 extern crate thin_vec;
 
@@ -135,10 +132,12 @@ impl Callbacks for RapCallback {
             .as_deref()
             .map(|s| matches!(s, "core" | "std" | "alloc" | "proc_macro" | "test"))
             .unwrap_or(false);
+
         preprocess::dummy_fns::create_dummy_fns(krate, build_std);
         preprocess::ssa_preprocess::create_ssa_struct(krate, build_std);
         Compilation::Continue
     }
+
     fn after_analysis<'tcx>(&mut self, _compiler: &Compiler, tcx: TyCtxt<'tcx>) -> Compilation {
         rap_trace!("Execute after_analysis() of compiler callbacks");
         rustc_public::rustc_internal::run(tcx, || {

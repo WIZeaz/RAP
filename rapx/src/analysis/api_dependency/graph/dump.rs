@@ -2,6 +2,7 @@ use super::dep_edge::DepEdge;
 use super::dep_node::DepNode;
 use crate::analysis::api_dependency::ApiDependencyGraph;
 use crate::helpers::path::{PathResolver, get_path_resolver};
+use crate::utils::fs::rap_create_file;
 use anyhow::Result;
 use itertools::Itertools;
 use petgraph::Graph;
@@ -17,6 +18,7 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
 enum NodeInfo {
     Api {
         path: String,
@@ -28,6 +30,7 @@ enum NodeInfo {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
 struct EdgeInfo {
     from: usize,
     to: usize,
@@ -151,7 +154,7 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
              edge_ref: petgraph::graph::EdgeReference<DepEdge>| {
                 let color = match edge_ref.weight() {
                     DepEdge::Arg { .. } | DepEdge::Ret => "black",
-                    DepEdge::Transform(_) => "darkorange",
+                    DepEdge::Transform { .. } => "darkorange",
                 };
                 format!("label=\"{}\", color = {}", edge_ref.weight(), color)
             };

@@ -352,10 +352,7 @@ pub(crate) fn emit_results_counts_and_checkpoints<'tcx>(
         .count();
     let hazard_failed = all_results
         .iter()
-        .filter(|r| {
-            r.property.contract_kind() == ContractKind::Hazard
-                && !r.result.is_proved()
-        })
+        .filter(|r| r.property.contract_kind() == ContractKind::Hazard && !r.result.is_proved())
         .count();
 
     let mut groups: IndexMap<(CheckpointLocation, String), Vec<&PropertyCheckResult<'_>>> =
