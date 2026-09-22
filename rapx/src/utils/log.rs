@@ -51,7 +51,7 @@ fn parse_rapx_log() -> (LevelFilter, Vec<(String, LevelFilter)>) {
 /// - `RAPX_LOG=some::module:DEBUG` -> module level
 /// - `RAPX_LOG=TRACE,some::module:INFO,other::module:DEBUG` -> mixed
 pub fn init_log() -> Result<(), fern::InitError> {
-    let (global_level, module_levels) = parse_RAPX_LOG();
+    let (global_level, module_levels) = parse_rapx_log();
     let mut dispatch = Dispatch::new().level(global_level);
     for (module, level) in module_levels {
         dispatch = dispatch.level_for(module, level);
