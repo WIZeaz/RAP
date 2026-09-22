@@ -18,13 +18,12 @@ use rustc_middle::{
 };
 use rustc_span::{DUMMY_SP, Symbol};
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 #[cfg(not(rapx_has_skip_norm_wip))]
 use crate::compat::SkipNormWip;
 
 use crate::{
-    analysis::alias::{LocalOriginMap, collect_local_origins},
     compat::FxHashMap,
     helpers::mir_scan::Checkpoint,
 };
@@ -423,32 +422,6 @@ pub fn call_destination<'tcx>(tcx: TyCtxt<'tcx>, checkpoint: &Checkpoint<'tcx>) 
 
 // ── Place resolution utilities ───────────────────────────────────
 
-/// Follow local-origin associations transitively to resolve to the
-/// ultimate source (parameter or root local) and accumulated field path.
-pub fn deep_resolve_place(mut local: usize, origins: &LocalOriginMap) -> (usize, Vec<usize>) {
-    let mut seen = HashSet::new();
-    let mut all_fields: Vec<usize> = Vec::new();
-    loop {
-        if !seen.insert(local) {
-            return (local, all_fields);
-        }
-        match origins.get(&local) {
-            Some((l, fields)) => {
-                let mut combined = fields.clone();
-                combined.extend(all_fields.iter());
-                all_fields = combined;
-                if *l == 1 {
-                    return (1, all_fields);
-                }
-                local = *l;
-            }
-            None => {
-                return (local, all_fields);
-            }
-        }
-    }
-}
-
 // ── Block reachability ───────────────────────────────────────────
 
 /// Collect all basic blocks reachable after a call block's normal return, or —
@@ -485,31 +458,6 @@ pub fn blocks_reachable_after_call(
 
 // ── MIR place alias mapping ──────────────────────────────────────
 
-/// Build a mapping from MIR locals to their resolved PlaceKey origins.
-pub fn collect_place_aliases(tcx: TyCtxt<'_>, def_id: DefId) -> HashMap<Local, PlaceKey> {
-    collect_local_origins(tcx, def_id)
-        .into_iter()
-        .map(|(local, (origin_local, fields))| {
-            (
-                Local::from_usize(local),
-                PlaceKey::from_origin(origin_local, fields),
-            )
-        })
-        .collect()
-}
-
-/// Resolve a MIR place through alias mapping to get a canonical PlaceKey.
-pub fn resolve_mir_place<'tcx>(
-    place: &Place<'tcx>,
-    aliases: &HashMap<Local, PlaceKey>,
-) -> PlaceKey {
-    let key = PlaceKey::from_mir_place(place);
-    if !key.fields.is_empty() {
-        return key;
-    }
-    aliases.get(&place.local).cloned().unwrap_or(key)
-}
-
 // ── Rvalue place scanning ────────────────────────────────────────
 
 /// Check whether any MIR place used in an rvalue matches a predicate.
@@ -529,15 +477,6 @@ pub fn rvalue_any_place_matching<'tcx>(
 }
 
 // ── Pointer arithmetic origin tracing ────────────────────────────
-
-/// Trace a place back to its root local via local origin map.
-pub fn trace_place_root(origins: &LocalOriginMap, place: &PlaceKey) -> Option<(usize, Vec<usize>)> {
-    let Some(local) = place.local() else {
-        return None;
-    };
-    let (root_local, root_fields) = deep_resolve_place(local.as_usize(), origins);
-    Some((root_local, root_fields))
-}
 
 /// Resolve a `const` item (e.g. `const CAPACITY: usize = 2 * B - 1`) by name in
 /// the local crate to its evaluated unsigned-integer value, for use in the

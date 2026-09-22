@@ -262,6 +262,8 @@ sound_tests! {
     alias_sound_12: "verify_units/alias_sound_12" => "sound_vec_reserve_before_raw_slice",
     alias_sound_13: "verify_units/alias_sound_13" => "as_bytes_mut_sound",
     alias_sound_14: "verify_units/alias_sound_14" => "as_bytes_sound",
+    alias_sound_15: "verify_units/alias_sound_15" => "sound_split_shared_dead_then_mut",
+    alias_sound_16: "verify_units/alias_sound_16" => "sound_two_independent_fields",
 }
 
 // ================ Alias Unsound Verify Cases =============
@@ -278,6 +280,7 @@ unsound_hazard_tests! {
     alias_unsound_25: "verify_units/alias_unsound_25" => "Node::next_mut" => "Alias",
     alias_unsound_26: "verify_units/alias_unsound_26" => "Node::get_next" => "Alias",
     alias_unsound_27: "verify_units/alias_unsound_27" => "Outer::get" => "Alias",
+    alias_unsound_29: "verify_units/alias_unsound_29" => "unsound_split_shared_then_mut" => "Alias",
 }
 
 // An *independent* `*mut T` must be assumed to alias the shared `&[T]`
