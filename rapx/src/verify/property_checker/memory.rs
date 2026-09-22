@@ -364,11 +364,36 @@ impl PropertyChecker {
         }
 
         let Some(alloc_id) = value.provenance_alloc_id() else {
+            // `ManuallyDrop::drop(&mut slot)` on an *empty* container (`Vec::new`
+            // / `String::new`) has no heap allocation behind the reference: the
+            // container value is valid and there is nothing to free, so its
+            // `ValidPtr`/`Allocated` precondition holds vacuously.
+            if crate::verify::api_classify::is_manually_drop_drop(checkpoint.callee) {
+                return CheckResult::ProvedByRule;
+            }
             return CheckResult::Unknown;
         };
 
         if vm_state.alloc(alloc_id).dead {
-            if !Self::is_maybe_uninit_ptr(vm_state, &value, alloc_id) {
+            let unrolled = vm_state.path.as_ref().is_some_and(|p| {
+                let mut seen = FxHashSet::default();
+                p.steps.iter().any(|s| match s {
+                    crate::verify::path_extractor::PathStep::Block(b) => {
+                        !seen.insert(b.as_usize())
+                    }
+                    _ => false,
+                })
+            });
+            // A `ManuallyDrop::drop` frees the slot's allocation at *this*
+            // checkpoint, so its `ValidPtr`/`Allocated` precondition concerns
+            // the pre-drop (still-live) state.  A double free — an
+            // already-dead allocation reaching a *second* drop — must still
+            // fail, so the exemption is lifted when `double_freed` records it
+            // (unless the repeated block is only a loop-unrolled iteration).
+            let dropped_here =
+                crate::verify::api_classify::is_manually_drop_drop(checkpoint.callee)
+                    && (unrolled || !vm_state.double_freed.contains(&alloc_id));
+            if !dropped_here && !Self::is_maybe_uninit_ptr(vm_state, &value, alloc_id) {
                 let is_param_ref = vm_state.resolve_origin(&value).map_or(false, |origin| {
                     origin.local.as_usize() <= vm_state.body.arg_count
                         && origin.local != Local::from_usize(0)
@@ -379,13 +404,17 @@ impl PropertyChecker {
             }
         }
 
-        let required_ty = property.args().get(1).and_then(|a| {
-            if let PropertyArg::Ty(ty) = a {
-                Some(*ty)
-            } else {
-                None
-            }
-        });
+        let required_ty = property
+            .args()
+            .get(1)
+            .and_then(|a| {
+                if let PropertyArg::Ty(ty) = a {
+                    Some(*ty)
+                } else {
+                    None
+                }
+            })
+            .map(|ty| self.instantiate_callsite_ty(vm_state, checkpoint, ty));
 
         let alloc = vm_state.alloc(alloc_id);
         if let (Some(alloc_elem_ty), Some(req_ty)) = (alloc.element_ty, required_ty) {
@@ -414,6 +443,26 @@ impl PropertyChecker {
                 (TyKind::Param(_), TyKind::Param(_))
             ) {
                 return CheckResult::ProvedByRule;
+            }
+            // Smart-pointer indirection: `Allocated(slot, Box<T>, n)` after
+            // provenance penetration (`&mut ManuallyDrop<Box<T>>` → the `T`
+            // allocation) declares the wrapper type while the allocation holds
+            // its pointee. Peeling the wrapper down to `T` discharges the check
+            // (only when the declared type *wraps* the allocation element, so a
+            // plain type mismatch still falls through to the size check).
+            if req_ty != alloc_elem_ty {
+                let mut peeled = req_ty;
+                loop {
+                    match super::util::smart_pointer_pointee(peeled) {
+                        Some(inner) if inner != peeled => {
+                            if inner == alloc_elem_ty {
+                                return CheckResult::ProvedByRule;
+                            }
+                            peeled = inner;
+                        }
+                        _ => break,
+                    }
+                }
             }
         }
 

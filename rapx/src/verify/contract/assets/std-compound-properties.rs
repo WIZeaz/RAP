@@ -29,6 +29,12 @@ Ptr2Ref(p: Ptr, T: Ty) { Init(p, T, 1) && ValidPtr(p, T, 1) && Align(p, T) && Al
 /// dereferenceable), aligned, no aliasing conflict.
 Ptr2RefUninit(p: Ptr, T: Ty) { Typed(p, T) && ValidPtr(p, T, 1) && Align(p, T) && Alias(p) }
 
+/// Dropping `*p` (e.g. `ManuallyDrop::drop(&mut slot)`): the pointee is a valid
+/// value (`ValidPtr`), and after the drop the freed memory must not be used
+/// again (`Alias` hazard — the `ManuallyDrop` wrapper stays live, so a later use
+/// reads through the freed allocation).
+Drop(p: Ptr, T: Ty) { ValidPtr(p, T, 1) && Alias(p) }
+
 /// The pointer matches the `Layout` it was allocated with (`realloc`/`dealloc`
 /// require "the same layout that was used to allocate the block"): aligned to
 /// `layout.align()`, and pointing at `layout.size()` heap bytes.

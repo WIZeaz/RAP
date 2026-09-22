@@ -147,6 +147,12 @@ impl<'target, 'tcx> VerifyDriver<'target, 'tcx> {
         property: &Property<'tcx>,
     ) -> Vec<(CheckResult, String)> {
         match property {
+            Property::Atom(atom)
+                if atom.kind == PropertyKind::Alias
+                    && crate::verify::api_classify::is_manually_drop_drop(view.checkpoint.callee) =>
+            {
+                self.engine.check_drop_from_tree(view.tree, view.checkpoint, property)
+            }
             Property::Atom(_) => self.engine.check_callsite_from_tree(
                 view.tree,
                 view.checkpoint,

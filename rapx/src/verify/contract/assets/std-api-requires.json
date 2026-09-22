@@ -528,6 +528,13 @@
       "args": [
         "slot"
       ]
+    },
+    {
+      "tag": "Drop",
+      "args": [
+        "slot",
+        "T"
+      ]
     }
   ],
   "core::mem::maybe_uninit::assume_init": [

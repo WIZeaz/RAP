@@ -8,6 +8,7 @@ use z3::Config;
 use std::collections::HashMap;
 
 use rustc_hir::def_id::DefId;
+use rustc_middle::mir::{BasicBlock, Local, Operand, Rvalue, StatementKind};
 use rustc_middle::ty::TyCtxt;
 
 use crate::analysis::path::PathTree;
@@ -24,6 +25,7 @@ use super::{property_checker::PropertyChecker, vm::SymbolicVm};
 /// The three verification stages: a backward [`BackwardSlicer`], a
 /// [`SymbolicVm`], and a [`PropertyChecker`].
 pub(crate) struct VerifyEngine<'tcx> {
+    tcx: TyCtxt<'tcx>,
     slicer: BackwardSlicer<'tcx>,
     vm: SymbolicVm<'tcx>,
     checker: PropertyChecker,
@@ -33,6 +35,7 @@ impl<'tcx> VerifyEngine<'tcx> {
     /// Construct a fresh engine wired to `tcx`.
     pub(crate) fn new(tcx: TyCtxt<'tcx>) -> Self {
         Self {
+            tcx,
             slicer: BackwardSlicer::new(tcx),
             vm: SymbolicVm::new(tcx),
             checker: PropertyChecker,
@@ -128,6 +131,169 @@ impl<'tcx> VerifyEngine<'tcx> {
         }
 
         results
+    }
+
+    /// Path-sensitive forward scan for the `Drop` hazard.
+    ///
+    /// `manually_drop::drop(&mut slot)` frees the heap behind `slot`, but `slot`
+    /// (a `ManuallyDrop` wrapper) stays live.  A later use of `slot` reads
+    /// through the freed allocation — a use-after-free.  Unlike the other
+    /// properties (checked at the checkpoint by the VM over a backward-sliced
+    /// path), this is a *forward* obligation, so it walks the complete paths of
+    /// the shared [`PathTree`] and checks the suffix after the drop call.
+    pub(crate) fn check_drop_from_tree(
+        &self,
+        tree: &PathTree,
+        checkpoint: &Checkpoint<'tcx>,
+        _property: &Property<'tcx>,
+    ) -> Vec<(CheckResult, String)> {
+        let Some(slot) = self.drop_referent_local(checkpoint) else {
+            return vec![(CheckResult::Unknown, String::new())];
+        };
+        let caller = checkpoint.caller;
+        let target = checkpoint.block.as_usize();
+
+        let mut results: Vec<(CheckResult, String)> = Vec::new();
+        for path in tree.iter() {
+            // A loop-unrolled path repeats the same caller block (the SCC body);
+            // its later drop occurrence is an unrolled iteration, not a genuine
+            // same-path use-after-drop. Only non-unrolled paths distinguish them
+            // (uaf_5 uses `slot` after the drop; uaf_false_2 drops once in a loop
+            // and never uses `slot` again).
+            let mut seen = std::collections::HashSet::new();
+            let unrolled = path.iter().any(|&g| {
+                tree.block_fn_of(g).is_some_and(|(def, local)| {
+                    def == caller && !seen.insert(local)
+                })
+            });
+            if unrolled {
+                continue;
+            }
+            let mut used = false;
+            let mut reaches = false;
+            for (pos, &g) in path.iter().enumerate() {
+                let Some((def, local)) = tree.block_fn_of(g) else {
+                    continue;
+                };
+                if def == caller && local == target {
+                    reaches = true;
+                    for &g2 in &path[pos + 1..] {
+                        let Some((def2, local2)) = tree.block_fn_of(g2) else {
+                            continue;
+                        };
+                        if def2 != caller {
+                            continue;
+                        }
+                        if Self::block_uses_local(self.tcx, caller, local2, slot) {
+                            used = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if reaches {
+                let desc = format!("{:?}", path);
+                if used {
+                    results.push((CheckResult::Failed, desc));
+                } else {
+                    results.push((CheckResult::ProvedByRule, desc));
+                }
+            }
+        }
+
+        if results.is_empty() {
+            vec![(CheckResult::ProvedByRule, String::new())]
+        } else {
+            results
+        }
+    }
+
+    /// Resolve the `&mut slot` borrow operand of a `Drop(slot)` checkpoint to the
+    /// referent local (`slot` itself, e.g. `_1`).  The optimized MIR lowers
+    /// `drop(&mut slot)` to a reborrow chain (`_7 = &mut (*_8)`, `_8 = &mut _1`),
+    /// so follow both direct borrows (`&mut _1`) and deref reborrows
+    /// (`&mut (*_8)`) back to the ultimate referent.
+    fn drop_referent_local(&self, checkpoint: &Checkpoint<'tcx>) -> Option<Local> {
+        let arg = checkpoint.args.first()?;
+        let place = crate::helpers::mir_utils::operand_mir_place(arg)?;
+        let mut cur = place.local;
+        let body = self.tcx.optimized_mir(checkpoint.caller);
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            if !seen.insert(cur) {
+                return Some(cur);
+            }
+            let mut next: Option<Local> = None;
+            'outer: for bb in body.basic_blocks.iter() {
+                for stmt in &bb.statements {
+                    if let StatementKind::Assign(assign) = &stmt.kind {
+                        let (target, rvalue) = assign.as_ref();
+                        if target.local == cur && target.projection.is_empty() {
+                            if let Rvalue::Ref(_, _, referent) = rvalue {
+                                next = Some(referent.local);
+                                break 'outer;
+                            }
+                        }
+                    }
+                }
+            }
+            match next {
+                Some(l) => cur = l,
+                None => return Some(cur),
+            }
+        }
+    }
+
+    /// Whether any statement or terminator in `block` reads/writes `local`.
+    fn block_uses_local(tcx: TyCtxt<'tcx>, caller: DefId, block: usize, local: Local) -> bool {
+        let body = tcx.optimized_mir(caller);
+        let data = &body.basic_blocks[BasicBlock::from(block)];
+        for stmt in &data.statements {
+            if let StatementKind::Assign(assign) = &stmt.kind {
+                let (target, rvalue) = assign.as_ref();
+                if target.local == local {
+                    return true;
+                }
+                if crate::helpers::mir_utils::rvalue_any_place_matching(rvalue, &mut |p| {
+                    p.local == local
+                }) {
+                    return true;
+                }
+            }
+        }
+        if let Some(terminator) = &data.terminator {
+            use rustc_middle::mir::TerminatorKind;
+            match &terminator.kind {
+                TerminatorKind::Call { args, .. } => {
+                    if args.iter().any(|a| match &a.node {
+                        Operand::Copy(p) | Operand::Move(p) => p.local == local,
+                        Operand::Constant(_) => false,
+                        #[cfg(rapx_ge_95)]
+                        Operand::RuntimeChecks(_) => false,
+                    }) {
+                        return true;
+                    }
+                }
+                TerminatorKind::SwitchInt { discr, .. }
+                | TerminatorKind::Assert { cond: discr, .. } => match discr {
+                    Operand::Copy(p) | Operand::Move(p) => {
+                        if p.local == local {
+                            return true;
+                        }
+                    }
+                    Operand::Constant(_) => {}
+                    #[cfg(rapx_ge_95)]
+                    Operand::RuntimeChecks(_) => {}
+                },
+                TerminatorKind::Drop { place, .. } => {
+                    if place.local == local {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
     /// Insert `CalleeEntry`/`CalleeExit` markers into a forward item stream by

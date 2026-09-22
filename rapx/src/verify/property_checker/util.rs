@@ -1002,3 +1002,29 @@ pub(super) fn maybe_uninit_inner(ty: Ty<'_>) -> Option<Ty<'_>> {
     }
     None
 }
+
+/// Peel one level of smart-pointer indirection to the pointee type:
+/// `Box<T>`/`Vec<T>`/`NonNull<T>`/`Rc<T>`/`CString` (matched by `DefId`), plus
+/// raw pointers and references.  Used by `check_allocated` to discharge
+/// `Allocated(p, Box<T>, n)` after provenance resolution has already penetrated
+/// `p` (e.g. a `&mut ManuallyDrop<Box<T>>`) down to the `T` allocation: the
+/// box's *pointee* is what actually occupies the allocation.
+pub(super) fn smart_pointer_pointee(ty: Ty<'_>) -> Option<Ty<'_>> {
+    match ty.kind() {
+        TyKind::RawPtr(e, _) | TyKind::Ref(_, e, _) => Some(*e),
+        TyKind::Adt(adt, args) => {
+            let did = adt.did();
+            if crate::verify::api_classify::is_std_box(did)
+                || crate::verify::api_classify::is_std_vec(did)
+                || crate::verify::api_classify::is_std_nonnull(did)
+                || crate::verify::api_classify::is_std_cstring(did)
+                || crate::def_id::rc_types().contains(&did)
+            {
+                args.types().next()
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
