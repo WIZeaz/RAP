@@ -314,3 +314,10 @@ fn free_list_allocator() {
     let output = run_with_args("verify_cases/free_list_allocator", CMD_VERIFY_TARGETED);
     assert_not_contain(&output, "result: UNSOUND");
 }
+
+// ================ Box Tests ================
+#[test]
+fn box_deref() {
+    let output = run_with_args("verify_cases/box_deref", CMD_VERIFY_SCAN);
+    assert_function_result(&output, "f", "SOUND");
+}
