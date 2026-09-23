@@ -490,6 +490,22 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         &mut self.allocations[id.0]
     }
 
+    /// The ultimate root allocation, following `parent` chains (sub-allocations
+    /// created by `from_raw_parts` / `split_at` / `as_chunks`, whose `parent`
+    /// points at the allocation they were split from).
+    pub(crate) fn root_alloc(&self, id: AllocId) -> AllocId {
+        let mut cur = id;
+        let mut guard = 0;
+        while let Some(parent) = self.alloc(cur).parent {
+            cur = parent;
+            guard += 1;
+            if guard > self.allocations.len() {
+                break;
+            }
+        }
+        cur
+    }
+
     /// Create a fresh symbolic Z3 int constant (globally unique, even across
     /// calls with the same prefix — `Z3_mk_fresh_const` auto-suffixes the name).
     pub(crate) fn fresh_int(&self, prefix: &str) -> Int<'ctx> {

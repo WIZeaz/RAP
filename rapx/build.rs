@@ -6,6 +6,7 @@ fn main() {
     emit_check_cfg("rapx_ge_95");
     emit_check_cfg("rapx_ge_99");
     emit_check_cfg("rapx_ge_100");
+    emit_check_cfg("rapx_const_ext");
     emit_check_cfg("rapx_has_public_adts");
     emit_check_cfg("rapx_has_attr_item_kind");
     emit_check_cfg("rapx_has_fielddef_extras");
@@ -96,6 +97,15 @@ fn main() {
         rustc_src_contains_path(
             "compiler/rustc_infer/src/infer/mod.rs",
             "deeply_resolve_ignoring_regions",
+        ),
+    );
+    // `Const::{try_to_value,try_to_target_usize}` moved from an inherent impl
+    // onto the `ConstExt` trait (which must be in scope) in a recent nightly.
+    emit_cfg(
+        "rapx_const_ext",
+        rustc_src_contains_path(
+            "compiler/rustc_middle/src/ty/consts.rs",
+            "pub trait ConstExt",
         ),
     );
     // `AliasTyKind` variants gained named fields (`Projection { def_id }`) and

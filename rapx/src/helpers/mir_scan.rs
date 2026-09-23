@@ -1,8 +1,12 @@
+#[cfg(not(rapx_ge_100))]
+use rustc_hir::LangItem;
+#[cfg(rapx_ge_100)]
+use rustc_hir::attrs::lang_items::LangItem;
 use rustc_hir::{Safety, def_id::DefId};
 use rustc_middle::{
     mir::{
-        BasicBlock, Body, Local, Operand, Place, ProjectionElem, Rvalue, StatementKind,
-        TerminatorKind,
+        BasicBlock, Body, Local, Operand, Place, ProjectionElem, Rvalue,
+        StatementKind, TerminatorKind,
     },
     ty::{self, Ty, TyCtxt, TyKind},
 };
@@ -316,6 +320,59 @@ pub struct RawPtrDerefInfo<'tcx> {
     pub statement_index: usize,
 }
 
+/// Locals that hold the result of the compiler's safe `*box` deref lowering
+/// (directly, or through copies and pointer casts). The compiler lowers `*box`
+/// to a raw-pointer deref of a pointer produced by casting the box's inner
+/// field to a raw pointer, and that deref is safe by the `Box` invariant, so it
+/// is not a raw-pointer-deref checkpoint.
+fn box_deref_transmute_locals<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> HashSet<Local> {
+    let mut result = HashSet::new();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for bb in body.basic_blocks.iter() {
+            for stmt in &bb.statements {
+                let StatementKind::Assign(assign) = &stmt.kind else {
+                    continue;
+                };
+                let (target, rhs) = &**assign;
+                if !target.projection.is_empty() {
+                    continue;
+                }
+                let from_box = if is_box_deref_cast(tcx, body, rhs) {
+                    true
+                } else if let Rvalue::Use(Operand::Copy(p) | Operand::Move(p), ..)
+                    | Rvalue::Cast(_, Operand::Copy(p) | Operand::Move(p), _) = rhs
+                {
+                    p.projection.is_empty() && result.contains(&p.local)
+                } else {
+                    false
+                };
+                if from_box && result.insert(target.local) {
+                    changed = true;
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Whether `rvalue` is the compiler's lowering of the safe `*box` deref: a cast
+/// to a raw pointer whose source place is rooted in a `Box` local. Recent
+/// nightlies tag this cast `BoxDerefTransmute`; older ones emit a plain
+/// `Transmute` of the box's `Unique`/`NonNull` field. Checking the source base
+/// local's type catches both without depending on the cast kind.
+fn is_box_deref_cast(tcx: TyCtxt<'_>, body: &Body<'_>, rvalue: &Rvalue<'_>) -> bool {
+    let Rvalue::Cast(_, Operand::Copy(p) | Operand::Move(p), _) = rvalue else {
+        return false;
+    };
+    let base_ty = body.local_decls[p.local].ty;
+    matches!(
+        base_ty.kind(),
+        TyKind::Adt(adt, _) if tcx.is_lang_item(adt.did(), LangItem::OwnedBox)
+    )
+}
+
 /// Collect all raw pointer dereference operations in `def_id` as
 /// metadata records (block, pointer operand, pointee type, read-vs-write).
 pub fn collect_raw_ptr_deref_info<'tcx>(
@@ -328,6 +385,10 @@ pub fn collect_raw_ptr_deref_info<'tcx>(
     }
 
     let body = tcx.optimized_mir(def_id);
+    // The compiler lowers `*box` to a raw-pointer deref of the pointer produced
+    // by casting the box's inner field to a raw pointer; that deref is safe by
+    // the `Box` invariant, so it is not a raw-pointer-deref checkpoint.
+    let box_derefs = box_deref_transmute_locals(tcx, body);
     // Filter: only check statements from the function's own source file,
     // not from inlined library code (Vec, Box, etc.).
     let fn_span = tcx.def_span(def_id);
@@ -377,6 +438,11 @@ pub fn collect_raw_ptr_deref_info<'tcx>(
                     _ => continue,
                 }
             };
+
+            // Skip safe `*box` derefs (see `box_deref_transmute_locals`).
+            if box_derefs.contains(&deref_place.local) {
+                continue;
+            }
 
             let Some(ptr_operand) = ptr_operand_for_deref_place(deref_place) else {
                 continue;

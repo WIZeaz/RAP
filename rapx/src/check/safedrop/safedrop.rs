@@ -39,6 +39,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
         let saved_values = self.alias_graph.values.clone();
         let saved_pts_graph = self.alias_graph.pts_graph.clone();
         let saved_drop_record = self.drop_record.clone();
+        let saved_move_sources = self.alias_graph.move_sources.clone();
 
         if node.is_path_end {
             self.alias_graph.increment_visit_times();
@@ -58,6 +59,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
             self.alias_graph.values = saved_values.clone();
             self.alias_graph.pts_graph = saved_pts_graph.clone();
             self.drop_record = saved_drop_record.clone();
+            self.alias_graph.move_sources = saved_move_sources.clone();
             self.dfs_safedrop(child, path, fn_map)?;
         }
 
@@ -250,6 +252,7 @@ impl<'tcx> SafeDropGraph<'tcx> {
 
     pub fn dp_check(&mut self, flag_cleanup: bool) {
         rap_debug!("dangling pointer check");
+        checks::sync_drop_record(&self.alias_graph, &mut self.drop_record);
         if flag_cleanup {
             for arg_idx in 1..self.alias_graph.arg_size() + 1 {
                 self.dp_check_arg(arg_idx, flag_cleanup);

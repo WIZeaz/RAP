@@ -6,7 +6,6 @@
 //! back to the originating parameter/local.
 
 use super::alias_hazard::{self, AliasProducer, HazardKind};
-use crate::analysis::alias::collect_local_origins;
 use crate::helpers::mir_scan::Checkpoint;
 use crate::verify::api_classify;
 use crate::verify::contract::{Property, PropertyKind};
@@ -165,65 +164,55 @@ fn fn_has_alias_requires(tcx: rustc_middle::ty::TyCtxt<'_>, def_id: DefId) -> bo
         .any(property_contains_alias)
 }
 
-/// Collect `p`'s alias set from the VM's provenance (every live local pointing
-/// to the same allocation) and check the callsite's shared-XOR-mutable
-/// invariant: a `&*p` must not be produced while a live `&mut` aliases `*p`,
-/// and a `&mut *p` must not be produced while a live `&` aliases `*p`.
-/// Liveness is decided by MIR `StorageLive`/`StorageDead` at the deref point.
-/// `destination` (the view being produced), `operand_local` (the deref operand's
-/// origin) and the return place are excluded.
-fn callsite_xor_violation<'ctx, 'tcx>(
+/// Flow-sensitive shared-XOR-mutable check for a view-producing checkpoint.
+/// Walks the VM's *current* locals (not a static derivation tree), grouping a
+/// live reference view as conflicting when it names the same allocation, or a
+/// sub-allocation of it (`root_alloc` — `from_raw_parts`/`split_at` keep a
+/// `parent` edge), with the opposite mutability.
+fn flow_xor_violation<'ctx, 'tcx>(
     vm_state: &VmState<'ctx, 'tcx>,
-    origin_val: &VmValue<'ctx, 'tcx>,
-    is_mut_ref: bool,
-    destination: Option<Local>,
-    operand_local: Option<Local>,
-    call_block: rustc_middle::mir::BasicBlock,
+    checkpoint: &Checkpoint<'tcx>,
+    unique: bool,
     statement_index: usize,
 ) -> Option<String> {
-    let alloc_id = origin_val.provenance_alloc_id()?;
+    let origin_arg = checkpoint.args.first()?;
+    let origin_place = alias_hazard::operand_mir_place(origin_arg)?;
+    let origin_local = origin_place.local;
+    let origin_alloc = vm_state.value_of_operand(origin_arg).provenance_alloc_id()?;
+    let origin_root = vm_state.root_alloc(origin_alloc);
     let live = alias_hazard::live_locals_at(
         vm_state.tcx,
-        vm_state.caller_def_id,
-        call_block,
+        checkpoint.caller,
+        checkpoint.block,
         statement_index,
         false,
         false,
     );
+    let body = vm_state.body;
     for (local, val) in &vm_state.locals {
+        if *local == origin_local {
+            continue;
+        }
         if !live.contains(local) {
             continue;
         }
-        if Some(*local) == destination
-            || Some(*local) == operand_local
-            || *local == rustc_middle::mir::RETURN_PLACE
-        {
+        let Some(prov) = &val.provenance else {
+            continue;
+        };
+        let mutability = match body.local_decls[*local].ty.kind() {
+            rustc_middle::ty::TyKind::Ref(_, _, m) => *m,
+            _ => continue,
+        };
+        let same_alloc = prov.alloc_id == origin_alloc;
+        let same_root = vm_state.root_alloc(prov.alloc_id) == origin_root;
+        if !same_alloc && !same_root {
             continue;
         }
-        let Some(val_prov) = &val.provenance else {
-            continue;
-        };
-        if val_prov.alloc_id != alloc_id {
-            continue;
-        }
-        let ty = vm_state.body.local_decls[*local].ty;
-        let rustc_middle::ty::TyKind::Ref(_, _, mutability) = ty.kind() else {
-            continue;
-        };
-        // shared-XOR-mutable: a `&*p` must not coexist with a live `&mut`,
-        // a `&mut *p` must not coexist with a live `&`.
-        let conflicts = if is_mut_ref {
-            *mutability == rustc_middle::ty::Mutability::Not
-        } else {
-            *mutability == rustc_middle::ty::Mutability::Mut
-        };
+        let view_mut = mutability == rustc_middle::ty::Mutability::Mut;
+        let conflicts = if unique { !view_mut } else { view_mut };
         if conflicts {
-            let live_kind = if *mutability == rustc_middle::ty::Mutability::Mut {
-                "&mut"
-            } else {
-                "&"
-            };
-            let produced = if is_mut_ref { "&mut" } else { "&" };
+            let produced = if unique { "&mut" } else { "&" };
+            let live_kind = if view_mut { "&mut" } else { "&" };
             return Some(format!(
                 "producing {produced} while a live {live_kind} aliases the same data"
             ));
@@ -271,16 +260,13 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
             if let Some(origin) = vm_state.resolve_origin(&origin_val) {
                 // Step 3 (callsite check): unless an `Alias`/`Ptr2Ref` precondition
                 // discharges the hazard, the deref must not violate shared-XOR-mutable
-                // against a live alias of the opposite mutability. The deref
-                // operand's own origin is excluded.
+                // against a live alias of the opposite mutability (tree-based,
+                // grouped by root or allocation).
                 if !fn_has_alias_requires(vm_state.tcx, checkpoint.caller) {
-                    if let Some(reason) = callsite_xor_violation(
+                    if let Some(reason) = flow_xor_violation(
                         vm_state,
-                        &origin_val,
+                        checkpoint,
                         checkpoint.is_mut_ref,
-                        checkpoint.destination,
-                        Some(origin.local),
-                        checkpoint.block,
                         checkpoint.statement_index,
                     ) {
                         return VmAliasResult::Failed(reason);
@@ -299,12 +285,15 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
                         && let Some(mir_place) =
                             crate::helpers::mir_utils::operand_mir_place(origin_arg)
                     {
-                        let origin_map = collect_local_origins(vm_state.tcx, checkpoint.caller);
-                        let (root, fields) = alias_hazard::deep_resolve_place(
-                            mir_place.local.as_usize(),
-                            &origin_map,
-                        );
-                        if !fields.is_empty() && root >= 1 && root <= vm_state.body.arg_count {
+                        let (root, fields) = crate::verify::vm::alias_tree::AliasTree::build(
+                            vm_state.tcx,
+                            checkpoint.caller,
+                        )
+                        .resolve_local_to_root(mir_place.local);
+                        if !fields.is_empty()
+                            && root >= 1
+                            && root <= vm_state.body.arg_count
+                        {
                             let root_ty = vm_state.body.local_decls
                                 [rustc_middle::mir::Local::from_usize(root)]
                             .ty;
@@ -345,11 +334,11 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
                         && let Some(mir_place) =
                             crate::helpers::mir_utils::operand_mir_place(origin_arg)
                     {
-                        let origin_map = collect_local_origins(vm_state.tcx, checkpoint.caller);
-                        let (root, fields) = alias_hazard::deep_resolve_place(
-                            mir_place.local.as_usize(),
-                            &origin_map,
-                        );
+                        let (root, fields) = crate::verify::vm::alias_tree::AliasTree::build(
+                            vm_state.tcx,
+                            checkpoint.caller,
+                        )
+                        .resolve_local_to_root(mir_place.local);
                         if !fields.is_empty() && root >= 1 && root <= vm_state.body.arg_count {
                             let resolved = PlaceKey::from_origin(root, fields);
                             if let Some(sfo) = alias_hazard::self_field_origin(
@@ -458,11 +447,11 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
             let arg_place =
                 alias_hazard::operand_mir_place(origin_arg).map(|p| PlaceKey::from_mir_place(p));
             if let Some(mir_place) = arg_place {
-                let origin_map = collect_local_origins(tcx, caller);
-                let (root, fields) = alias_hazard::deep_resolve_place(
-                    mir_place.local().map(|l| l.as_usize()).unwrap_or(1),
-                    &origin_map,
-                );
+                let tree = crate::verify::vm::alias_tree::AliasTree::build(tcx, caller);
+                let local = mir_place
+                    .local()
+                    .unwrap_or(rustc_middle::mir::Local::from_usize(1));
+                let (root, fields) = tree.resolve_local_to_root(local);
                 if !fields.is_empty() {
                     let resolved = PlaceKey::from_origin(root, fields);
                     let sfo = alias_hazard::self_field_origin(tcx, caller, &resolved);
@@ -520,6 +509,20 @@ fn check_view_alias<'ctx, 'tcx>(
     let caller = checkpoint.caller;
     let call_block = checkpoint.block;
     let destination = alias_hazard::call_destination(tcx, checkpoint);
+
+    // Tree-based shared-XOR-mutable: producing a view must not conflict with a
+    // *live* opposite-mutability view of the same allocation. This runs before
+    // the `Owned`/`MutRef`/`SharedRef` fast-paths below, which otherwise prove
+    // without checking — e.g. two raw pointers split from one owned `Vec`, then
+    // `&` and `&mut` views of each while the first is still live. An
+    // `Alias`/`Ptr2Ref` precondition discharges the obligation.
+    if !fn_has_alias_requires(vm_state.tcx, checkpoint.caller) {
+        if let Some(reason) =
+            flow_xor_violation(vm_state, checkpoint, kind == HazardKind::UniqueView, usize::MAX)
+        {
+            return VmAliasResult::Failed(reason);
+        }
+    }
 
     // Resolve origin PlaceKey from the checkpoint argument
     let origin_place = alias_hazard::operand_place(origin_arg)
@@ -931,9 +934,8 @@ fn resolve_origin_place_mir(
     let Some(local) = place.local() else {
         return place.clone();
     };
-    let origins = crate::analysis::alias::collect_local_origins(tcx, caller);
-    let (root_local, mut root_fields) =
-        alias_hazard::deep_resolve_place(local.as_usize(), &origins);
+    let tree = crate::verify::vm::alias_tree::AliasTree::build(tcx, caller);
+    let (root_local, mut root_fields) = tree.resolve_local_to_root(local);
 
     // Preserve field projections from the original place if the root is same local
     if root_local == local.as_usize() && root_fields.is_empty() && !place.fields.is_empty() {

@@ -6,6 +6,8 @@ use rustc_hir::attrs::lang_items::LangItem;
 use crate::compat::SkipNormWip;
 use rustc_hir::find_attr;
 use rustc_middle::ty::{self, Ty, TyCtxt, TyKind};
+#[cfg(rapx_const_ext)]
+use rustc_middle::ty::consts::ConstExt;
 use rustc_span::sym;
 use rustc_type_ir::TypeVisitable;
 

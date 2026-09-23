@@ -7,6 +7,7 @@
 
 pub(crate) mod alias;
 pub(crate) mod alias_hazard;
+pub(crate) mod alias_tree;
 pub(crate) mod call;
 pub(crate) mod display;
 pub(crate) mod exec;

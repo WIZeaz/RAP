@@ -107,6 +107,12 @@ impl<'tcx> AliasGraph<'tcx> {
         self.visit_times
     }
 
+    /// Drops the move edges into and out of a value that is being reassigned.
+    pub fn clear_move_sources(&mut self, value_idx: usize) {
+        self.move_sources
+            .retain(|&dest, &mut src| dest != value_idx && src != value_idx);
+    }
+
     // ── Index translation: value index → PtsGraph slot index ──
 
     pub fn value_to_slot_idx(&self, value_idx: usize) -> Option<usize> {

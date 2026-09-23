@@ -50,6 +50,7 @@ impl<'tcx> AliasGraph<'tcx> {
             return;
         }
         let lv_val = self.projection(*place);
+        self.clear_move_sources(lv_val);
 
         match rvalue {
             Rvalue::Use(operand, ..) => match operand {
@@ -230,6 +231,7 @@ impl<'tcx> AliasGraph<'tcx> {
         if merge_slots.is_empty() {
             return;
         }
+        self.clear_move_sources(merge_slots[0].0);
 
         // UAF check for arguments (skip return-value slot at index 0)
         for &(val_idx, _) in merge_slots.iter().skip(1) {
@@ -248,21 +250,16 @@ impl<'tcx> AliasGraph<'tcx> {
         }
 
         match target_id {
-            Some(id) => {
-                if super::alias::is_no_alias_intrinsic(id) {
-                    return;
+            Some(id) if super::alias::is_no_alias_intrinsic(id) => {}
+            Some(id) if !self.tcx().is_mir_available(id) => {
+                let (ret_val, _) = merge_slots[0];
+                if ret_val != 0 && self.value_is_ptr(ret_val) {
+                    let slot_args: Vec<usize> = merge_slots.iter().map(|&(_, s)| s).collect();
+                    self.pts_graph.conservative_call_merge(&slot_args);
+                    obs.on_value_assign(self, ret_val);
                 }
-                if !self.tcx().is_mir_available(id) {
-                    let (ret_val, _) = merge_slots[0];
-                    if ret_val != 0 && self.value_is_ptr(ret_val) {
-                        let slot_args: Vec<usize> = merge_slots.iter().map(|&(_, s)| s).collect();
-                        self.pts_graph.conservative_call_merge(&slot_args);
-                        obs.on_value_assign(self, ret_val);
-                    }
-                    return;
-                }
-                self.apply_fn_alias_results_pts(id, &merge_slots, fn_map, obs);
             }
+            Some(id) => self.apply_fn_alias_results_pts(id, &merge_slots, fn_map, obs),
             None => {
                 let (ret_val, _) = merge_slots[0];
                 if ret_val != 0

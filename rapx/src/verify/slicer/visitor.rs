@@ -130,7 +130,7 @@ impl<'tcx> BackwardSlicer<'tcx> {
         );
 
         let mut results = Vec::new();
-        for (block_path, backward_items, _relevant) in leaf_results {
+        for (block_path, backward_items, _relevant, _) in leaf_results {
             let mut items = backward_items;
             items.reverse();
             let steps: Vec<PathStep> = block_path
@@ -151,8 +151,8 @@ impl<'tcx> BackwardSlicer<'tcx> {
     }
 
     /// Post-order recursion: returns one `(block_path, backward_items,
-    /// relevant_before_block)` per checkpoint leaf. Each leaf is independent
-    /// — no merging, no HashMap collision.
+    /// relevant_before_block, parked_caller_relevant)` per checkpoint leaf.
+    /// Each leaf is independent — no merging, no HashMap collision.
     fn build_leaf_items(
         visitor: &Self,
         tree: &PathTree,
@@ -164,7 +164,12 @@ impl<'tcx> BackwardSlicer<'tcx> {
         caller: DefId,
         bodies: &HashMap<DefId, &'tcx Body<'tcx>>,
         flows: &HashMap<DefId, DataflowGraph>,
-    ) -> Vec<(Vec<usize>, Vec<RelevantItem<'tcx>>, RelevantPlaces)> {
+    ) -> Vec<(
+        Vec<usize>,
+        Vec<RelevantItem<'tcx>>,
+        RelevantPlaces,
+        Option<RelevantPlaces>,
+    )> {
         let (def_id, local_index) = tree.block_fn_of(node.block).unwrap_or((caller, node.block));
         let body = &bodies[&def_id];
         let flow = &flows[&def_id];
@@ -236,20 +241,23 @@ impl<'tcx> BackwardSlicer<'tcx> {
                 bodies,
                 flows,
             );
-            for (mut child_path, child_items, child_relevant) in child_results {
+            for (mut child_path, child_items, child_relevant, child_parked) in child_results {
                 let mut relevant = child_relevant;
+                let mut parked = child_parked;
                 let mut items = child_items;
-                // When this node is an inlined callee entry, the child's
-                // relevance may carry the caller's destination local (the value
-                // returned by this callee). Remap it to the callee's return
-                // local `_0` so the callee body is sliced.
-                if let Some(binding) = tree.inline_binding(node.block) {
+                // Callee locals reuse the caller's indices, so park the caller's relevance.
+                if def_id != caller
+                    && parked.is_none()
+                    && let Some(binding) = tree.inline_binding(node.block - local_index)
+                {
                     let dest = Local::from_usize(binding.dest_local);
+                    let mut callee_relevant = RelevantPlaces::new();
                     if relevant.locals.contains(&dest) {
                         relevant.locals.remove(&dest);
                         relevant.places.retain(|p| p.local() != Some(dest));
-                        relevant.insert_local(Local::from_usize(0));
+                        callee_relevant.insert_local(Local::from_usize(0));
                     }
+                    parked = Some(std::mem::replace(&mut relevant, callee_relevant));
                 }
                 // Skip the `Call` terminator when this block's call was inlined:
                 // the callee's statements are already sliced via the path, so
@@ -281,19 +289,6 @@ impl<'tcx> BackwardSlicer<'tcx> {
                         keep_owner,
                     );
                 }
-                // Leaving an inlined callee entry: remap the callee's parameter
-                // locals back to the caller's argument locals so the caller's
-                // argument-producing statements stay relevant.
-                if let Some(binding) = tree.inline_binding(node.block) {
-                    for (i, arg_local) in binding.arg_locals.iter().enumerate() {
-                        let param = Local::from_usize(i + 1);
-                        if relevant.locals.contains(&param) {
-                            relevant.locals.remove(&param);
-                            relevant.places.retain(|p| p.local() != Some(param));
-                            relevant.insert_local(Local::from_usize(*arg_local));
-                        }
-                    }
-                }
                 let dist_to_target = child_path.iter().position(|&b| b == target_block);
                 if block_stmt_count > 0 && dist_to_target.map_or(false, |d| d <= 2) {
                     Self::re_visit_newly_added(
@@ -308,8 +303,20 @@ impl<'tcx> BackwardSlicer<'tcx> {
                         keep_owner,
                     );
                 }
+                // Leaving an inlined callee entry: remap the callee's parameter
+                // locals back to the caller's argument locals so the caller's
+                // argument-producing statements stay relevant.
+                if let Some(binding) = tree.inline_binding(node.block) {
+                    let mut caller_relevant = parked.take().unwrap_or_default();
+                    for (i, arg_local) in binding.arg_locals.iter().enumerate() {
+                        if relevant.locals.contains(&Local::from_usize(i + 1)) {
+                            caller_relevant.insert_local(Local::from_usize(*arg_local));
+                        }
+                    }
+                    relevant = caller_relevant;
+                }
                 child_path.insert(0, node.block);
-                results.push((child_path, items, relevant));
+                results.push((child_path, items, relevant, parked));
             }
         }
 
@@ -320,7 +327,12 @@ impl<'tcx> BackwardSlicer<'tcx> {
         // that exit the loop (e.g. unwind/cleanup) without hitting the
         // target block again.
         if !checkpoint_items.is_empty() {
-            results.push((vec![node.block], checkpoint_items, checkpoint_relevant));
+            results.push((
+                vec![node.block],
+                checkpoint_items,
+                checkpoint_relevant,
+                None,
+            ));
         }
 
         results

@@ -21,8 +21,7 @@ use rustc_middle::{
 };
 
 use crate::analysis::alias::{
-    FieldOrigin, LocalOriginMap, collect_local_origins, resolve_any_field_origin, resolve_place,
-    resolve_self_field_origin,
+    FieldOrigin, resolve_any_field_origin, resolve_self_field_origin,
 };
 use crate::helpers::fn_info::is_externally_reachable;
 use crate::{
@@ -32,12 +31,11 @@ use crate::{
 
 // Re-export the mir_utils helpers still consumed by `vm/alias.rs`.
 pub(super) use crate::helpers::mir_utils::{
-    call_destination, deep_resolve_place, operand_mir_place, operand_place,
+    call_destination, operand_mir_place, operand_place,
 };
 // Remaining mir_utils helpers used only within this module.
 use crate::helpers::mir_utils::{
-    blocks_reachable_after_call, collect_place_aliases, resolve_mir_place,
-    rvalue_any_place_matching, trace_place_root,
+    blocks_reachable_after_call, rvalue_any_place_matching,
 };
 
 // ── Shared types ─────────────────────────────────────────────────
@@ -192,8 +190,8 @@ pub(super) fn is_origin_a_reference(tcx: TyCtxt<'_>, caller: DefId, origin: &Pla
     if let ty::Ref(..) = body.local_decls[Local::from_usize(local)].ty.kind() {
         return true;
     }
-    let origins = collect_local_origins(tcx, caller);
-    let (resolved, _) = deep_resolve_place(local, &origins);
+    let (resolved, _) = crate::verify::vm::alias_tree::AliasTree::build(tcx, caller)
+        .resolve_local_to_root(Local::from_usize(local));
     if resolved >= 1 && resolved <= body.arg_count {
         local = resolved;
     }
@@ -218,8 +216,8 @@ pub(super) fn resolve_param_origin(
         if local >= 1 && local <= body.arg_count {
             return Some(local);
         }
-        let origins = collect_local_origins(tcx, caller);
-        let (resolved, _fields) = deep_resolve_place(local, &origins);
+        let (resolved, _fields) = crate::verify::vm::alias_tree::AliasTree::build(tcx, caller)
+            .resolve_local_to_root(Local::from_usize(local));
         if resolved >= 1 && resolved <= body.arg_count {
             return Some(resolved);
         }
@@ -231,8 +229,8 @@ pub(super) fn resolve_param_origin(
 /// raw-pointer parameter (no field projections, no local-copy tracing).
 ///
 /// Unlike [`resolve_param_origin`], this returns a 0-based index into the call
-/// argument list (used by `callsite_arg_origins`) and does not trace through
-/// `collect_local_origins`.
+/// argument list (used by `callsite_arg_origins`) and does not trace through the
+/// alias tree.
 fn param_index_of_origin(tcx: TyCtxt<'_>, caller: DefId, origin: &PlaceKey) -> Option<usize> {
     let PlaceBaseKey::Local(local) = origin.base else {
         return None;
@@ -537,7 +535,7 @@ fn method_writes_self_field(
     field_index: usize,
 ) -> bool {
     let body = tcx.optimized_mir(method);
-    let aliases = collect_place_aliases(tcx, method);
+    let tree = crate::verify::vm::alias_tree::AliasTree::build(tcx, method);
     let origin = self_field_key(self_local, field_index);
 
     for block in body.basic_blocks.iter() {
@@ -546,7 +544,7 @@ fn method_writes_self_field(
                 continue;
             };
             let (target, _) = assign.as_ref();
-            if place_is_raw_access_to_origin(target, &origin, &aliases, &body.local_decls)
+            if place_is_raw_access_to_origin(target, &origin, &tree, &body.local_decls)
                 || place_raw_accesses_self_field(tcx, method, target, self_local, field_index)
             {
                 return true;
@@ -556,7 +554,7 @@ fn method_writes_self_field(
         let Some(terminator) = &block.terminator else {
             continue;
         };
-        if terminator_writes_origin(tcx, &terminator.kind, &origin, &aliases) {
+        if terminator_writes_origin(tcx, &terminator.kind, &origin, &tree) {
             return true;
         }
     }
@@ -667,7 +665,7 @@ fn method_exposes_self_field(
         return false;
     }
 
-    let aliases = collect_place_aliases(tcx, method);
+    let tree = crate::verify::vm::alias_tree::AliasTree::build(tcx, method);
     let origin = self_field_key(self_local, field_index);
 
     for block in body.basic_blocks.iter() {
@@ -676,7 +674,7 @@ fn method_exposes_self_field(
                 continue;
             };
             let (target, rvalue) = assign.as_ref();
-            if target.local.as_usize() == 0 && rvalue_mentions_origin(rvalue, &origin, &aliases) {
+            if target.local.as_usize() == 0 && rvalue_mentions_origin(rvalue, &origin, &tree) {
                 return true;
             }
         }
@@ -688,12 +686,13 @@ fn method_exposes_self_field(
 fn rvalue_mentions_origin(
     rvalue: &Rvalue<'_>,
     origin: &PlaceKey,
-    aliases: &HashMap<Local, PlaceKey>,
+    tree: &crate::verify::vm::alias_tree::AliasTree,
 ) -> bool {
     rvalue_any_place_matching(rvalue, &mut |place| {
         let key = PlaceKey::from_mir_place(place);
         let resolved = if key.fields.is_empty() {
-            aliases.get(&place.local).cloned().unwrap_or(key)
+            let (root, fields) = tree.resolve_local_to_root(place.local);
+            PlaceKey::from_origin(root, fields)
         } else {
             key
         };
@@ -766,9 +765,9 @@ fn local_hazard_violation_with(
     view_len_place: Option<PlaceKey>,
 ) -> Option<String> {
     let body = tcx.optimized_mir(caller);
-    let mut aliases = collect_place_aliases(tcx, caller);
+    let tree = crate::verify::vm::alias_tree::AliasTree::build(tcx, caller);
     let mut origins = origins.to_vec();
-    expand_origin_aliases(&aliases, &mut origins);
+    expand_origin_aliases(&tree, &mut origins);
     let mut hazard_locals: HashSet<Local> = destination.into_iter().collect();
     expand_hazard_alias_locals(tcx, caller, &mut hazard_locals);
     for data in body.basic_blocks.iter() {
@@ -788,7 +787,7 @@ fn local_hazard_violation_with(
         }
     }
     origins.retain(|origin| !origin.local().is_some_and(|l| hazard_locals.contains(&l)));
-    let vec_owners = find_as_ptr_receivers(tcx, caller, &origins, &aliases, true);
+    let vec_owners = find_as_ptr_receivers(tcx, caller, &origins, &tree, true);
     let reachable = blocks_reachable_after_call(tcx, caller, call_block);
 
     for (block_index, block) in reverse_postorder_blocks(body) {
@@ -811,16 +810,13 @@ fn local_hazard_violation_with(
                             hazard_locals.insert(target.local);
                         }
                     }
-                    if let Some(alias) = alias_from_rvalue(rvalue, &aliases) {
-                        aliases.insert(target.local, alias);
-                    }
                     if !hazard_locals.is_empty()
                         && !hazard_locals.contains(&target.local)
                         && raw_access_conflicts(kind, RawAccessKind::Write)
                         && place_is_raw_access_to_any_origin(
                             target,
                             &origins,
-                            &aliases,
+                            &tree,
                             &body.local_decls,
                         )
                         && hazard_used_after_statement(
@@ -841,8 +837,8 @@ fn local_hazard_violation_with(
                         && raw_access_conflicts(kind, RawAccessKind::Read)
                         && !crate::helpers::mir_utils::rvalue_source_place(rvalue)
                             .is_some_and(|place| hazard_locals.contains(&place.local))
-                        && !rvalue_reads_like_view(rvalue, tcx, caller, &origins, &aliases)
-                        && rvalue_reads_any_origin(rvalue, &origins, &aliases, &body.local_decls)
+                        && !rvalue_reads_like_view(rvalue, tcx, caller, &origins, &tree)
+                        && rvalue_reads_any_origin(rvalue, &origins, &tree, &body.local_decls)
                         && hazard_used_after_statement(
                             tcx,
                             caller,
@@ -867,7 +863,7 @@ fn local_hazard_violation_with(
             };
             if origins
                 .iter()
-                .any(|origin| terminator_writes_origin(tcx, &terminator.kind, origin, &aliases))
+                .any(|origin| terminator_writes_origin(tcx, &terminator.kind, origin, &tree))
                 && hazard_used_after_block(tcx, caller, block_index, &hazard_locals)
             {
                 return Some(format!(
@@ -877,7 +873,7 @@ fn local_hazard_violation_with(
             }
             if kind == HazardKind::UniqueView
                 && !vec_owners.is_empty()
-                && terminator_invalidates_vec_owner(tcx, &terminator.kind, &vec_owners, &aliases)
+                && terminator_invalidates_vec_owner(tcx, &terminator.kind, &vec_owners, &tree)
                 && hazard_used_after_block(tcx, caller, block_index, &hazard_locals)
             {
                 return Some(
@@ -889,7 +885,7 @@ fn local_hazard_violation_with(
                 && !terminator_is_benign_origin_use(tcx, &terminator.kind)
                 && origins
                     .iter()
-                    .any(|origin| terminator_uses_origin(&terminator.kind, origin, &aliases))
+                    .any(|origin| terminator_uses_origin(&terminator.kind, origin, &tree))
                 && hazard_used_after_block(tcx, caller, block_index, &hazard_locals)
             {
                 return Some(format!(
@@ -1001,20 +997,25 @@ pub(crate) fn live_locals_at(
     live
 }
 
-fn expand_origin_aliases(aliases: &HashMap<Local, PlaceKey>, origins: &mut Vec<PlaceKey>) {
+fn expand_origin_aliases(
+    tree: &crate::verify::vm::alias_tree::AliasTree,
+    origins: &mut Vec<PlaceKey>,
+) {
     let mut changed = true;
     while changed {
         changed = false;
-        for (local, alias) in aliases {
+        for node in &tree.nodes {
             let local_key = PlaceKey {
-                base: PlaceBaseKey::Local(local.as_usize()),
+                base: PlaceBaseKey::Local(node.local.as_usize()),
                 fields: Vec::new(),
             };
+            let (root, fields) = tree.resolve_local_to_root(node.local);
+            let alias = PlaceKey::from_origin(root, fields);
             let related = origins.iter().any(|origin| {
                 local_key.overlaps(origin)
                     || origin.overlaps(&local_key)
                     || alias.overlaps(origin)
-                    || origin.overlaps(alias)
+                    || origin.overlaps(&alias)
             });
             if !related {
                 continue;
@@ -1023,8 +1024,8 @@ fn expand_origin_aliases(aliases: &HashMap<Local, PlaceKey>, origins: &mut Vec<P
                 origins.push(local_key);
                 changed = true;
             }
-            if !origins.contains(alias) {
-                origins.push(alias.clone());
+            if !origins.contains(&alias) {
+                origins.push(alias);
                 changed = true;
             }
         }
@@ -1139,38 +1140,46 @@ fn terminator_uses_any_local(terminator: &TerminatorKind<'_>, locals: &HashSet<L
     }
 }
 
-fn alias_from_rvalue<'tcx>(
-    rvalue: &Rvalue<'tcx>,
-    aliases: &HashMap<Local, PlaceKey>,
-) -> Option<PlaceKey> {
-    let place = crate::helpers::mir_utils::rvalue_source_place(rvalue)?;
-    Some(resolve_mir_place(place, aliases))
+/// Resolve a MIR place through the alias tree: a field-projected place resolves
+/// to itself; a whole-local place resolves to its ultimate origin.
+fn resolve_mir_place_tree(
+    tree: &crate::verify::vm::alias_tree::AliasTree,
+    place: &Place<'_>,
+) -> PlaceKey {
+    let fields = PlaceKey::from_mir_place(place).fields;
+    let (root, root_fields) = resolve_via_tree(tree, place.local, &fields);
+    PlaceKey::from_origin(root, root_fields)
 }
 
-/// Resolve a place to its origin PlaceKey through the alias map, falling back
-/// to the MIR place itself when unmapped.
-fn resolve_place_key(place: &Place<'_>, aliases: &HashMap<Local, PlaceKey>) -> PlaceKey {
-    aliases
-        .get(&place.local)
-        .cloned()
-        .unwrap_or_else(|| PlaceKey::from_mir_place(place))
+/// Resolve a place's *local* through the alias tree (ignoring the place's own
+/// field projections), falling back to the MIR place itself when unmapped.
+fn resolve_place_key_tree(
+    tree: &crate::verify::vm::alias_tree::AliasTree,
+    place: &Place<'_>,
+) -> PlaceKey {
+    if tree.tag_of(place.local).is_some() {
+        let (root, fields) = tree.resolve_local_to_root(place.local);
+        PlaceKey::from_origin(root, fields)
+    } else {
+        PlaceKey::from_mir_place(place)
+    }
 }
 
 fn place_is_raw_access_to_any_origin(
     place: &Place<'_>,
     origins: &[PlaceKey],
-    aliases: &HashMap<Local, PlaceKey>,
+    tree: &crate::verify::vm::alias_tree::AliasTree,
     local_decls: &LocalDecls<'_>,
 ) -> bool {
     origins
         .iter()
-        .any(|origin| place_is_raw_access_to_origin(place, origin, aliases, local_decls))
+        .any(|origin| place_is_raw_access_to_origin(place, origin, tree, local_decls))
 }
 
 fn place_is_raw_access_to_origin(
     place: &Place<'_>,
     origin: &PlaceKey,
-    aliases: &HashMap<Local, PlaceKey>,
+    tree: &crate::verify::vm::alias_tree::AliasTree,
     local_decls: &LocalDecls<'_>,
 ) -> bool {
     let local = place.local;
@@ -1184,7 +1193,7 @@ fn place_is_raw_access_to_origin(
     if !has_raw_deref {
         return false;
     }
-    let pointer = resolve_place_key(place, aliases);
+    let pointer = resolve_place_key_tree(tree, place);
     pointer.overlaps(origin)
 }
 
@@ -1193,7 +1202,7 @@ fn rvalue_reads_like_view(
     tcx: TyCtxt<'_>,
     caller: DefId,
     origins: &[PlaceKey],
-    aliases: &HashMap<Local, PlaceKey>,
+    tree: &crate::verify::vm::alias_tree::AliasTree,
 ) -> bool {
     let Some(place) = crate::helpers::mir_utils::rvalue_source_place(rvalue) else {
         return false;
@@ -1205,7 +1214,7 @@ fn rvalue_reads_like_view(
     {
         return false;
     }
-    let pointer = resolve_place_key(place, aliases);
+    let pointer = resolve_place_key_tree(tree, place);
     if !origins.iter().any(|origin| pointer.overlaps(origin)) {
         return false;
     }
@@ -1215,11 +1224,11 @@ fn rvalue_reads_like_view(
 fn rvalue_reads_any_origin(
     rvalue: &Rvalue<'_>,
     origins: &[PlaceKey],
-    aliases: &HashMap<Local, PlaceKey>,
+    tree: &crate::verify::vm::alias_tree::AliasTree,
     local_decls: &LocalDecls<'_>,
 ) -> bool {
     rvalue_any_place_matching(rvalue, &mut |place| {
-        place_is_raw_access_to_any_origin(place, origins, aliases, local_decls)
+        place_is_raw_access_to_any_origin(place, origins, tree, local_decls)
     })
 }
 
@@ -1227,7 +1236,7 @@ fn terminator_writes_origin<'tcx>(
     _tcx: TyCtxt<'tcx>,
     terminator: &TerminatorKind<'tcx>,
     origin: &PlaceKey,
-    aliases: &HashMap<Local, PlaceKey>,
+    tree: &crate::verify::vm::alias_tree::AliasTree,
 ) -> bool {
     let TerminatorKind::Call { func, args, .. } = terminator else {
         return false;
@@ -1242,13 +1251,13 @@ fn terminator_writes_origin<'tcx>(
     let Some(place) = operand_mir_place(&arg0.node) else {
         return false;
     };
-    resolve_mir_place(place, aliases).overlaps(origin)
+    resolve_mir_place_tree(tree, place).overlaps(origin)
 }
 
 fn terminator_uses_origin<'tcx>(
     terminator: &TerminatorKind<'tcx>,
     origin: &PlaceKey,
-    aliases: &HashMap<Local, PlaceKey>,
+    tree: &crate::verify::vm::alias_tree::AliasTree,
 ) -> bool {
     let TerminatorKind::Call { args, .. } = terminator else {
         return false;
@@ -1257,7 +1266,7 @@ fn terminator_uses_origin<'tcx>(
         let Some(place) = operand_mir_place(&arg.node) else {
             return false;
         };
-        resolve_mir_place(place, aliases).overlaps(origin)
+        resolve_mir_place_tree(tree, place).overlaps(origin)
     })
 }
 
@@ -1277,7 +1286,7 @@ fn terminator_invalidates_vec_owner<'tcx>(
     _tcx: TyCtxt<'tcx>,
     terminator: &TerminatorKind<'tcx>,
     owners: &[PlaceKey],
-    aliases: &HashMap<Local, PlaceKey>,
+    tree: &crate::verify::vm::alias_tree::AliasTree,
 ) -> bool {
     let TerminatorKind::Call { func, args, .. } = terminator else {
         return false;
@@ -1291,7 +1300,7 @@ fn terminator_invalidates_vec_owner<'tcx>(
         let Some(place) = operand_mir_place(&arg.node) else {
             return false;
         };
-        let arg = resolve_mir_place(place, aliases);
+        let arg = resolve_mir_place_tree(tree, place);
         owners
             .iter()
             .any(|owner| arg.overlaps(owner) || owner.overlaps(&arg))
@@ -1302,7 +1311,7 @@ fn find_as_ptr_receivers(
     tcx: TyCtxt<'_>,
     caller: DefId,
     origins: &[PlaceKey],
-    aliases: &HashMap<Local, PlaceKey>,
+    tree: &crate::verify::vm::alias_tree::AliasTree,
     check_alias_dest: bool,
 ) -> Vec<PlaceKey> {
     let body = tcx.optimized_mir(caller);
@@ -1334,9 +1343,11 @@ fn find_as_ptr_receivers(
                 .iter()
                 .any(|origin| destination_key.overlaps(origin))
                 || (check_alias_dest
-                    && aliases
-                        .get(&destination.local)
-                        .is_some_and(|alias| origins.iter().any(|o| alias.overlaps(o))))
+                    && tree.tag_of(destination.local).is_some_and(|_| {
+                        let (root, fields) = tree.resolve_local_to_root(destination.local);
+                        let alias = PlaceKey::from_origin(root, fields);
+                        origins.iter().any(|o| alias.overlaps(o))
+                    }))
         };
         if !dest_overlaps() {
             continue;
@@ -1347,7 +1358,7 @@ fn find_as_ptr_receivers(
         let Some(place) = operand_mir_place(&receiver.node) else {
             continue;
         };
-        let resolved = resolve_mir_place(place, aliases);
+        let resolved = resolve_mir_place_tree(tree, place);
         if !result.contains(&resolved) {
             result.push(resolved);
         }
@@ -1362,8 +1373,10 @@ fn is_ptr_add_offset_eq(
     view_len: &PlaceKey,
 ) -> bool {
     let body = tcx.optimized_mir(caller);
-    let origins_map = collect_local_origins(tcx, caller);
-    let view_len_root = trace_place_root(&origins_map, view_len);
+    let tree = crate::verify::vm::alias_tree::AliasTree::build(tcx, caller);
+    let view_len_root = view_len
+        .local()
+        .map(|l| tree.resolve_local_to_root(l));
     for (_bb, data) in body.basic_blocks.iter_enumerated() {
         if let TerminatorKind::Call {
             func,
@@ -1381,7 +1394,9 @@ fn is_ptr_add_offset_eq(
             ) && args.len() >= 2
             {
                 if let Some(offset_place) = operand_place(&args[1].node) {
-                    let offset_root = trace_place_root(&origins_map, &offset_place);
+                    let offset_root = offset_place
+                        .local()
+                        .map(|l| tree.resolve_local_to_root(l));
                     return offset_root == view_len_root;
                 }
             }
@@ -1752,13 +1767,13 @@ fn pre_existing_view_on_origin(
     origin_holders: &[PlaceKey],
 ) -> Option<String> {
     let body = tcx.optimized_mir(caller);
-    let origins = collect_local_origins(tcx, caller);
+    let tree = crate::verify::vm::alias_tree::AliasTree::build(tcx, caller);
 
     let holder_origins: Vec<(usize, Vec<usize>)> = origin_holders
         .iter()
         .flat_map(|h| {
             if let PlaceBaseKey::Local(l) = h.base {
-                let resolved = resolve_place_for_key(l, &h.fields, &origins);
+                let resolved = resolve_via_tree(&tree, Local::from_usize(l), &h.fields);
                 if resolved.0 == 1 && !resolved.1.is_empty() {
                     Some(resolved)
                 } else {
@@ -1783,7 +1798,8 @@ fn pre_existing_view_on_origin(
                 if let Some(arg) = args.first()
                     && let Some(place) = operand_mir_place(&arg.node)
                 {
-                    let arg_resolved = resolve_place(place, &origins);
+                    let arg_resolved =
+                        resolve_via_tree(&tree, place.local, &PlaceKey::from_mir_place(place).fields);
                     if arg_resolved.0 == 1
                         && !arg_resolved.1.is_empty()
                         && holder_origins
@@ -1826,7 +1842,8 @@ fn pre_existing_view_on_origin(
             {
                 continue;
             }
-            let resolved = resolve_place(place, &origins);
+            let resolved =
+                resolve_via_tree(&tree, place.local, &PlaceKey::from_mir_place(place).fields);
             if resolved.0 == 1
                 && !resolved.1.is_empty()
                 && holder_origins
@@ -1842,18 +1859,18 @@ fn pre_existing_view_on_origin(
     None
 }
 
-fn resolve_place_for_key(
-    local: usize,
-    local_fields: &[usize],
-    origins: &LocalOriginMap,
+/// Resolve `(local, fields)` through the alias tree: a place that already names
+/// a field path resolves to itself; a whole-local place resolves to its ultimate
+/// `(root, fields)` origin.
+fn resolve_via_tree(
+    tree: &crate::verify::vm::alias_tree::AliasTree,
+    local: Local,
+    fields: &[usize],
 ) -> (usize, Vec<usize>) {
-    if !local_fields.is_empty() {
-        return (local, local_fields.to_vec());
+    if !fields.is_empty() {
+        return (local.as_usize(), fields.to_vec());
     }
-    origins
-        .get(&local)
-        .cloned()
-        .unwrap_or((local, local_fields.to_vec()))
+    tree.resolve_local_to_root(local)
 }
 
 // ── Cross-crate callsite analysis ────────────────────────────────
@@ -1873,8 +1890,8 @@ pub(super) fn private_fn_callsite_delegation(
         if origins.is_empty() {
             continue;
         }
-        let aliases = collect_place_aliases(tcx, site.caller);
-        let extra = find_as_ptr_receivers(tcx, site.caller, &origins, &aliases, false);
+        let tree = crate::verify::vm::alias_tree::AliasTree::build(tcx, site.caller);
+        let extra = find_as_ptr_receivers(tcx, site.caller, &origins, &tree, false);
         for place in extra {
             if !origins.contains(&place) {
                 origins.push(place);
@@ -1958,13 +1975,15 @@ fn callsite_arg_origins(
     }) else {
         return Vec::new();
     };
-    let aliases = collect_place_aliases(tcx, caller);
+    let tree = crate::verify::vm::alias_tree::AliasTree::build(tcx, caller);
     let mut origins = vec![place.clone()];
-    if let Some(local) = place.local() {
-        if let Some(alias) = aliases.get(&local) {
-            if !origins.contains(alias) {
-                origins.push(alias.clone());
-            }
+    if let Some(local) = place.local()
+        && tree.tag_of(local).is_some()
+    {
+        let (root, fields) = tree.resolve_local_to_root(local);
+        let alias = PlaceKey::from_origin(root, fields);
+        if !origins.contains(&alias) {
+            origins.push(alias);
         }
     }
     origins
