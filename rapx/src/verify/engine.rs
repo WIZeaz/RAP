@@ -331,6 +331,11 @@ impl<'tcx> VerifyEngine<'tcx> {
                                 out.push(RelevantItem::CalleeExit { dest });
                             }
                         } else {
+                            if prev != caller
+                                && let Some((_, dest)) = active.pop()
+                            {
+                                out.push(RelevantItem::CalleeExit { dest });
+                            }
                             let local = match &item {
                                 RelevantItem::Statement { block, .. }
                                 | RelevantItem::Terminator { block, .. } => block.as_usize(),

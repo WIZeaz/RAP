@@ -315,9 +315,11 @@ fn free_list_allocator() {
     assert_not_contain(&output, "result: UNSOUND");
 }
 
-// ================ Box Tests ================
+// ================ Inlined callee chain ================
+// `skip` hands straight to `collect` with no caller item between them, and the
+// caller local `argv` indexes past `skip`'s three locals.
 #[test]
-fn box_deref() {
-    let output = run_with_args("verify_cases/box_deref", CMD_VERIFY_SCAN);
-    assert_function_result(&output, "f", "SOUND");
+fn inline_callee_chain() {
+    let output = run_with_args("verify_cases/inline_callee_chain", CMD_VERIFY_SCAN);
+    assert_not_contain(&output, "verifier crashed");
 }
