@@ -454,13 +454,11 @@ fn deref_sound_cases() {
     assert_contain(&output, "result: SOUND");
 }
 
-// ================ Box Deref Checkpoint Skip ================
-// The safe `*b` Box deref is skipped in the raw-ptr-deref checkpoint scan, so
-// `f` has no unsafe checkpoints and must report SOUND with none.
+// ================ Box Deref ================
 #[test]
 fn box_deref() {
     let output = run_with_args("verify_units/box_deref", CMD_VERIFY_SCAN);
-    assert_function_result(&output, "f", "SOUND (no unsafe checkpoints)");
+    assert_function_result(&output, "f", "SOUND");
 }
 
 // ================ Typed Provenance Cases =============
