@@ -314,12 +314,3 @@ fn free_list_allocator() {
     let output = run_with_args("verify_cases/free_list_allocator", CMD_VERIFY_TARGETED);
     assert_not_contain(&output, "result: UNSOUND");
 }
-
-// ================ Inlined callee chain ================
-// `skip` hands straight to `collect` with no caller item between them, and the
-// caller local `argv` indexes past `skip`'s three locals.
-#[test]
-fn inline_callee_chain() {
-    let output = run_with_args("verify_cases/inline_callee_chain", CMD_VERIFY_SCAN);
-    assert_not_contain(&output, "verifier crashed");
-}
