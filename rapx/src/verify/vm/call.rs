@@ -230,12 +230,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
             self.set_local(
                 destination,
-                VmValue {
-                    term,
-                    ty: dest_ty,
-                    provenance: None,
-                    invariants: ValueInvariants::default(),
-                },
+                VmValue::new(term, dest_ty),
             );
         }
 
@@ -647,12 +642,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             let term = self.fresh_int(&format!("nn_new_{}", destination.as_usize()));
             self.set_local(
                 destination,
-                VmValue {
-                    term,
-                    ty: dest_ty,
-                    provenance: None,
-                    invariants: ValueInvariants::default(),
-                },
+                VmValue::new(term, dest_ty),
             );
         }
         true
@@ -1343,14 +1333,40 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let dest_ty = self.body.local_decls[destination].ty;
         self.set_local(
             destination,
-            VmValue {
-                term,
-                ty: dest_ty,
-                provenance: None,
-                invariants: ValueInvariants::default(),
-            },
+            VmValue::new(term, dest_ty),
         );
         true
+    }
+
+    /// Apply a binary numeric effect: compute `f(lhs.term, rhs.term)` and store
+    /// it as the destination's fresh scalar value.
+    fn apply_binary_num(
+        &mut self,
+        dest: Local,
+        args: &[VmValue<'ctx, 'tcx>],
+        lhs_arg: usize,
+        rhs_arg: usize,
+        f: impl Fn(&Int<'ctx>, &Int<'ctx>) -> Int<'ctx>,
+    ) {
+        if let (Some(lhs), Some(rhs)) = (args.get(lhs_arg), args.get(rhs_arg)) {
+            let dest_ty = self.body.local_decls[dest].ty;
+            self.set_local(dest, VmValue::new(f(&lhs.term, &rhs.term), dest_ty));
+        }
+    }
+
+    /// Apply a unary numeric effect: compute `f(a.term)` and store it as the
+    /// destination's fresh scalar value.
+    fn apply_unary_num(
+        &mut self,
+        dest: Local,
+        args: &[VmValue<'ctx, 'tcx>],
+        arg: usize,
+        f: impl Fn(&Int<'ctx>) -> Int<'ctx>,
+    ) {
+        if let Some(a) = args.get(arg) {
+            let dest_ty = self.body.local_decls[dest].ty;
+            self.set_local(dest, VmValue::new(f(&a.term), dest_ty));
+        }
     }
 
     /// Apply a single call effect to the VM state.
@@ -1376,12 +1392,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // the returned slice as a fresh external allocation so a
                 // downstream `Allocated`/`InBound` can still match `[T]` vs `T`.
                 let dest_ty = self.body.local_decls[dest].ty;
-                let mut val = args.get(*arg).cloned().unwrap_or_else(|| VmValue {
-                    term: self.fresh_int("replaced"),
-                    ty: dest_ty,
-                    provenance: None,
-                    invariants: ValueInvariants::default(),
-                });
+                let mut val = args.get(*arg).cloned().unwrap_or_else(|| VmValue::new(self.fresh_int("replaced"), dest_ty));
                 let arg_local = caller_arg_locals.get(*arg).copied().flatten();
                 let pointee = arg_local
                     .and_then(|l| self.field_values.get(&(l, Vec::new())).cloned());
@@ -2033,12 +2044,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 }
                 let dest_ty = self.body.local_decls[dest].ty;
                 let term = self.fresh_int(&format!("len_{}", dest.as_usize()));
-                let val = VmValue {
-                    term,
-                    ty: dest_ty,
-                    provenance: None,
-                    invariants: ValueInvariants::default(),
-                };
+                let val = VmValue::new(term, dest_ty);
                 self.set_local(dest, val);
             }
             CallEffect::ReturnFieldOfArg { arg, field } => {
@@ -2057,12 +2063,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             CallEffect::ReturnConst { value } => {
                 let dest_ty = self.body.local_decls[dest].ty;
                 let term = Int::from_u64(self.ctx, *value);
-                let val = VmValue {
-                    term,
-                    ty: dest_ty,
-                    provenance: None,
-                    invariants: ValueInvariants::default(),
-                };
+                let val = VmValue::new(term, dest_ty);
                 self.set_local(dest, val);
             }
             CallEffect::ReturnAlignOffset { ptr_arg, align_arg } => {
@@ -2080,49 +2081,28 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     self.path_conditions.push(offset.ge(&zero));
                     self.path_conditions.push(offset.lt(&align_val.term));
                 }
-                let val = VmValue {
-                    term: offset,
-                    ty: dest_ty,
-                    provenance: None,
-                    invariants: ValueInvariants::default(),
-                };
+                let val = VmValue::new(offset, dest_ty);
                 self.set_local(dest, val);
             }
             CallEffect::ReturnMin { lhs_arg, rhs_arg } => {
-                if let (Some(lhs), Some(rhs)) = (args.get(*lhs_arg), args.get(*rhs_arg)) {
-                    let dest_ty = self.body.local_decls[dest].ty;
-                    // Build the min as a first-class `ite(lhs <= rhs, lhs, rhs)`
-                    // term rather than a fresh variable plus disjunction facts.
-                    // A fresh variable breaks downstream alignment/bounds
-                    // reasoning: e.g. `ptr.align_offset(8)` guarantees
-                    // `(ptr + offset) % 8 == 0`, but `offset.min(len)` would
-                    // then become an unrelated symbol and the `Align`/`InBound`
-                    // checks on `*(ptr.add(offset) as *const usize)` could no
-                    // longer discharge.  With an `ite`, the path conditions
-                    // (`offset < 8`, `len >= 16`) let the solver reduce
-                    // `ite(offset <= len, offset, len)` back to `offset`.
-                    let term = lhs.term.le(&rhs.term).ite(&lhs.term, &rhs.term);
-                    let val = VmValue {
-                        term,
-                        ty: dest_ty,
-                        provenance: None,
-                        invariants: ValueInvariants::default(),
-                    };
-                    self.set_local(dest, val);
-                }
+                // Build the min as a first-class `ite(lhs <= rhs, lhs, rhs)`
+                // term rather than a fresh variable plus disjunction facts.
+                // A fresh variable breaks downstream alignment/bounds
+                // reasoning: e.g. `ptr.align_offset(8)` guarantees
+                // `(ptr + offset) % 8 == 0`, but `offset.min(len)` would
+                // then become an unrelated symbol and the `Align`/`InBound`
+                // checks on `*(ptr.add(offset) as *const usize)` could no
+                // longer discharge.  With an `ite`, the path conditions
+                // (`offset < 8`, `len >= 16`) let the solver reduce
+                // `ite(offset <= len, offset, len)` back to `offset`.
+                self.apply_binary_num(dest, args, *lhs_arg, *rhs_arg, |lhs, rhs| {
+                    lhs.le(rhs).ite(lhs, rhs)
+                });
             }
             CallEffect::ReturnMax { lhs_arg, rhs_arg } => {
-                if let (Some(lhs), Some(rhs)) = (args.get(*lhs_arg), args.get(*rhs_arg)) {
-                    let dest_ty = self.body.local_decls[dest].ty;
-                    let term = lhs.term.ge(&rhs.term).ite(&lhs.term, &rhs.term);
-                    let val = VmValue {
-                        term,
-                        ty: dest_ty,
-                        provenance: None,
-                        invariants: ValueInvariants::default(),
-                    };
-                    self.set_local(dest, val);
-                }
+                self.apply_binary_num(dest, args, *lhs_arg, *rhs_arg, |lhs, rhs| {
+                    lhs.ge(rhs).ite(lhs, rhs)
+                });
             }
             CallEffect::ReturnClamp {
                 value_arg,
@@ -2136,69 +2116,32 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // clamp(v, mn, mx) = max(mn, min(v, mx))
                     let upper = v.term.gt(&mx.term).ite(&mx.term, &v.term);
                     let term = v.term.lt(&mn.term).ite(&mn.term, &upper);
-                    let val = VmValue {
-                        term,
-                        ty: dest_ty,
-                        provenance: None,
-                        invariants: ValueInvariants::default(),
-                    };
+                    let val = VmValue::new(term, dest_ty);
                     self.set_local(dest, val);
                 }
             }
             CallEffect::ReturnAbs { arg } => {
-                if let Some(a) = args.get(*arg) {
-                    let dest_ty = self.body.local_decls[dest].ty;
+                self.apply_unary_num(dest, args, *arg, |a| {
                     let zero = Int::from_u64(self.ctx, 0);
-                    let neg = Int::sub(self.ctx, &[&zero, &a.term]);
-                    let term = a.term.ge(&zero).ite(&a.term, &neg);
-                    let val = VmValue {
-                        term,
-                        ty: dest_ty,
-                        provenance: None,
-                        invariants: ValueInvariants::default(),
-                    };
-                    self.set_local(dest, val);
-                }
+                    let neg = Int::sub(self.ctx, &[&zero, a]);
+                    a.ge(&zero).ite(a, &neg)
+                });
             }
             CallEffect::ReturnNeg { arg } => {
-                if let Some(a) = args.get(*arg) {
-                    let dest_ty = self.body.local_decls[dest].ty;
+                self.apply_unary_num(dest, args, *arg, |a| {
                     let zero = Int::from_u64(self.ctx, 0);
-                    let term = Int::sub(self.ctx, &[&zero, &a.term]);
-                    let val = VmValue {
-                        term,
-                        ty: dest_ty,
-                        provenance: None,
-                        invariants: ValueInvariants::default(),
-                    };
-                    self.set_local(dest, val);
-                }
+                    Int::sub(self.ctx, &[&zero, a])
+                });
             }
             CallEffect::ReturnAdd { lhs_arg, rhs_arg } => {
-                if let (Some(lhs), Some(rhs)) = (args.get(*lhs_arg), args.get(*rhs_arg)) {
-                    let dest_ty = self.body.local_decls[dest].ty;
-                    let term = Int::add(self.ctx, &[&lhs.term, &rhs.term]);
-                    let val = VmValue {
-                        term,
-                        ty: dest_ty,
-                        provenance: None,
-                        invariants: ValueInvariants::default(),
-                    };
-                    self.set_local(dest, val);
-                }
+                self.apply_binary_num(dest, args, *lhs_arg, *rhs_arg, |lhs, rhs| {
+                    Int::add(self.ctx, &[lhs, rhs])
+                });
             }
             CallEffect::ReturnMul { lhs_arg, rhs_arg } => {
-                if let (Some(lhs), Some(rhs)) = (args.get(*lhs_arg), args.get(*rhs_arg)) {
-                    let dest_ty = self.body.local_decls[dest].ty;
-                    let term = Int::mul(self.ctx, &[&lhs.term, &rhs.term]);
-                    let val = VmValue {
-                        term,
-                        ty: dest_ty,
-                        provenance: None,
-                        invariants: ValueInvariants::default(),
-                    };
-                    self.set_local(dest, val);
-                }
+                self.apply_binary_num(dest, args, *lhs_arg, *rhs_arg, |lhs, rhs| {
+                    Int::mul(self.ctx, &[lhs, rhs])
+                });
             }
             CallEffect::ReturnOptionSomeAdd { lhs_arg, rhs_arg } => {
                 if let (Some(lhs), Some(rhs)) = (args.get(*lhs_arg), args.get(*rhs_arg)) {
@@ -2211,12 +2154,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     self.set_field_value(
                         dest,
                         vec![0],
-                        VmValue {
-                            term,
-                            ty: lhs.ty,
-                            provenance: None,
-                            invariants: ValueInvariants::default(),
-                        },
+                        VmValue::new(term, lhs.ty),
                     );
                 }
             }
@@ -2226,12 +2164,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     self.set_field_value(
                         dest,
                         vec![0],
-                        VmValue {
-                            term,
-                            ty: lhs.ty,
-                            provenance: None,
-                            invariants: ValueInvariants::default(),
-                        },
+                        VmValue::new(term, lhs.ty),
                     );
                 }
             }
@@ -2270,12 +2203,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         self.set_field_value(
                             dest,
                             vec![0],
-                            VmValue {
-                                term: payload,
-                                ty: payload_ty,
-                                provenance: None,
-                                invariants: ValueInvariants::default(),
-                            },
+                            VmValue::new(payload, payload_ty),
                         );
                     }
                 }
@@ -2314,12 +2242,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         self.set_field_value(
                             dest,
                             vec![0],
-                            VmValue {
-                                term: payload,
-                                ty: payload_ty,
-                                provenance: None,
-                                invariants: ValueInvariants::default(),
-                            },
+                            VmValue::new(payload, payload_ty),
                         );
                     }
                 }
@@ -2346,12 +2269,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         self.set_field_value(
                             dest,
                             vec![0, *field],
-                            VmValue {
-                                term: len,
-                                ty: field_ty,
-                                provenance: None,
-                                invariants: ValueInvariants::default(),
-                            },
+                            VmValue::new(len, field_ty),
                         );
                     }
                 }
@@ -2369,12 +2287,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let dest_ty = self.body.local_decls[dest].ty;
                 self.set_local(
                     dest,
-                    VmValue {
-                        term: len,
-                        ty: dest_ty,
-                        provenance: None,
-                        invariants: ValueInvariants::default(),
-                    },
+                    VmValue::new(len, dest_ty),
                 );
             }
             CallEffect::ReturnNonZeroIff { arg } => {
@@ -2388,12 +2301,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .push(term._eq(&zero)._eq(&a.term._eq(&zero)));
                     self.set_local(
                         dest,
-                        VmValue {
-                            term,
-                            ty: dest_ty,
-                            provenance: None,
-                            invariants: ValueInvariants::default(),
-                        },
+                        VmValue::new(term, dest_ty),
                     );
                 }
             }
@@ -2406,12 +2314,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     self.set_field_value(
                         dest,
                         vec![0],
-                        VmValue {
-                            term,
-                            ty: a.ty,
-                            provenance: None,
-                            invariants: ValueInvariants::default(),
-                        },
+                        VmValue::new(term, a.ty),
                     );
                 }
             }
@@ -2428,12 +2331,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 self.set_field_value(
                     dest,
                     vec![0],
-                    VmValue {
-                        term,
-                        ty: payload_ty,
-                        provenance: None,
-                        invariants: ValueInvariants::default(),
-                    },
+                    VmValue::new(term, payload_ty),
                 );
             }
             CallEffect::WriteMemory { pointer_arg } => {
@@ -3017,12 +2915,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 self.path_conditions.push(term.gt(&zero));
                 self.set_local(
                     dest,
-                    VmValue {
-                        term,
-                        ty: dest_ty,
-                        provenance: None,
-                        invariants: ValueInvariants::default(),
-                    },
+                    VmValue::new(term, dest_ty),
                 );
             }
             CallEffect::ChecksIndexBoundsDisjoint {
@@ -3076,12 +2969,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let term = self.fresh_int(&format!("ck_ok_{}", dest.as_usize()));
                 self.set_local(
                     dest,
-                    VmValue {
-                        term,
-                        ty: dest_ty,
-                        provenance: None,
-                        invariants: ValueInvariants::default(),
-                    },
+                    VmValue::new(term, dest_ty),
                 );
             }
         }
@@ -3436,12 +3324,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
         }
         let term = self.fresh_int(&format!("field_{}", dest.as_usize()));
-        let val = VmValue {
-            term,
-            ty: dest_ty,
-            provenance: None,
-            invariants: ValueInvariants::default(),
-        };
+        let val = VmValue::new(term, dest_ty);
         self.set_local(dest, val);
     }
 
@@ -3492,18 +3375,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         self.path_conditions.push(start.le(&end));
         self.path_conditions.push(end.le(&len_term));
 
-        let start_val = VmValue {
-            term: start,
-            ty: field_ty(0),
-            provenance: None,
-            invariants: ValueInvariants::default(),
-        };
-        let end_val = VmValue {
-            term: end,
-            ty: field_ty(1),
-            provenance: None,
-            invariants: ValueInvariants::default(),
-        };
+        let start_val = VmValue::new(start, field_ty(0));
+        let end_val = VmValue::new(end, field_ty(1));
         self.set_field_value(dest, vec![0], start_val);
         self.set_field_value(dest, vec![1], end_val);
     }

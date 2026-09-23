@@ -1662,12 +1662,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     if let Some(src_val) = self.locals.get(&src).cloned() {
                         let rhs_val = rhs
                             .and_then(|r| self.locals.get(&r))
-                            .map(|v| VmValue {
-                                term: v.term.clone(),
-                                ty: v.ty,
-                                provenance: None,
-                                invariants: ValueInvariants::default(),
-                            })
+                            .map(|v| VmValue::new(v.term.clone(), v.ty))
                             .unwrap_or(VmValue {
                                 term: Int::from_u64(self.ctx, 0),
                                 ty: self.body.local_decls[dest_local].ty,
@@ -2607,12 +2602,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         }
                     }
                 }
-                VmValue {
-                    term,
-                    ty: dest_ty,
-                    provenance: None,
-                    invariants: ValueInvariants::default(),
-                }
+                VmValue::new(term, dest_ty)
             }
             #[cfg(not(rapx_ge_99))]
             Rvalue::ShallowInitBox(operand, _ty) => {
@@ -2629,32 +2619,17 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     val
                 } else {
                     let term = self.fresh_int("copy_for_deref");
-                    VmValue {
-                        term,
-                        ty: dest_ty,
-                        provenance: None,
-                        invariants: ValueInvariants::default(),
-                    }
+                    VmValue::new(term, dest_ty)
                 }
             }
             Rvalue::Repeat(operand, _count) => {
                 let _val = self.value_of_operand(operand);
                 let term = self.fresh_int("repeat");
-                VmValue {
-                    term,
-                    ty: dest_ty,
-                    provenance: None,
-                    invariants: ValueInvariants::default(),
-                }
+                VmValue::new(term, dest_ty)
             }
             Rvalue::ThreadLocalRef(_) => {
                 let term = self.fresh_int("thread_local");
-                VmValue {
-                    term,
-                    ty: dest_ty,
-                    provenance: None,
-                    invariants: ValueInvariants::default(),
-                }
+                VmValue::new(term, dest_ty)
             }
             #[cfg(not(rapx_ge_95))]
             Rvalue::NullaryOp(_op) => {
@@ -2666,21 +2641,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let one = Int::from_u64(self.ctx, 1);
                     self.path_conditions.push(term.ge(&one));
                 }
-                VmValue {
-                    term,
-                    ty: dest_ty,
-                    provenance: None,
-                    invariants: ValueInvariants::default(),
-                }
+                VmValue::new(term, dest_ty)
             }
             Rvalue::WrapUnsafeBinder(_operand, _ty) => {
                 let term = self.fresh_int("wrap_unsafe_binder");
-                VmValue {
-                    term,
-                    ty: dest_ty,
-                    provenance: None,
-                    invariants: ValueInvariants::default(),
-                }
+                VmValue::new(term, dest_ty)
             }
             #[cfg(rapx_rvalue_has_reborrow)]
             Rvalue::Reborrow(_ty, _mutability, _place) => {
