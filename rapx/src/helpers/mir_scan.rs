@@ -1,3 +1,7 @@
+#[cfg(not(rapx_ge_100))]
+use rustc_hir::LangItem;
+#[cfg(rapx_ge_100)]
+use rustc_hir::attrs::lang_items::LangItem;
 use rustc_hir::{Safety, def_id::DefId};
 use rustc_middle::{
     mir::{
@@ -6,8 +10,6 @@ use rustc_middle::{
     },
     ty::{self, Ty, TyCtxt, TyKind},
 };
-#[cfg(rapx_box_deref_transmute)]
-use rustc_middle::mir::CastKind;
 use std::collections::{HashMap, HashSet};
 
 use super::mir_utils::{dep_callee_def_id, pointee_ty};
@@ -318,12 +320,12 @@ pub struct RawPtrDerefInfo<'tcx> {
     pub statement_index: usize,
 }
 
-/// Locals that hold the result of a `BoxDerefTransmute` cast (directly, or
-/// through copies and pointer casts). The compiler lowers `*box` to a
-/// raw-pointer deref of the pointer produced by `BoxDerefTransmute`, and that
-/// deref is safe by the `Box` invariant, so it is not a raw-pointer-deref
-/// checkpoint.
-fn box_deref_transmute_locals(body: &Body<'_>) -> HashSet<Local> {
+/// Locals that hold the result of the compiler's safe `*box` deref lowering
+/// (directly, or through copies and pointer casts). The compiler lowers `*box`
+/// to a raw-pointer deref of a pointer produced by casting the box's inner
+/// field to a raw pointer, and that deref is safe by the `Box` invariant, so it
+/// is not a raw-pointer-deref checkpoint.
+fn box_deref_transmute_locals<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> HashSet<Local> {
     let mut result = HashSet::new();
     let mut changed = true;
     while changed {
@@ -337,7 +339,7 @@ fn box_deref_transmute_locals(body: &Body<'_>) -> HashSet<Local> {
                 if !target.projection.is_empty() {
                     continue;
                 }
-                let from_box = if is_box_deref_transmute(rhs) {
+                let from_box = if is_box_deref_cast(tcx, body, rhs) {
                     true
                 } else if let Rvalue::Use(Operand::Copy(p) | Operand::Move(p), ..)
                     | Rvalue::Cast(_, Operand::Copy(p) | Operand::Move(p), _) = rhs
@@ -355,18 +357,20 @@ fn box_deref_transmute_locals(body: &Body<'_>) -> HashSet<Local> {
     result
 }
 
-/// Whether `rvalue` is a `BoxDerefTransmute` cast (the compiler's safe `*box`
-/// deref, present only on recent nightlies).
-fn is_box_deref_transmute(rvalue: &Rvalue<'_>) -> bool {
-    #[cfg(rapx_box_deref_transmute)]
-    {
-        matches!(rvalue, Rvalue::Cast(CastKind::BoxDerefTransmute, _, _))
-    }
-    #[cfg(not(rapx_box_deref_transmute))]
-    {
-        let _ = rvalue;
-        false
-    }
+/// Whether `rvalue` is the compiler's lowering of the safe `*box` deref: a cast
+/// to a raw pointer whose source place is rooted in a `Box` local. Recent
+/// nightlies tag this cast `BoxDerefTransmute`; older ones emit a plain
+/// `Transmute` of the box's `Unique`/`NonNull` field. Checking the source base
+/// local's type catches both without depending on the cast kind.
+fn is_box_deref_cast(tcx: TyCtxt<'_>, body: &Body<'_>, rvalue: &Rvalue<'_>) -> bool {
+    let Rvalue::Cast(_, Operand::Copy(p) | Operand::Move(p), _) = rvalue else {
+        return false;
+    };
+    let base_ty = body.local_decls[p.local].ty;
+    matches!(
+        base_ty.kind(),
+        TyKind::Adt(adt, _) if tcx.is_lang_item(adt.did(), LangItem::OwnedBox)
+    )
 }
 
 /// Collect all raw pointer dereference operations in `def_id` as
@@ -382,9 +386,9 @@ pub fn collect_raw_ptr_deref_info<'tcx>(
 
     let body = tcx.optimized_mir(def_id);
     // The compiler lowers `*box` to a raw-pointer deref of the pointer produced
-    // by a `BoxDerefTransmute` cast; that deref is safe by the `Box` invariant,
-    // so it is not a raw-pointer-deref checkpoint.
-    let box_derefs = box_deref_transmute_locals(body);
+    // by casting the box's inner field to a raw pointer; that deref is safe by
+    // the `Box` invariant, so it is not a raw-pointer-deref checkpoint.
+    let box_derefs = box_deref_transmute_locals(tcx, body);
     // Filter: only check statements from the function's own source file,
     // not from inlined library code (Vec, Box, etc.).
     let fn_span = tcx.def_span(def_id);
