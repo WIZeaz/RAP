@@ -461,6 +461,16 @@ fn box_deref() {
     assert_function_result(&output, "f", "SOUND");
 }
 
+// ================ Self-recursive Callee ================
+// A self-recursive callee must not overflow the pointer-arithmetic wrapper
+// summary (which is cycle-detected and memoized).
+#[test]
+fn self_recursive_callee() {
+    let output = run_with_args("verify_units/self_recursive_callee", CMD_VERIFY_SCAN);
+    assert_not_contain(&output, "overflowed");
+    assert_function_result(&output, "target", "SOUND");
+}
+
 // ================ Typed Provenance Cases =============
 #[test]
 fn typed_provenance_cases() {

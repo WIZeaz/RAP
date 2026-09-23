@@ -4,7 +4,7 @@
 //! to approximate its effects: pointer-arithmetic wrappers, `from_raw_parts`
 //! wrappers, argument-to-return dataflow, and index-disjointness validators.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use rustc_hir::def_id::DefId;
 use rustc_middle::{
@@ -114,12 +114,64 @@ fn trace_to_callee_arg<'tcx>(
     None
 }
 
-/// Detect when a local callee wraps a pointer-arithmetic call (add/sub) and
-/// produce the correct `ReturnPointerAdd` / `ReturnPointerSub` effect.
+/// Memo state for the transitive wrapper-effect walk: `Computing` marks a
+/// callee currently being resolved (a re-entry is a self/mutual-recursive
+/// cycle), `Done` caches the finished result.
+enum WrapperEffectMemo {
+    Computing,
+    Done(Option<CallEffect>),
+}
+
+/// Resolve `callee`'s wrapper effect by walking nested wrapper calls, with
+/// cycle detection and memoization. `probe` inspects `callee`'s body and, for
+/// a nested call it follows, invokes `recurse`, which routes back through this
+/// resolver so the memo applies uniformly. A callee re-entered while still
+/// being resolved is a cycle and resolves to `None` (no finite wrapper chain).
+fn resolve_wrapper_effect<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    callee: DefId,
+    memo: &mut HashMap<DefId, WrapperEffectMemo>,
+    probe: &dyn Fn(
+        TyCtxt<'tcx>,
+        DefId,
+        &mut (dyn FnMut(DefId) -> Option<CallEffect> + '_),
+    ) -> Option<CallEffect>,
+) -> Option<CallEffect> {
+    if let Some(state) = memo.get(&callee) {
+        return match state {
+            WrapperEffectMemo::Computing => None,
+            WrapperEffectMemo::Done(effect) => effect.clone(),
+        };
+    }
+    memo.insert(callee, WrapperEffectMemo::Computing);
+    let result = {
+        let recurse = &mut |inner: DefId| resolve_wrapper_effect(tcx, inner, memo, probe);
+        probe(tcx, callee, recurse)
+    };
+    memo.insert(callee, WrapperEffectMemo::Done(result.clone()));
+    result
+}
+
+/// Probe whether `callee` is a pointer-arithmetic (add/sub) wrapper, following
+/// nested wrapper calls transitively. `effect_summary` runs this on every local
+/// callee; it returns `None` for anything that is not — transitively — a
+/// pointer add/sub wrapper.
 pub(super) fn try_pointer_arith_wrapper_effect<'tcx>(
     tcx: TyCtxt<'tcx>,
     callee: DefId,
     _destination: Option<Local>,
+) -> Option<CallEffect> {
+    let mut memo: HashMap<DefId, WrapperEffectMemo> = HashMap::new();
+    resolve_wrapper_effect(tcx, callee, &mut memo, &pointer_arith_wrapper_probe)
+}
+
+/// Single-effect recognizer for [`resolve_wrapper_effect`]: does `callee`
+/// directly wrap a pointer add/sub, or delegate to a nested callee that itself
+/// resolves to one?
+fn pointer_arith_wrapper_probe<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    callee: DefId,
+    recurse: &mut (dyn FnMut(DefId) -> Option<CallEffect> + '_),
 ) -> Option<CallEffect> {
     if !tcx.is_mir_available(callee) {
         return None;
@@ -154,7 +206,7 @@ pub(super) fn try_pointer_arith_wrapper_effect<'tcx>(
                 {
                     return None;
                 }
-                try_pointer_arith_wrapper_effect(tcx, inner_callee, Some(call_dest.local))
+                recurse(inner_callee)
             })
         } else {
             None
