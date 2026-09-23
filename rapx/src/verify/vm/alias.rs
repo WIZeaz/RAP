@@ -6,6 +6,7 @@
 //! back to the originating parameter/local.
 
 use super::alias_hazard::{self, AliasProducer, HazardKind};
+use crate::analysis::alias::FieldOrigin;
 use crate::helpers::mir_scan::Checkpoint;
 use crate::verify::api_classify;
 use crate::verify::contract::{Property, PropertyKind};
@@ -344,15 +345,12 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
                                 // caller rather than field encapsulation, so the
                                 // encapsulation check must not fire there.
                                 if !fn_has_alias_requires(vm_state.tcx, checkpoint.caller) {
-                                    if let Some(reason) =
-                                        alias_hazard::escaped_self_field_violation(
-                                            vm_state.tcx,
-                                            checkpoint.caller,
-                                            &sfo,
-                                        )
-                                    {
-                                        return VmAliasResult::Failed(reason);
-                                    }
+                                    return check_escaped_field(
+                                        vm_state.tcx,
+                                        checkpoint.caller,
+                                        &sfo,
+                                        HazardKind::SharedView,
+                                    );
                                 }
                             }
                         }
@@ -520,19 +518,15 @@ fn check_view_alias<'ctx, 'tcx>(
     }
 
     // Resolve origin PlaceKey from the checkpoint argument
-    let origin_place = alias_hazard::operand_place(origin_arg)
-        .or_else(|| {
-            alias_hazard::operand_mir_place(origin_arg).map(|p| PlaceKey::from_mir_place(p))
-        })
-        .unwrap_or_else(|| {
-            // Fallback: extract from the origin value's type
-            PlaceKey::from_origin(
-                crate::helpers::mir_utils::extract_local(origin_arg)
-                    .map(|l| l.as_usize())
-                    .unwrap_or(1),
-                vec![],
-            )
-        });
+    let origin_place = alias_hazard::operand_place(origin_arg).unwrap_or_else(|| {
+        // Fallback: extract from the origin value's type
+        PlaceKey::from_origin(
+            crate::helpers::mir_utils::extract_local(origin_arg)
+                .map(|l| l.as_usize())
+                .unwrap_or(1),
+            vec![],
+        )
+    });
 
     // Trace through local origins to resolve intermediate copies/casts.
     // e.g. `_tmp = self.ptr` → trace to `_1.0`
@@ -650,36 +644,15 @@ fn check_view_alias<'ctx, 'tcx>(
     let dest_escapes = alias_hazard::destination_flows_to_return(tcx, caller, destination);
     if dest_escapes {
         // Try resolved origin first (traces through local copies to struct fields)
-        let field_origin = alias_hazard::self_field_origin(tcx, caller, &resolved_origin)
-            .or_else(|| alias_hazard::self_field_origin(tcx, caller, &origin_place))
-            // If tracing through origins failed, try to find the struct field by
-            // scanning all collector local origins for a _1 field mapping.
-            .or_else(|| find_struct_field_origin_for_param(tcx, caller, checkpoint));
+        let field_origin =
+            resolve_escaped_field_origin(tcx, caller, &resolved_origin, &origin_place, checkpoint);
         if let Some(sfo) = field_origin {
-            if let Some(reason) = alias_hazard::escaped_self_field_violation(tcx, caller, &sfo) {
-                return VmAliasResult::Failed(reason);
-            }
-            if kind == HazardKind::UniqueView {
-                // A `&mut` escaping through a private raw field is still unsound:
-                // the caller can re-enter the method and obtain a second `&mut`.
-                return VmAliasResult::Failed(
-                    "unique view escapes through a private raw field".into(),
-                );
-            }
-            return VmAliasResult::Proved;
+            return check_escaped_field(tcx, caller, &sfo, kind);
         }
         let any_field = alias_hazard::any_struct_field_origin(tcx, caller, &resolved_origin)
             .or_else(|| alias_hazard::any_struct_field_origin(tcx, caller, &origin_place));
         if let Some(sfo) = any_field {
-            if let Some(reason) = alias_hazard::escaped_self_field_violation(tcx, caller, &sfo) {
-                return VmAliasResult::Failed(reason);
-            }
-            if kind == HazardKind::UniqueView {
-                return VmAliasResult::Failed(
-                    "unique view escapes through a private raw field".into(),
-                );
-            }
-            return VmAliasResult::Proved;
+            return check_escaped_field(tcx, caller, &sfo, kind);
         }
         if let Some(reason) =
             alias_hazard::private_fn_callsite_delegation(tcx, caller, &origin_place, kind)
@@ -748,7 +721,7 @@ fn find_struct_field_origin_for_param<'tcx>(
     tcx: rustc_middle::ty::TyCtxt<'tcx>,
     caller: DefId,
     checkpoint: &Checkpoint<'tcx>,
-) -> Option<alias_hazard::SelfFieldOrigin> {
+) -> Option<FieldOrigin> {
     let body = tcx.optimized_mir(caller);
     let (adt_def, _) = self_adt(tcx, caller)?;
 
@@ -775,7 +748,7 @@ fn find_struct_field_origin_for_param<'tcx>(
             let field_index = fields[0];
             let adt = tcx.adt_def(adt_def);
             let field = adt.all_fields().nth(field_index)?;
-            return Some(alias_hazard::SelfFieldOrigin {
+            return Some(FieldOrigin {
                 struct_def_id: adt_def,
                 field_index,
                 field_name: field.name.to_string(),
@@ -826,7 +799,7 @@ fn find_struct_field_origin_for_param<'tcx>(
                 let field_index = fields[0];
                 let adt = tcx.adt_def(adt_def);
                 let field = adt.all_fields().nth(field_index)?;
-                return Some(alias_hazard::SelfFieldOrigin {
+                return Some(FieldOrigin {
                     struct_def_id: adt_def,
                     field_index,
                     field_name: field.name.to_string(),
@@ -845,7 +818,7 @@ fn infer_self_field_from_type<'tcx>(
     tcx: rustc_middle::ty::TyCtxt<'tcx>,
     caller: DefId,
     checkpoint: &Checkpoint<'tcx>,
-) -> Option<alias_hazard::SelfFieldOrigin> {
+) -> Option<FieldOrigin> {
     let Some((adt_def, _)) = self_adt(tcx, caller) else {
         return None;
     };
@@ -866,7 +839,7 @@ fn infer_self_field_from_type<'tcx>(
 
     if raw_ptr_fields.len() == 1 {
         let (field_index, field_name) = raw_ptr_fields.into_iter().next().unwrap();
-        return Some(alias_hazard::SelfFieldOrigin {
+        return Some(FieldOrigin {
             struct_def_id: adt_def,
             field_index,
             field_name,
@@ -888,7 +861,7 @@ fn infer_self_field_from_type<'tcx>(
             .collect();
         if let Some(&idx) = fields.first() {
             if let Some(field) = adt.all_fields().nth(idx) {
-                return Some(alias_hazard::SelfFieldOrigin {
+                return Some(FieldOrigin {
                     struct_def_id: adt_def,
                     field_index: idx,
                     field_name: field.name.to_string(),
@@ -905,7 +878,7 @@ fn infer_self_field_from_type<'tcx>(
 fn is_self_field_shared_ref(
     tcx: rustc_middle::ty::TyCtxt<'_>,
     caller: DefId,
-    origin: &alias_hazard::SelfFieldOrigin,
+    origin: &FieldOrigin,
 ) -> Option<bool> {
     let (adt_def, args) = self_adt(tcx, caller)?;
     if adt_def != origin.struct_def_id {
@@ -918,6 +891,40 @@ fn is_self_field_shared_ref(
         field_ty.kind(),
         rustc_middle::ty::TyKind::Ref(_, _, rustc_middle::ty::Mutability::Not)
     ))
+}
+
+/// Shared escape + field-encapsulation check: a view that escapes and traces to
+/// a struct field is safe only if the field is private and not written/exposed
+/// by safe code. A unique (`&mut`) view escaping through a private raw field is
+/// still unsound — the caller can re-enter and obtain a second `&mut`.
+fn check_escaped_field(
+    tcx: rustc_middle::ty::TyCtxt<'_>,
+    caller: DefId,
+    sfo: &FieldOrigin,
+    kind: HazardKind,
+) -> VmAliasResult {
+    if let Some(reason) = alias_hazard::escaped_self_field_violation(tcx, caller, sfo) {
+        return VmAliasResult::Failed(reason);
+    }
+    if kind == HazardKind::UniqueView {
+        return VmAliasResult::Failed("unique view escapes through a private raw field".into());
+    }
+    VmAliasResult::Proved
+}
+
+/// Resolve the struct field an escaping view came from: try the derivation tree
+/// first (via the resolved and raw origins), then fall back to self-type
+/// heuristics when tree resolution fails to reach a field.
+fn resolve_escaped_field_origin<'tcx>(
+    tcx: rustc_middle::ty::TyCtxt<'tcx>,
+    caller: DefId,
+    resolved_origin: &PlaceKey,
+    origin_place: &PlaceKey,
+    checkpoint: &Checkpoint<'tcx>,
+) -> Option<FieldOrigin> {
+    alias_hazard::self_field_origin(tcx, caller, resolved_origin)
+        .or_else(|| alias_hazard::self_field_origin(tcx, caller, origin_place))
+        .or_else(|| find_struct_field_origin_for_param(tcx, caller, checkpoint))
 }
 
 /// copies/casts (e.g. `_tmp = self.ptr` → `_1.0`).

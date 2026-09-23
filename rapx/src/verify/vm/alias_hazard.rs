@@ -60,23 +60,6 @@ enum RawAccessKind {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct SelfFieldOrigin {
-    pub struct_def_id: DefId,
-    pub field_index: usize,
-    pub field_name: String,
-}
-
-impl From<FieldOrigin> for SelfFieldOrigin {
-    fn from(origin: FieldOrigin) -> Self {
-        SelfFieldOrigin {
-            struct_def_id: origin.struct_def_id,
-            field_index: origin.field_index,
-            field_name: origin.field_name,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
 struct LocalCallsite<'tcx> {
     pub caller: DefId,
     pub block: BasicBlock,
@@ -294,25 +277,25 @@ pub(super) fn self_field_origin(
     tcx: TyCtxt<'_>,
     caller: DefId,
     place: &PlaceKey,
-) -> Option<SelfFieldOrigin> {
+) -> Option<FieldOrigin> {
     let PlaceBaseKey::Local(local) = place.base else {
         return None;
     };
-    resolve_self_field_origin(tcx, caller, local, &place.fields).map(SelfFieldOrigin::from)
+    resolve_self_field_origin(tcx, caller, local, &place.fields)
 }
 
 pub(super) fn any_struct_field_origin(
     tcx: TyCtxt<'_>,
     caller: DefId,
     place: &PlaceKey,
-) -> Option<SelfFieldOrigin> {
+) -> Option<FieldOrigin> {
     let PlaceBaseKey::Local(local) = place.base else {
         return None;
     };
     if place.fields.is_empty() {
         return None;
     }
-    resolve_any_field_origin(tcx, caller, local, &place.fields).map(SelfFieldOrigin::from)
+    resolve_any_field_origin(tcx, caller, local, &place.fields)
 }
 
 /// The mutability (`Not` / `Mut`) of the borrow carried by `self_local`'s type
@@ -329,7 +312,7 @@ fn self_borrow_mutability(tcx: TyCtxt<'_>, def_id: DefId, self_local: Local) -> 
 pub(super) fn escaped_self_field_violation(
     tcx: TyCtxt<'_>,
     current: DefId,
-    origin: &SelfFieldOrigin,
+    origin: &FieldOrigin,
 ) -> Option<String> {
     if public_raw_field(tcx, origin) {
         return Some(format!(
@@ -397,7 +380,7 @@ pub(super) fn escaped_self_field_violation(
 fn check_fn_against_field(
     tcx: TyCtxt<'_>,
     item: DefId,
-    origin: &SelfFieldOrigin,
+    origin: &FieldOrigin,
     current_self: Option<ty::Mutability>,
     self_local: Local,
 ) -> Option<String> {
@@ -434,7 +417,7 @@ fn check_fn_against_field(
     None
 }
 
-fn public_raw_field(tcx: TyCtxt<'_>, origin: &SelfFieldOrigin) -> bool {
+fn public_raw_field(tcx: TyCtxt<'_>, origin: &FieldOrigin) -> bool {
     let adt = tcx.adt_def(origin.struct_def_id);
     let Some(field) = adt.all_fields().nth(origin.field_index) else {
         return false;
