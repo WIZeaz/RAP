@@ -50,6 +50,7 @@ impl<'tcx> AliasGraph<'tcx> {
             return;
         }
         let lv_val = self.projection(*place);
+        self.clear_move_sources(lv_val);
 
         match rvalue {
             Rvalue::Use(operand, ..) => match operand {
@@ -230,6 +231,7 @@ impl<'tcx> AliasGraph<'tcx> {
         if merge_slots.is_empty() {
             return;
         }
+        self.clear_move_sources(merge_slots[0].0);
 
         // UAF check for arguments (skip return-value slot at index 0)
         for &(val_idx, _) in merge_slots.iter().skip(1) {
