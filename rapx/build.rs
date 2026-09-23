@@ -7,6 +7,7 @@ fn main() {
     emit_check_cfg("rapx_ge_99");
     emit_check_cfg("rapx_ge_100");
     emit_check_cfg("rapx_const_ext");
+    emit_check_cfg("rapx_box_deref_transmute");
     emit_check_cfg("rapx_has_public_adts");
     emit_check_cfg("rapx_has_attr_item_kind");
     emit_check_cfg("rapx_has_fielddef_extras");
@@ -108,6 +109,14 @@ fn main() {
         rustc_src_contains_path(
             "compiler/rustc_middle/src/ty/consts.rs",
             "pub trait ConstExt",
+        ),
+    );
+    // `CastKind::BoxDerefTransmute` marks the compiler's safe `*box` deref.
+    emit_cfg(
+        "rapx_box_deref_transmute",
+        rustc_src_contains_path(
+            "compiler/rustc_middle/src/mir/syntax.rs",
+            "BoxDerefTransmute",
         ),
     );
 }
