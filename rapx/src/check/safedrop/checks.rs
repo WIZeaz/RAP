@@ -7,8 +7,9 @@ use rustc_span::Span;
 // ── public entry points ──
 
 /// Extends `drop_record` to match `graph.values.len()`.
-/// For each new index, if the value has a father, copies from the father's
-/// drop_record; otherwise creates a false_record.
+/// For each new index, if the value's father is dropped, copies from the
+/// father's drop_record; otherwise creates a false_record. A father that only
+/// has a dropped field says nothing about this one.
 pub fn sync_drop_record(graph: &AliasGraph, drop_record: &mut Vec<DropRecord>) {
     let target_len = graph.values.len();
     while drop_record.len() < target_len {
@@ -18,11 +19,15 @@ pub fn sync_drop_record(graph: &AliasGraph, drop_record: &mut Vec<DropRecord>) {
         } else {
             None
         };
-        drop_record.push(if let Some(ref fi) = father {
-            DropRecord::from(new_idx, &drop_record[fi.father_value_id])
-        } else {
-            DropRecord::false_record(new_idx)
-        });
+        drop_record.push(
+            if let Some(ref fi) = father
+                && drop_record[fi.father_value_id].is_dropped
+            {
+                DropRecord::from(new_idx, &drop_record[fi.father_value_id])
+            } else {
+                DropRecord::false_record(new_idx)
+            },
+        );
     }
 }
 
