@@ -3,6 +3,8 @@ use rustc_hir::LangItem;
 #[cfg(rapx_ge_100)]
 use rustc_hir::attrs::lang_items::LangItem;
 use rustc_middle::ty::{self, Ty, TyCtxt, TyKind};
+#[cfg(rapx_const_ext)]
+use rustc_middle::ty::consts::ConstExt;
 use rustc_span::sym;
 
 fn is_fuzzable_std_ty<'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'tcx>, depth: usize) -> bool {

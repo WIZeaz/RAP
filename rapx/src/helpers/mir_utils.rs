@@ -16,6 +16,8 @@ use rustc_middle::{
         TyKind, TypingEnv,
     },
 };
+#[cfg(rapx_const_ext)]
+use rustc_middle::ty::consts::ConstExt;
 use rustc_span::{DUMMY_SP, Symbol};
 
 use std::collections::HashSet;
