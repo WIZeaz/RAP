@@ -12,9 +12,9 @@ use crate::verify::contract::{
 use crate::verify::report::CheckResult;
 use crate::verify::vm::state::{VmState, VmValue};
 use rustc_middle::mir::{Local, Operand, Rvalue, StatementKind, TerminatorKind};
-use rustc_middle::ty::{GenericArg, GenericArgKind, Ty, TyKind};
 #[cfg(rapx_const_ext)]
 use rustc_middle::ty::consts::ConstExt;
+use rustc_middle::ty::{GenericArg, GenericArgKind, Ty, TyKind};
 use z3::{
     SatResult, Solver,
     ast::{Ast, Bool, Int},

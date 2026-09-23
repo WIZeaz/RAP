@@ -6,6 +6,8 @@ use rustc_hir::{
     ItemKind,
     def_id::{DefId, LocalDefId},
 };
+#[cfg(rapx_const_ext)]
+use rustc_middle::ty::consts::ConstExt;
 use rustc_middle::{
     mir::interpret::{AllocId, GlobalAlloc},
     mir::{
@@ -16,8 +18,6 @@ use rustc_middle::{
         TyKind, TypingEnv,
     },
 };
-#[cfg(rapx_const_ext)]
-use rustc_middle::ty::consts::ConstExt;
 use rustc_span::{DUMMY_SP, Symbol};
 
 use std::collections::HashSet;
@@ -25,10 +25,7 @@ use std::collections::HashSet;
 #[cfg(not(rapx_has_skip_norm_wip))]
 use crate::compat::SkipNormWip;
 
-use crate::{
-    compat::FxHashMap,
-    helpers::mir_scan::Checkpoint,
-};
+use crate::{compat::FxHashMap, helpers::mir_scan::Checkpoint};
 
 use super::def_use::PlaceKey;
 

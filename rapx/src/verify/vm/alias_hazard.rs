@@ -20,9 +20,7 @@ use rustc_middle::{
     ty::{self, AssocKind, TyCtxt, TyKind},
 };
 
-use crate::analysis::alias::{
-    FieldOrigin, resolve_any_field_origin, resolve_self_field_origin,
-};
+use crate::analysis::alias::{FieldOrigin, resolve_any_field_origin, resolve_self_field_origin};
 use crate::helpers::fn_info::is_externally_reachable;
 use crate::{
     helpers::mir_scan::check_safety,
@@ -30,13 +28,9 @@ use crate::{
 };
 
 // Re-export the mir_utils helpers still consumed by `vm/alias.rs`.
-pub(super) use crate::helpers::mir_utils::{
-    call_destination, operand_mir_place, operand_place,
-};
+pub(super) use crate::helpers::mir_utils::{call_destination, operand_mir_place, operand_place};
 // Remaining mir_utils helpers used only within this module.
-use crate::helpers::mir_utils::{
-    blocks_reachable_after_call, rvalue_any_place_matching,
-};
+use crate::helpers::mir_utils::{blocks_reachable_after_call, rvalue_any_place_matching};
 
 // ── Shared types ─────────────────────────────────────────────────
 
@@ -1374,9 +1368,7 @@ fn is_ptr_add_offset_eq(
 ) -> bool {
     let body = tcx.optimized_mir(caller);
     let tree = crate::verify::vm::alias_tree::AliasTree::build(tcx, caller);
-    let view_len_root = view_len
-        .local()
-        .map(|l| tree.resolve_local_to_root(l));
+    let view_len_root = view_len.local().map(|l| tree.resolve_local_to_root(l));
     for (_bb, data) in body.basic_blocks.iter_enumerated() {
         if let TerminatorKind::Call {
             func,
@@ -1394,9 +1386,7 @@ fn is_ptr_add_offset_eq(
             ) && args.len() >= 2
             {
                 if let Some(offset_place) = operand_place(&args[1].node) {
-                    let offset_root = offset_place
-                        .local()
-                        .map(|l| tree.resolve_local_to_root(l));
+                    let offset_root = offset_place.local().map(|l| tree.resolve_local_to_root(l));
                     return offset_root == view_len_root;
                 }
             }
@@ -1798,8 +1788,11 @@ fn pre_existing_view_on_origin(
                 if let Some(arg) = args.first()
                     && let Some(place) = operand_mir_place(&arg.node)
                 {
-                    let arg_resolved =
-                        resolve_via_tree(&tree, place.local, &PlaceKey::from_mir_place(place).fields);
+                    let arg_resolved = resolve_via_tree(
+                        &tree,
+                        place.local,
+                        &PlaceKey::from_mir_place(place).fields,
+                    );
                     if arg_resolved.0 == 1
                         && !arg_resolved.1.is_empty()
                         && holder_origins

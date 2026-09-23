@@ -178,7 +178,9 @@ fn flow_xor_violation<'ctx, 'tcx>(
     let origin_arg = checkpoint.args.first()?;
     let origin_place = alias_hazard::operand_mir_place(origin_arg)?;
     let origin_local = origin_place.local;
-    let origin_alloc = vm_state.value_of_operand(origin_arg).provenance_alloc_id()?;
+    let origin_alloc = vm_state
+        .value_of_operand(origin_arg)
+        .provenance_alloc_id()?;
     let origin_root = vm_state.root_alloc(origin_alloc);
     let live = alias_hazard::live_locals_at(
         vm_state.tcx,
@@ -290,10 +292,7 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
                             checkpoint.caller,
                         )
                         .resolve_local_to_root(mir_place.local);
-                        if !fields.is_empty()
-                            && root >= 1
-                            && root <= vm_state.body.arg_count
-                        {
+                        if !fields.is_empty() && root >= 1 && root <= vm_state.body.arg_count {
                             let root_ty = vm_state.body.local_decls
                                 [rustc_middle::mir::Local::from_usize(root)]
                             .ty;
@@ -517,9 +516,12 @@ fn check_view_alias<'ctx, 'tcx>(
     // `&` and `&mut` views of each while the first is still live. An
     // `Alias`/`Ptr2Ref` precondition discharges the obligation.
     if !fn_has_alias_requires(vm_state.tcx, checkpoint.caller) {
-        if let Some(reason) =
-            flow_xor_violation(vm_state, checkpoint, kind == HazardKind::UniqueView, usize::MAX)
-        {
+        if let Some(reason) = flow_xor_violation(
+            vm_state,
+            checkpoint,
+            kind == HazardKind::UniqueView,
+            usize::MAX,
+        ) {
             return VmAliasResult::Failed(reason);
         }
     }

@@ -1,13 +1,13 @@
+#[cfg(not(rapx_has_skip_norm_wip))]
+use crate::compat::SkipNormWip;
 #[cfg(not(rapx_ge_100))]
 use rustc_hir::LangItem;
 #[cfg(rapx_ge_100)]
 use rustc_hir::attrs::lang_items::LangItem;
-#[cfg(not(rapx_has_skip_norm_wip))]
-use crate::compat::SkipNormWip;
 use rustc_hir::find_attr;
-use rustc_middle::ty::{self, Ty, TyCtxt, TyKind};
 #[cfg(rapx_const_ext)]
 use rustc_middle::ty::consts::ConstExt;
+use rustc_middle::ty::{self, Ty, TyCtxt, TyKind};
 use rustc_span::sym;
 use rustc_type_ir::TypeVisitable;
 

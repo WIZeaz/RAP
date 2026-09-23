@@ -87,8 +87,7 @@ impl AliasTree {
                     // (`addr_of!(x)`), cast (`&mut → *mut`, `*mut → *const`) and
                     // field read (`(*self).next`).
                     _ => {
-                        if let Some(place) =
-                            crate::helpers::mir_utils::rvalue_source_place(rvalue)
+                        if let Some(place) = crate::helpers::mir_utils::rvalue_source_place(rvalue)
                             && let Some(parent) = tree.tag_of_local.get(&place.local).copied()
                         {
                             let ty = body.local_decls[target.local].ty;
@@ -106,9 +105,7 @@ impl AliasTree {
             // `Vec::new`, `Box::from_raw`) is a fresh owner, so it becomes a root
             // regardless of whether its first argument is a place.
             if let rustc_middle::mir::TerminatorKind::Call {
-                args,
-                destination,
-                ..
+                args, destination, ..
             } = &block.terminator().kind
             {
                 let dest_local = destination.local;

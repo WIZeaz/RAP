@@ -5,8 +5,8 @@ use rustc_hir::attrs::lang_items::LangItem;
 use rustc_hir::{Safety, def_id::DefId};
 use rustc_middle::{
     mir::{
-        BasicBlock, Body, Local, Operand, Place, ProjectionElem, Rvalue,
-        StatementKind, TerminatorKind,
+        BasicBlock, Body, Local, Operand, Place, ProjectionElem, Rvalue, StatementKind,
+        TerminatorKind,
     },
     ty::{self, Ty, TyCtxt, TyKind},
 };
@@ -342,7 +342,7 @@ fn box_deref_transmute_locals<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> Has
                 let from_box = if is_box_deref_cast(tcx, body, rhs) {
                     true
                 } else if let Rvalue::Use(Operand::Copy(p) | Operand::Move(p), ..)
-                    | Rvalue::Cast(_, Operand::Copy(p) | Operand::Move(p), _) = rhs
+                | Rvalue::Cast(_, Operand::Copy(p) | Operand::Move(p), _) = rhs
                 {
                     p.projection.is_empty() && result.contains(&p.local)
                 } else {

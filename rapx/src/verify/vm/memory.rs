@@ -1,11 +1,11 @@
 //! Symbolic memory model for the VM.
 
+#[cfg(rapx_const_ext)]
+use rustc_middle::ty::consts::ConstExt;
 use rustc_middle::{
     mir::{Local, Place, ProjectionElem},
     ty::{Ty, TyKind},
 };
-#[cfg(rapx_const_ext)]
-use rustc_middle::ty::consts::ConstExt;
 use z3::ast::{Ast, Int};
 
 use super::state::{AllocId, Allocation, Provenance, ValueInvariants, VmState, VmValue};
