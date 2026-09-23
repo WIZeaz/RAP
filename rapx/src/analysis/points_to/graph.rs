@@ -36,6 +36,10 @@ pub struct PtsGraph {
     /// `alias_parent[i]` is the representative of i's partition,
     /// or `i` itself if i is the root. `None` means uninitialized (singleton).
     alias_parent: Vec<usize>,
+
+    /// `(holder, root)`: `holder` may hold the value of the partition under
+    /// `root`, as a call's return may be any one of several arguments.
+    may_hold: FxHashSet<(usize, usize)>,
 }
 
 impl PtsGraph {
@@ -49,6 +53,7 @@ impl PtsGraph {
             need_drop: Vec::new(),
             slot_kind: Vec::new(),
             alias_parent: Vec::new(),
+            may_hold: FxHashSet::default(),
         }
     }
 
@@ -223,6 +228,20 @@ impl PtsGraph {
         self.slot_index.get(&father_slot).copied()
     }
 
+    /// `holder` may hold the value of `held`. Unlike `merge_equivalence`,
+    /// this does not make `held` alias anything else `holder` may hold.
+    pub fn hold(&mut self, holder: usize, held: usize) {
+        if holder == held {
+            return;
+        }
+        let held_pts: Vec<_> = self.points_to[held].iter().cloned().collect();
+        self.points_to[holder].extend(held_pts);
+        self.may_hold.insert((holder, self.alias_find(held)));
+        let father_holder = self.father_of(holder).unwrap_or(holder);
+        let father_held = self.alias_find(self.father_of(held).unwrap_or(held));
+        self.may_hold.insert((father_holder, father_held));
+    }
+
     /// Conservative merge for unknown-function calls: all pointer-typed
     /// args may alias each other and the return value.
     pub fn conservative_call_merge(&mut self, arg_slots: &[usize]) {
@@ -280,6 +299,16 @@ impl PtsGraph {
         if self.alias_find(a_idx) == self.alias_find(b_idx) {
             return true;
         }
+        if !self.may_hold.is_empty() {
+            let held_a = self.held_partitions(a_idx);
+            if self
+                .held_partitions(b_idx)
+                .iter()
+                .any(|root| held_a.contains(root))
+            {
+                return true;
+            }
+        }
         // Check points-to intersection
         let pta = self.pts(a_idx);
         if pta.is_empty() {
@@ -298,6 +327,12 @@ impl PtsGraph {
         callee_pairs: &crate::analysis::alias::FnAliasPairs,
         callee_arg_slots: &[usize],
     ) {
+        let ret_sources: FxHashSet<usize> = callee_pairs
+            .aliases()
+            .iter()
+            .filter(|alias| alias.left_local() == 0)
+            .map(|alias| alias.right_local())
+            .collect();
         for alias in callee_pairs.aliases() {
             let left_idx = alias.left_local();
             let right_idx = alias.right_local();
@@ -328,7 +363,12 @@ impl PtsGraph {
                 }
             }
 
-            if self.may_drop(lv) && self.may_drop(rv) {
+            if !self.may_drop(lv) || !self.may_drop(rv) {
+                continue;
+            }
+            if left_idx == 0 && ret_sources.len() > 1 {
+                self.hold(lv, rv);
+            } else {
                 self.merge_equivalence(lv, rv);
             }
         }
@@ -453,6 +493,22 @@ impl PtsGraph {
         }
     }
 
+    /// Partitions whose value `idx` may hold, following `may_hold` edges.
+    fn held_partitions(&self, idx: usize) -> FxHashSet<usize> {
+        let mut roots = FxHashSet::default();
+        roots.insert(self.alias_find(idx));
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for &(holder, held) in &self.may_hold {
+                if roots.contains(&self.alias_find(holder)) && roots.insert(self.alias_find(held)) {
+                    changed = true;
+                }
+            }
+        }
+        roots
+    }
+
     /// Move `slot_idx` from its current partition to `target_idx`'s partition.
     /// This implements the strong-update semantics of MoP's `assign_alias`:
     /// the moved slot leaves its old partition behind.
@@ -463,6 +519,7 @@ impl PtsGraph {
         // Point slot_idx directly to target's root
         let target_root = self.alias_find(target_idx);
         self.alias_parent[slot_idx] = target_root;
+        self.may_hold.retain(|&(holder, _)| holder != slot_idx);
     }
 
     /// Strong-update: put all slots in `slot_idx`'s partition into their
@@ -479,6 +536,7 @@ impl PtsGraph {
                 self.alias_parent[i] = i;
             }
         }
+        self.may_hold.retain(|&(holder, _)| holder != slot_idx);
     }
 
     // ── PlaceKey-oriented adapter methods ──────────────────────────
