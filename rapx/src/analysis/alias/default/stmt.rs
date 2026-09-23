@@ -248,21 +248,16 @@ impl<'tcx> AliasGraph<'tcx> {
         }
 
         match target_id {
-            Some(id) => {
-                if super::alias::is_no_alias_intrinsic(id) {
-                    return;
+            Some(id) if super::alias::is_no_alias_intrinsic(id) => {}
+            Some(id) if !self.tcx().is_mir_available(id) => {
+                let (ret_val, _) = merge_slots[0];
+                if ret_val != 0 && self.value_is_ptr(ret_val) {
+                    let slot_args: Vec<usize> = merge_slots.iter().map(|&(_, s)| s).collect();
+                    self.pts_graph.conservative_call_merge(&slot_args);
+                    obs.on_value_assign(self, ret_val);
                 }
-                if !self.tcx().is_mir_available(id) {
-                    let (ret_val, _) = merge_slots[0];
-                    if ret_val != 0 && self.value_is_ptr(ret_val) {
-                        let slot_args: Vec<usize> = merge_slots.iter().map(|&(_, s)| s).collect();
-                        self.pts_graph.conservative_call_merge(&slot_args);
-                        obs.on_value_assign(self, ret_val);
-                    }
-                    return;
-                }
-                self.apply_fn_alias_results_pts(id, &merge_slots, fn_map, obs);
             }
+            Some(id) => self.apply_fn_alias_results_pts(id, &merge_slots, fn_map, obs),
             None => {
                 let (ret_val, _) = merge_slots[0];
                 if ret_val != 0
