@@ -159,12 +159,12 @@ fn fn_has_alias_requires(tcx: rustc_middle::ty::TyCtxt<'_>, def_id: DefId) -> bo
         .any(property_contains_alias)
 }
 
-/// Tree-based shared-XOR-mutable check for a view-producing checkpoint. Uses
-/// the alias derivation tree, grouping by root *or* allocation, so it catches
-/// both a view split off an owned origin (whose `AllocId` differs from the raw
-/// pointer) and two independent pointers naming the same allocation. Replaces
-/// the provenance-only `callsite_xor_violation`.
-fn tree_xor_violation<'ctx, 'tcx>(
+/// Flow-sensitive shared-XOR-mutable check for a view-producing checkpoint.
+/// Walks the VM's *current* locals (not a static derivation tree), grouping a
+/// live reference view as conflicting when it names the same allocation, or a
+/// sub-allocation of it (`root_alloc` — `from_raw_parts`/`split_at` keep a
+/// `parent` edge), with the opposite mutability.
+fn flow_xor_violation<'ctx, 'tcx>(
     vm_state: &VmState<'ctx, 'tcx>,
     checkpoint: &Checkpoint<'tcx>,
     unique: bool,
@@ -173,9 +173,8 @@ fn tree_xor_violation<'ctx, 'tcx>(
     let origin_arg = checkpoint.args.first()?;
     let origin_place = alias_hazard::operand_mir_place(origin_arg)?;
     let origin_local = origin_place.local;
-    let origin_alloc = vm_state.value_of_operand(origin_arg).provenance_alloc_id();
-    let tree = crate::verify::vm::alias_tree::AliasTree::build(vm_state.tcx, checkpoint.caller);
-    let origin_tag = tree.tag_of(origin_local)?;
+    let origin_alloc = vm_state.value_of_operand(origin_arg).provenance_alloc_id()?;
+    let origin_root = vm_state.root_alloc(origin_alloc);
     let live = alias_hazard::live_locals_at(
         vm_state.tcx,
         checkpoint.caller,
@@ -184,11 +183,37 @@ fn tree_xor_violation<'ctx, 'tcx>(
         false,
         false,
     );
-    tree.check_shared_xor_mutable(origin_tag, origin_alloc, unique, &live, &|local| {
-        vm_state
-            .local_value(local)
-            .and_then(|v| v.provenance_alloc_id())
-    })
+    let body = vm_state.body;
+    for (local, val) in &vm_state.locals {
+        if *local == origin_local {
+            continue;
+        }
+        if !live.contains(local) {
+            continue;
+        }
+        let Some(prov) = &val.provenance else {
+            continue;
+        };
+        let mutability = match body.local_decls[*local].ty.kind() {
+            rustc_middle::ty::TyKind::Ref(_, _, m) => *m,
+            _ => continue,
+        };
+        let same_alloc = prov.alloc_id == origin_alloc;
+        let same_root = vm_state.root_alloc(prov.alloc_id) == origin_root;
+        if !same_alloc && !same_root {
+            continue;
+        }
+        let view_mut = mutability == rustc_middle::ty::Mutability::Mut;
+        let conflicts = if unique { !view_mut } else { view_mut };
+        if conflicts {
+            let produced = if unique { "&mut" } else { "&" };
+            let live_kind = if view_mut { "&mut" } else { "&" };
+            return Some(format!(
+                "producing {produced} while a live {live_kind} aliases the same data"
+            ));
+        }
+    }
+    None
 }
 
 /// Run the full alias hazard check for the VM backend.
@@ -233,7 +258,7 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
                 // against a live alias of the opposite mutability (tree-based,
                 // grouped by root or allocation).
                 if !fn_has_alias_requires(vm_state.tcx, checkpoint.caller) {
-                    if let Some(reason) = tree_xor_violation(
+                    if let Some(reason) = flow_xor_violation(
                         vm_state,
                         checkpoint,
                         checkpoint.is_mut_ref,
@@ -488,7 +513,7 @@ fn check_view_alias<'ctx, 'tcx>(
     // `Alias`/`Ptr2Ref` precondition discharges the obligation.
     if !fn_has_alias_requires(vm_state.tcx, checkpoint.caller) {
         if let Some(reason) =
-            tree_xor_violation(vm_state, checkpoint, kind == HazardKind::UniqueView, usize::MAX)
+            flow_xor_violation(vm_state, checkpoint, kind == HazardKind::UniqueView, usize::MAX)
         {
             return VmAliasResult::Failed(reason);
         }
