@@ -471,6 +471,15 @@ fn self_recursive_callee() {
     assert_function_result(&output, "target", "SOUND");
 }
 
+// ================ Call Chain Depth ================
+// A 4-deep call chain of 4-way branching callees used to be summarized once per
+// path that reached them (exponential); the must-write summary is now memoized.
+#[test]
+fn call_chain_depth() {
+    let output = run_with_args("verify_units/call_chain_depth", CMD_VERIFY_SCAN);
+    assert_function_result(&output, "target", "SOUND");
+}
+
 // ================ Typed Provenance Cases =============
 #[test]
 fn typed_provenance_cases() {
