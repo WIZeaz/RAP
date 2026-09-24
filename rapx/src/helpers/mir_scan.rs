@@ -1,6 +1,6 @@
-#[cfg(not(rapx_ge_100))]
+#[cfg(all(not(rapx_ge_100), not(rapx_box_deref_transmute)))]
 use rustc_hir::LangItem;
-#[cfg(rapx_ge_100)]
+#[cfg(all(rapx_ge_100, not(rapx_box_deref_transmute)))]
 use rustc_hir::attrs::lang_items::LangItem;
 use rustc_hir::{Safety, def_id::DefId};
 use rustc_middle::{
@@ -10,6 +10,8 @@ use rustc_middle::{
     },
     ty::{self, Ty, TyCtxt, TyKind},
 };
+#[cfg(rapx_box_deref_transmute)]
+use rustc_middle::mir::CastKind;
 use std::collections::{HashMap, HashSet};
 
 use super::mir_utils::{dep_callee_def_id, pointee_ty};
@@ -357,20 +359,36 @@ fn box_deref_transmute_locals<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> Has
     result
 }
 
-/// Whether `rvalue` is the compiler's lowering of the safe `*box` deref: a cast
-/// to a raw pointer whose source place is rooted in a `Box` local. Recent
-/// nightlies tag this cast `BoxDerefTransmute`; older ones emit a plain
-/// `Transmute` of the box's `Unique`/`NonNull` field. Checking the source base
-/// local's type catches both without depending on the cast kind.
+/// Whether `rvalue` is the compiler's lowering of the safe `*box` deref.
+///
+/// On recent nightlies the compiler tags this cast `BoxDerefTransmute` — a
+/// precise, dedicated marker, so match it exactly and never treat other casts
+/// of a `Box`-typed local (e.g. `transmute::<Box<T>, *mut T>`) as safe. On older
+/// toolchains that lower `*box` to a plain `Transmute` of the `Unique`/`NonNull`
+/// field, fall back to checking the cast source base local's type.
 fn is_box_deref_cast(tcx: TyCtxt<'_>, body: &Body<'_>, rvalue: &Rvalue<'_>) -> bool {
-    let Rvalue::Cast(_, Operand::Copy(p) | Operand::Move(p), _) = rvalue else {
-        return false;
-    };
-    let base_ty = body.local_decls[p.local].ty;
-    matches!(
-        base_ty.kind(),
-        TyKind::Adt(adt, _) if tcx.is_lang_item(adt.did(), LangItem::OwnedBox)
-    )
+    #[cfg(rapx_box_deref_transmute)]
+    {
+        let _ = (tcx, body);
+        return matches!(rvalue, Rvalue::Cast(CastKind::BoxDerefTransmute, _, _));
+    }
+    #[cfg(not(rapx_box_deref_transmute))]
+    {
+        let Rvalue::Cast(_, Operand::Copy(p) | Operand::Move(p), _) = rvalue else {
+            return false;
+        };
+        // The safe `*box` deref casts the box's `Unique`/`NonNull` *field* (a
+        // projection); casting the whole box value is `transmute::<Box<T>, *mut
+        // T>`, an explicit unsafe transmute that must not be skipped.
+        if p.projection.is_empty() {
+            return false;
+        }
+        let base_ty = body.local_decls[p.local].ty;
+        matches!(
+            base_ty.kind(),
+            TyKind::Adt(adt, _) if tcx.is_lang_item(adt.did(), LangItem::OwnedBox)
+        )
+    }
 }
 
 /// Collect all raw pointer dereference operations in `def_id` as

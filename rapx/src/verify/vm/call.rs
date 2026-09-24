@@ -14,7 +14,7 @@ use rustc_middle::mir::{BasicBlock, Local, Operand, TerminatorKind};
 use rustc_middle::ty::{Ty, TyKind};
 use z3::ast::{Ast, Bool, Int};
 
-use crate::compat::{FxHashSet, Spanned};
+use crate::compat::{FxHashMap, FxHashSet, Spanned};
 use crate::helpers::mir_utils::operand_place;
 use crate::verify::api_classify;
 use crate::verify::call_summary::{self, CallEffect};
@@ -180,7 +180,21 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
         }
 
-        let summary = call_summary::effect_summary(self.tcx, caller_def_id, func, destination);
+        let mut concrete = FxHashMap::default();
+        for (i, arg) in arg_values.iter().enumerate() {
+            if let Some(v) = arg.term.simplify().as_u64() {
+                concrete.insert(i, v as i128);
+            }
+        }
+        let context = call_summary::CallContext { concrete };
+
+        let summary = call_summary::effect_summary(
+            self.tcx,
+            caller_def_id,
+            func,
+            destination,
+            &context,
+        );
 
         // A `size_of::<T>()` / `align_of::<T>()` on a *generic* `T` has no
         // concrete layout, so `eff_layout_const` produces no effect and the

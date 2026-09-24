@@ -24,7 +24,7 @@ use rustc_hir::{
 };
 use rustc_middle::{hir::nested_filter, ty::TyCtxt};
 use rustc_span::Span;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::{
     contract::{
@@ -234,6 +234,231 @@ pub(crate) enum MarkerTraitKind {
     Sync,
 }
 
+/// Trace a call-site argument operand back to the enclosing callee's parameter
+/// index (0-based), following direct `Copy`/`Move` assignment chains. Returns
+/// `None` for constants, field projections, call results, or values that do not
+/// trace to a parameter (those references cannot be restated on the enclosing
+/// callee).
+fn call_arg_to_outer_param(
+    op: &rustc_middle::mir::Operand<'_>,
+    body: &rustc_middle::mir::Body<'_>,
+) -> Option<usize> {
+    let local = match op {
+        rustc_middle::mir::Operand::Copy(p) | rustc_middle::mir::Operand::Move(p) => {
+            if p.projection.is_empty() {
+                p.local
+            } else {
+                return None;
+            }
+        }
+        _ => return None,
+    };
+    let mut queue = VecDeque::from([local]);
+    let mut seen = HashSet::from([local]);
+    while let Some(current) = queue.pop_front() {
+        let cidx = current.as_usize();
+        if cidx >= 1 && cidx <= body.arg_count {
+            return Some(cidx - 1);
+        }
+        for bb in body.basic_blocks.iter() {
+            for stmt in &bb.statements {
+                let rustc_middle::mir::StatementKind::Assign(assign) = &stmt.kind else {
+                    continue;
+                };
+                let (dest, rvalue) = &**assign;
+                if dest.local != current || !dest.projection.is_empty() {
+                    continue;
+                }
+                let source = match rvalue {
+                    rustc_middle::mir::Rvalue::Use(
+                        rustc_middle::mir::Operand::Copy(p)
+                        | rustc_middle::mir::Operand::Move(p),
+                        ..,
+                    ) => p.local,
+                    _ => continue,
+                };
+                if !seen.contains(&source) {
+                    seen.insert(source);
+                    queue.push_back(source);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Rewrite a contract's argument references (`PlaceBase::Arg(i)`) onto the
+/// enclosing callee's parameters using the call-site argument list. This rebinds
+/// a leaf callee's contract (e.g. `ptr::write`'s `ValidPtr(self, T, 1)`) to the
+/// wrapper callee's arguments (e.g. `maybe_init_slot`'s `ptr`).
+///
+/// Returns `false` when a referenced argument cannot be traced to a parameter
+/// (a constant, a field projection, a temporary, or a call result). Such a
+/// contract expresses an internal invariant of the leaf callee and cannot be
+/// restated as a precondition on this callee's parameters, so it is dropped.
+fn rebind_property_to_args<'tcx>(
+    prop: &mut Property<'tcx>,
+    args: &[rustc_middle::mir::Operand<'tcx>],
+    callee_args: &rustc_middle::ty::GenericArgs<'tcx>,
+    body: &rustc_middle::mir::Body<'tcx>,
+) -> bool {
+    match prop {
+        Property::Atom(atom) => {
+            let mut ok = true;
+            for arg in &mut atom.args {
+                if !rebind_property_arg(arg, args, callee_args, body) {
+                    ok = false;
+                }
+            }
+            if let Some(place) = &mut atom.for_each {
+                if !rebind_place(place, args, body) {
+                    ok = false;
+                }
+            }
+            ok
+        }
+        Property::And(and) => {
+            let mut ok = true;
+            for conjunct in &mut and.conjuncts {
+                if !rebind_property_to_args(conjunct, args, callee_args, body) {
+                    ok = false;
+                }
+            }
+            ok
+        }
+        Property::Or(or) => {
+            // Unlike `And`, an `Or` whose disjuncts were individually filtered
+            // would leave orphaned place-less disjuncts (e.g. `ValidPtr`'s
+            // `Size(T, 0) || Deref(p)` keeps `Size` after `Deref` is dropped,
+            // and `Size(u8, 0)` then reads as `Failed`).  Treat `Or` as
+            // all-or-nothing too: if any disjunct cannot be restated, drop the
+            // whole disjunction.
+            let mut ok = true;
+            for disjunct in &mut or.disjuncts {
+                if !rebind_property_to_args(disjunct, args, callee_args, body) {
+                    ok = false;
+                }
+            }
+            ok
+        }
+    }
+}
+
+fn rebind_property_arg<'tcx>(
+    arg: &mut PropertyArg<'tcx>,
+    args: &[rustc_middle::mir::Operand<'tcx>],
+    callee_args: &rustc_middle::ty::GenericArgs<'tcx>,
+    body: &rustc_middle::mir::Body<'tcx>,
+) -> bool {
+    match arg {
+        PropertyArg::Expr(expr) => rebind_expr(expr, args, callee_args, body),
+        PropertyArg::Predicates(preds) => {
+            let mut ok = true;
+            for p in preds {
+                if !rebind_expr(&mut p.lhs, args, callee_args, body) {
+                    ok = false;
+                }
+                if !rebind_expr(&mut p.rhs, args, callee_args, body) {
+                    ok = false;
+                }
+            }
+            ok
+        }
+        // Resolve the leaf callee's type parameter to the concrete type
+        // argument passed at the call site (e.g. `NonNull::<Node<T>>::as_mut`'s
+        // `Ptr2Ref(self, T)` -> `Ptr2Ref(self, Node<T>)`).
+        PropertyArg::Ty(ty) => {
+            rebind_ty(ty, callee_args);
+            true
+        }
+        _ => true,
+    }
+}
+
+fn rebind_expr<'tcx>(
+    expr: &mut ContractExpr<'tcx>,
+    args: &[rustc_middle::mir::Operand<'tcx>],
+    callee_args: &rustc_middle::ty::GenericArgs<'tcx>,
+    body: &rustc_middle::mir::Body<'tcx>,
+) -> bool {
+    match expr {
+        ContractExpr::Place(place) => rebind_place(place, args, body),
+        ContractExpr::Len(inner) => rebind_expr(inner, args, callee_args, body),
+        ContractExpr::SizeOf(ty) => {
+            rebind_ty(ty, callee_args);
+            true
+        }
+        ContractExpr::AlignOf(ty) => {
+            rebind_ty(ty, callee_args);
+            true
+        }
+        ContractExpr::IndexAccess { slice, index } => {
+            let a = rebind_expr(slice, args, callee_args, body);
+            let b = rebind_expr(index, args, callee_args, body);
+            a && b
+        }
+        ContractExpr::Binary { lhs, rhs, .. } => {
+            let a = rebind_expr(lhs, args, callee_args, body);
+            let b = rebind_expr(rhs, args, callee_args, body);
+            a && b
+        }
+        ContractExpr::Unary { expr, .. } => rebind_expr(expr, args, callee_args, body),
+        ContractExpr::If {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
+            let a = rebind_expr(&mut cond.lhs, args, callee_args, body);
+            let b = rebind_expr(&mut cond.rhs, args, callee_args, body);
+            let c = rebind_expr(then_expr, args, callee_args, body);
+            let d = rebind_expr(else_expr, args, callee_args, body);
+            a && b && c && d
+        }
+        _ => true,
+    }
+}
+
+/// Replace a leaf callee's type parameter (`TyKind::Param`) with the concrete
+/// type argument passed at the call site.
+fn rebind_ty<'tcx>(
+    ty: &mut rustc_middle::ty::Ty<'tcx>,
+    callee_args: &rustc_middle::ty::GenericArgs<'tcx>,
+) {
+    if let rustc_middle::ty::TyKind::Param(param) = ty.kind() {
+        if let Some(actual) = callee_args.get(param.index as usize).and_then(|a| a.as_type()) {
+            *ty = actual;
+        }
+    }
+}
+
+fn rebind_place<'tcx>(
+    place: &mut ContractPlace<'tcx>,
+    args: &[rustc_middle::mir::Operand<'tcx>],
+    body: &rustc_middle::mir::Body<'tcx>,
+) -> bool {
+    // A contract references the leaf callee's arguments either as a 0-based
+    // `Arg(i)` (std JSON contracts) or as a MIR `Local(k)` (inline
+    // `#[rapx::requires]`, where local 1..=arg_count are the parameters). Map
+    // both onto the argument index, then trace that argument back to this
+    // callee's parameter. `Local(0)`/`Return` name the return value and cannot
+    // be restated as a precondition.
+    let arg_idx = match place.base {
+        PlaceBase::Arg(i) => Some(i),
+        PlaceBase::Local(k) if k >= 1 => Some(k - 1),
+        _ => return false,
+    };
+    match arg_idx
+        .and_then(|i| args.get(i))
+        .and_then(|op| call_arg_to_outer_param(op, body))
+    {
+        Some(outer) => {
+            place.base = PlaceBase::Arg(outer);
+            true
+        }
+        None => false,
+    }
+}
+
 /// Follow an unsafe callee's call chain to find inherited safety contracts.
 ///
 /// When an unsafe callee (e.g. B) lacks its own contracts, look into its MIR
@@ -262,9 +487,11 @@ fn resolve_chain_contracts<'tcx>(
         let Some(terminator) = &bb.terminator else {
             continue;
         };
-        if let rustc_middle::mir::TerminatorKind::Call { func, .. } = &terminator.kind {
+        if let rustc_middle::mir::TerminatorKind::Call { func, args, .. } = &terminator.kind {
             if let rustc_middle::mir::Operand::Constant(c) = func {
-                let rustc_middle::ty::TyKind::FnDef(sub_def_id, _) = c.const_.ty().kind() else {
+                let rustc_middle::ty::TyKind::FnDef(sub_def_id, callee_args) =
+                    c.const_.ty().kind()
+                else {
                     continue;
                 };
                 let sub_def_id = *sub_def_id;
@@ -292,6 +519,19 @@ fn resolve_chain_contracts<'tcx>(
                     reqs = resolve_chain_contracts(tcx, sub_def_id, visited);
                 }
 
+                // Rebind the leaf callee's argument references onto this
+                // callee's parameters (e.g. `ptr::write`'s `self` -> this
+                // callee's pointer argument), dropping contracts whose arguments
+                // are internal temporaries that can't be restated on this
+                // callee's parameters. Also resolve the leaf's type parameters
+                // to the concrete type arguments passed at the call site.
+                let arg_operands: Vec<_> = args.iter().map(|a| a.node.clone()).collect();
+                #[cfg(rapx_ge_99)]
+                let callee_args = callee_args.skip_binder();
+                reqs.retain_mut(|req| {
+                    rebind_property_to_args(req, &arg_operands, callee_args, body)
+                });
+
                 contracts.extend(reqs);
             }
         }
@@ -317,7 +557,7 @@ pub(crate) struct VerifyTargetCollector<'tcx> {
     /// per `impl` block.
     pub trait_targets: Vec<TraitEnsurance<'tcx>>,
     /// Cached contracts for each callee function so repeated callees are parsed once.
-    fn_contract_cache: HashMap<DefId, FnContracts<'tcx>>,
+    fn_contract_cache: HashMap<(DefId, bool), FnContracts<'tcx>>,
 }
 
 impl<'tcx> VerifyTargetCollector<'tcx> {
@@ -378,13 +618,20 @@ impl<'tcx> VerifyTargetCollector<'tcx> {
     ///    library, fall back to the bundled JSON contract database.
     ///
     /// Results are memoized in `fn_contract_cache` to avoid recomputation.
-    fn get_fn_contracts(&mut self, callee_def_id: DefId) -> FnContracts<'tcx> {
+    ///
+    /// `follow_chain` controls whether an otherwise-unannotated callee's
+    /// contract is resolved by walking its call chain (e.g. an unsafe wrapper
+    /// that calls `ptr::write`). It must be `true` when resolving the contracts
+    /// a *caller* has to prove at a call site (`callee_requires`), and `false`
+    /// when resolving a function's own assumed preconditions (`caller_requires`)
+    /// — those must not inherit contracts from the function's internal calls.
+    fn get_fn_contracts(&mut self, callee_def_id: DefId, follow_chain: bool) -> FnContracts<'tcx> {
         let is_std = is_std_crate_def_id(self.tcx, callee_def_id);
 
         let trait_requires = get_trait_method_requires(self.tcx, callee_def_id);
 
         self.fn_contract_cache
-            .entry(callee_def_id)
+            .entry((callee_def_id, follow_chain))
             .or_insert_with(|| {
                 let mut requires = get_contract_from_annotation(self.tcx, callee_def_id);
 
@@ -397,8 +644,9 @@ impl<'tcx> VerifyTargetCollector<'tcx> {
                         self.tcx,
                         callee_def_id,
                     );
+                }
 
-                if requires.is_empty() {
+                if requires.is_empty() && follow_chain {
                     // Recursively resolve contracts from the callee's call chain.
                     // e.g. A -> B -> C -> D where B,C are unsafe unannotated,
                     // D has contracts; follow the chain to D and use its contracts.
@@ -441,7 +689,6 @@ impl<'tcx> VerifyTargetCollector<'tcx> {
                         );
                     }
                 }
-                }
 
                 if requires.is_empty() {
                     requires.push(Property::new(
@@ -467,7 +714,7 @@ impl<'tcx> VerifyTargetCollector<'tcx> {
         let callee_requires = unsafe_callees
             .iter()
             .map(|callee_def_id| {
-                let mut contracts = self.get_fn_contracts(*callee_def_id);
+                let mut contracts = self.get_fn_contracts(*callee_def_id, true);
                 contracts.retain(|p| {
                     !matches!(
                         p.kind(),
@@ -478,7 +725,7 @@ impl<'tcx> VerifyTargetCollector<'tcx> {
             })
             .collect();
 
-        let mut caller_requires = self.get_fn_contracts(def_id);
+        let mut caller_requires = self.get_fn_contracts(def_id, false);
         // `get_fn_contracts` already resolves the entry contracts with the
         // right precedence — inline `#[rapx::requires]`, then trait contracts,
         // then the std JSON database (only when no annotation is present).

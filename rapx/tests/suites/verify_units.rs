@@ -184,6 +184,8 @@ sound_tests! {
     init_std_sound_04: "verify_units/init_std_sound_4" => "sound_intra_helper_initializes",
     init_std_sound_05: "verify_units/init_std_sound_5" => "sound_loop_initializes_slice",
     init_std_sound_06: "verify_units/init_std_sound_6" => "sound_len_bound_loop_initializes_slice",
+    init_ctx_sound_01: "verify_units/init_ctx_sound_1" => "sound_context_sensitive_conditional_init",
+    init_ctx_sound_02: "verify_units/init_ctx_sound_1" => "maybe_init_slot",
 }
 
 // ================ Init Std Unsound Cases =============
@@ -459,6 +461,9 @@ fn deref_sound_cases() {
 fn box_deref() {
     let output = run_with_args("verify_units/box_deref", CMD_VERIFY_SCAN);
     assert_function_result(&output, "f", "SOUND");
+    // `*box` is a safe deref (skipped), but `transmute::<Box<T>, *mut T>` is a
+    // real raw pointer, so its deref must be flagged as an unsafe raw-ptr-deref.
+    assert_contain(&output, "raw-ptr-deref");
 }
 
 // ================ Self-recursive Callee ================

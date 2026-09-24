@@ -19,7 +19,7 @@ use crate::analysis::dataflow::{DataflowAnalysis, default::DataflowAnalyzer};
 use crate::analysis::path::graph::{PathEnumerator, PathGraph};
 use crate::helpers::mir_utils as helpers;
 
-use super::CallEffect;
+use super::{CallContext, CallEffect};
 
 /// Trace backward from an operand (inner call arg) through Copy/Move/Cast/
 /// Ref/RawPtr assignments to the outer callee's argument local, returning its
@@ -1190,16 +1190,23 @@ fn single_call_wrapper_target<'tcx>(tcx: TyCtxt<'tcx>, callee: DefId) -> Option<
 type MustWriteMemo = HashMap<(DefId, usize), Option<HashSet<usize>>>;
 
 /// Return callee argument indices that are definitely written on every
-/// reachable return path. Works for any callee with available MIR, and follows
-/// wrapper calls (`Vec::push` → `push_mut`) with bounded depth.
-pub(super) fn local_must_write_args(tcx: TyCtxt<'_>, callee: DefId) -> Option<Vec<usize>> {
-    must_write_args_rec(tcx, callee, 0, &mut HashMap::new()).map(|set| set.into_iter().collect())
+/// reachable return path, pruning paths infeasible under `context`. Works for
+/// any callee with available MIR, and follows wrapper calls
+/// (`Vec::push` → `push_mut`) with bounded depth.
+pub(super) fn local_must_write_args(
+    tcx: TyCtxt<'_>,
+    callee: DefId,
+    context: &CallContext,
+) -> Option<Vec<usize>> {
+    must_write_args_rec(tcx, callee, 0, context, &mut HashMap::new())
+        .map(|set| set.into_iter().collect())
 }
 
 fn must_write_args_rec(
     tcx: TyCtxt<'_>,
     callee: DefId,
     depth: usize,
+    context: &CallContext,
     memo: &mut MustWriteMemo,
 ) -> Option<HashSet<usize>> {
     if depth > 4 {
@@ -1227,7 +1234,10 @@ fn must_write_args_rec(
             if !path_ends_in_return(body, &path) {
                 continue;
             }
-            let writes = write_args_on_path(tcx, body, &path, depth, memo);
+            if path_infeasible_under_context(body, &path, context) {
+                continue;
+            }
+            let writes = write_args_on_path(tcx, body, &path, depth, context, memo);
             must_write = Some(match must_write {
                 Some(current) => current.intersection(&writes).copied().collect(),
                 None => writes,
@@ -1239,6 +1249,86 @@ fn must_write_args_rec(
     .ok();
     memo.insert((callee, depth), summary.clone());
     summary
+}
+
+/// Return `true` if `path` is provably infeasible under `context`, by folding a
+/// `SwitchInt` whose discriminant is a direct copy of a concrete argument. Only
+/// prunes when the taken target is uniquely determined, so a feasible path is
+/// never removed.
+fn path_infeasible_under_context(
+    body: &rustc_middle::mir::Body<'_>,
+    path: &[usize],
+    context: &CallContext,
+) -> bool {
+    if context.concrete.is_empty() {
+        return false;
+    }
+    for window in path.windows(2) {
+        let (block, next) = (window[0], window[1]);
+        let Some(data) = body.basic_blocks.get(BasicBlock::from_usize(block)) else {
+            continue;
+        };
+        let Some(terminator) = &data.terminator else {
+            continue;
+        };
+        let TerminatorKind::SwitchInt { discr, targets } = &terminator.kind else {
+            continue;
+        };
+        let Some(value) = switch_discriminant_concrete(body, discr, context) else {
+            continue;
+        };
+        let expected = targets
+            .iter()
+            .find(|(val, _)| *val == value as u128)
+            .map(|(_, t)| t)
+            .unwrap_or_else(|| targets.otherwise());
+        if expected.as_usize() != next {
+            return true;
+        }
+    }
+    false
+}
+
+/// Trace a `SwitchInt` discriminant back to a concrete argument value, following
+/// only direct `Copy`/`Move` assignments (no casts or pointer arithmetic) so the
+/// recovered value is identical to the argument's.
+fn switch_discriminant_concrete(
+    body: &rustc_middle::mir::Body<'_>,
+    discr: &Operand<'_>,
+    context: &CallContext,
+) -> Option<i128> {
+    let local = match discr {
+        Operand::Copy(place) | Operand::Move(place) => place.local,
+        _ => return None,
+    };
+    let mut queue = VecDeque::from([local]);
+    let mut seen = HashSet::from([local]);
+    while let Some(current) = queue.pop_front() {
+        let cidx = current.as_usize();
+        if cidx >= 1 && cidx <= body.arg_count {
+            return context.concrete.get(&(cidx - 1)).copied();
+        }
+        for bb in body.basic_blocks.iter() {
+            for stmt in &bb.statements {
+                let StatementKind::Assign(assign) = &stmt.kind else {
+                    continue;
+                };
+                if assign.0.local != current {
+                    continue;
+                }
+                let source = match &assign.1 {
+                    Rvalue::Use(Operand::Copy(place), ..)
+                    | Rvalue::Use(Operand::Move(place), ..) => place.local,
+                    _ => continue,
+                };
+                if !seen.contains(&source) {
+                    seen.insert(source);
+                    queue.push_back(source);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Recognize the standard-library `get_disjoint_check_valid` helper as a
@@ -1382,6 +1472,7 @@ fn write_args_on_path<'tcx>(
     body: &rustc_middle::mir::Body<'tcx>,
     path: &[usize],
     depth: usize,
+    context: &CallContext,
     memo: &mut MustWriteMemo,
 ) -> HashSet<usize> {
     let mut writes = HashSet::new();
@@ -1424,7 +1515,7 @@ fn write_args_on_path<'tcx>(
         // Wrapper calls: a nested callee that writes its own args maps those
         // writes back onto this callee's args.
         if let Some(nested) = helpers::dep_callee_def_id(func) {
-            if let Some(nested_writes) = must_write_args_rec(tcx, nested, depth + 1, memo) {
+            if let Some(nested_writes) = must_write_args_rec(tcx, nested, depth + 1, context, memo) {
                 for (i, arg) in args.iter().enumerate() {
                     if nested_writes.contains(&i) {
                         if let Some(outer) = trace_to_callee_arg(tcx, body, &arg.node) {

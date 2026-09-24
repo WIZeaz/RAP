@@ -1390,11 +1390,19 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .iter()
                         .map(|a| a.node.place().map(|p| p.local))
                         .collect();
+                    let mut concrete = crate::compat::FxHashMap::default();
+                    for (i, arg) in arg_values.iter().enumerate() {
+                        if let Some(v) = arg.term.simplify().as_u64() {
+                            concrete.insert(i, v as i128);
+                        }
+                    }
+                    let context = crate::verify::call_summary::CallContext { concrete };
                     let summary = crate::verify::call_summary::effect_summary(
                         self.tcx,
                         self.caller_def_id,
                         func,
                         dest,
+                        &context,
                     );
                     if !summary.unsupported {
                         for effect in &summary.effects {

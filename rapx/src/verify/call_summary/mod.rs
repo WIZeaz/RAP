@@ -21,16 +21,31 @@ use rustc_middle::{
     ty::{Ty, TyCtxt, TyKind},
 };
 
+use crate::compat::FxHashMap;
 use crate::helpers::mir_utils;
 use crate::verify::api_classify::is_std_vec;
+
+/// Caller constraints that affect a callee's path feasibility, propagated down
+/// the call chain during must-write summarization. Only concrete literal
+/// arguments are carried for now; symbolic path conditions come later.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CallContext {
+    /// Concrete literal argument values, keyed by 0-based argument index
+    /// (matching `trace_to_callee_arg`).
+    pub concrete: FxHashMap<usize, i128>,
+}
 
 /// Dependency summary consumed by the backward visitor.
 #[derive(Clone, Debug)]
 pub(crate) struct CallDependencySummary {
     /// If the call destination is relevant, these call arguments are relevant.
     pub return_depends_on_args: Vec<usize>,
-    /// Arguments that may be written or invalidated by the call.
-    pub may_write_args: Vec<usize>,
+    /// Arguments definitely written on every return path (the must-write
+    /// intersection, from `local_must_write_args`). The backward slicer keeps
+    /// these relevant so the write effect is applied. A conditionally-written
+    /// argument is *not* listed here — that is the "may-write" set, which this
+    /// summary does not compute.
+    pub must_write_args: Vec<usize>,
     /// True when this summary is conservative rather than precise.
     pub unsupported: bool,
 }
@@ -40,7 +55,7 @@ impl CallDependencySummary {
     fn unknown(arg_count: usize) -> Self {
         Self {
             return_depends_on_args: (0..arg_count).collect(),
-            may_write_args: Vec::new(),
+            must_write_args: Vec::new(),
             unsupported: true,
         }
     }
@@ -266,6 +281,7 @@ pub(crate) fn dependency_summary<'tcx>(
     tcx: TyCtxt<'tcx>,
     func: &Operand<'tcx>,
     arg_count: usize,
+    context: &CallContext,
 ) -> CallDependencySummary {
     let callee = mir_utils::dep_callee_def_id(func);
 
@@ -275,11 +291,12 @@ pub(crate) fn dependency_summary<'tcx>(
         if tcx.intrinsic(callee).is_some() || mir_utils::is_drop_in_place(callee) {
             return CallDependencySummary::unknown(arg_count);
         }
-        if let Some(must_write_args) = interprocedural::local_must_write_args(tcx, callee) {
+        if let Some(must_write_args) = interprocedural::local_must_write_args(tcx, callee, context)
+        {
             if !must_write_args.is_empty() {
                 return CallDependencySummary {
                     return_depends_on_args: Vec::new(),
-                    may_write_args: must_write_args
+                    must_write_args: must_write_args
                         .into_iter()
                         .filter(|index| *index < arg_count)
                         .collect(),
@@ -296,7 +313,7 @@ pub(crate) fn dependency_summary<'tcx>(
                 if arg < arg_count {
                     return CallDependencySummary {
                         return_depends_on_args: vec![arg],
-                        may_write_args: Vec::new(),
+                        must_write_args: Vec::new(),
                         unsupported: false,
                     };
                 }
@@ -307,7 +324,7 @@ pub(crate) fn dependency_summary<'tcx>(
                 if arg < arg_count {
                     return CallDependencySummary {
                         return_depends_on_args: vec![arg],
-                        may_write_args: Vec::new(),
+                        must_write_args: Vec::new(),
                         unsupported: false,
                     };
                 }
@@ -320,7 +337,7 @@ pub(crate) fn dependency_summary<'tcx>(
         if mir_utils::call_name(tcx, func).ends_with("::branch") {
             return CallDependencySummary {
                 return_depends_on_args: vec![0],
-                may_write_args: Vec::new(),
+                must_write_args: Vec::new(),
                 unsupported: false,
             };
         }
@@ -330,7 +347,7 @@ pub(crate) fn dependency_summary<'tcx>(
                     .into_iter()
                     .filter(|index| *index < arg_count)
                     .collect(),
-                may_write_args: Vec::new(),
+                must_write_args: Vec::new(),
                 unsupported: false,
             };
         }
@@ -345,6 +362,7 @@ pub(crate) fn effect_summary<'tcx>(
     caller: DefId,
     func: &Operand<'tcx>,
     destination: Local,
+    context: &CallContext,
 ) -> CallEffectSummary {
     let callee = mir_utils::dep_callee_def_id(func);
     let name = mir_utils::call_name(tcx, func);
@@ -372,7 +390,7 @@ pub(crate) fn effect_summary<'tcx>(
         if tcx.intrinsic(callee).is_some() || mir_utils::is_drop_in_place(callee) {
             return CallEffectSummary::unknown(name);
         }
-        if let Some(must_write_args) = interprocedural::local_must_write_args(tcx, callee) {
+        if let Some(must_write_args) = interprocedural::local_must_write_args(tcx, callee, context) {
             let effects: Vec<_> = must_write_args
                 .into_iter()
                 .map(|arg| CallEffect::WriteMemory { pointer_arg: arg })
