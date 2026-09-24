@@ -184,6 +184,8 @@ sound_tests! {
     init_std_sound_04: "verify_units/init_std_sound_4" => "sound_intra_helper_initializes",
     init_std_sound_05: "verify_units/init_std_sound_5" => "sound_loop_initializes_slice",
     init_std_sound_06: "verify_units/init_std_sound_6" => "sound_len_bound_loop_initializes_slice",
+    init_ctx_sound_01: "verify_units/init_ctx_sound_1" => "sound_context_sensitive_conditional_init",
+    init_ctx_sound_02: "verify_units/init_ctx_sound_1" => "maybe_init_slot",
 }
 
 // ================ Init Std Unsound Cases =============
@@ -459,6 +461,28 @@ fn deref_sound_cases() {
 fn box_deref() {
     let output = run_with_args("verify_units/box_deref", CMD_VERIFY_SCAN);
     assert_function_result(&output, "f", "SOUND");
+    // `*box` is a safe deref (skipped), but `transmute::<Box<T>, *mut T>` is a
+    // real raw pointer, so its deref must be flagged as an unsafe raw-ptr-deref.
+    assert_contain(&output, "raw-ptr-deref");
+}
+
+// ================ Self-recursive Callee ================
+// A self-recursive callee must not overflow the pointer-arithmetic wrapper
+// summary (which is cycle-detected and memoized).
+#[test]
+fn self_recursive_callee() {
+    let output = run_with_args("verify_units/self_recursive_callee", CMD_VERIFY_SCAN);
+    assert_not_contain(&output, "overflowed");
+    assert_function_result(&output, "target", "SOUND");
+}
+
+// ================ Call Chain Depth ================
+// A 4-deep call chain of 4-way branching callees used to be summarized once per
+// path that reached them (exponential); the must-write summary is now memoized.
+#[test]
+fn call_chain_depth() {
+    let output = run_with_args("verify_units/call_chain_depth", CMD_VERIFY_SCAN);
+    assert_function_result(&output, "target", "SOUND");
 }
 
 // ================ Typed Provenance Cases =============

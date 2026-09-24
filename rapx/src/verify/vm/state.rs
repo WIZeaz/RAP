@@ -747,12 +747,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         } else {
                             self.align_sym_read(ty)
                         };
-                        return VmValue {
-                            term,
-                            ty: constant.const_.ty(),
-                            provenance: None,
-                            invariants: ValueInvariants::default(),
-                        };
+                        return VmValue::new(term, constant.const_.ty());
                     }
                 }
                 let int_val = crate::helpers::mir_utils::eval_const_scalar_int(
@@ -1038,11 +1033,6 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// would let `NonNull`/null-guard checks pass unsoundly.
     pub(crate) fn unknown_value_for_place(&self, place: &Place<'tcx>) -> VmValue<'ctx, 'tcx> {
         let ty = place.ty(self.body, self.tcx).ty;
-        VmValue {
-            term: self.fresh_int("unknown"),
-            ty,
-            provenance: None,
-            invariants: ValueInvariants::default(),
-        }
+        VmValue::new(self.fresh_int("unknown"), ty)
     }
 }

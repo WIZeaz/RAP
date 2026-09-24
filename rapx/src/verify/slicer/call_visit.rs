@@ -5,7 +5,7 @@
 //! which arguments flow through to the destination and whether the call may
 //! modify relevant state.
 
-use crate::compat::Spanned;
+use crate::compat::{FxHashMap, Spanned};
 use rustc_hir::def_id::DefId;
 use rustc_middle::mir::{BasicBlock, Body, Operand, Place};
 use rustc_middle::ty::TyCtxt;
@@ -44,7 +44,7 @@ pub(crate) fn visit<'tcx>(
         }
     }
 
-    let summary = call_summary::dependency_summary(tcx, func, args.len());
+    let summary = call_summary::dependency_summary(tcx, func, args.len(), &call_context_from_args(args));
 
     if defs.intersects(relevant) {
         if summary.unsupported {
@@ -56,11 +56,11 @@ pub(crate) fn visit<'tcx>(
         return;
     }
 
-    let relevant_written_arg = summary.may_write_args.iter().any(|index| {
+    let relevant_written_arg = summary.must_write_args.iter().any(|index| {
         args.get(*index)
             .is_some_and(|arg| operand_uses(&arg.node).intersects(relevant))
     });
-    let summarized_write = !summary.may_write_args.is_empty();
+    let summarized_write = !summary.must_write_args.is_empty();
     if relevant_written_arg
         || summarized_write
         || (summary.unsupported && arg_uses.intersects(relevant))
@@ -69,7 +69,7 @@ pub(crate) fn visit<'tcx>(
             items.push(RelevantItem::Forget);
         }
         items.push(RelevantItem::Terminator { def_id, block });
-        relevant.extend(call_args_uses_at(args, &summary.may_write_args));
+        relevant.extend(call_args_uses_at(args, &summary.must_write_args));
     }
 
     // If the contract requires the length of a place (via `Len(place)`),
@@ -101,4 +101,17 @@ pub(crate) fn visit<'tcx>(
             }
         }
     }
+}
+
+/// Build a concrete `CallContext` from the call's literal arguments so the
+/// backward slicer prunes callee paths the same way the forward VM does. Only
+/// constant integer arguments are carried; symbolic arguments are absent.
+fn call_context_from_args(args: &[Spanned<Operand<'_>>]) -> call_summary::CallContext {
+    let mut concrete = FxHashMap::default();
+    for (i, arg) in args.iter().enumerate() {
+        if let Some(v) = crate::helpers::mir_utils::operand_const_u64(&arg.node) {
+            concrete.insert(i, v as i128);
+        }
+    }
+    call_summary::CallContext { concrete }
 }

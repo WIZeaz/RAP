@@ -4,7 +4,7 @@
 //! to approximate its effects: pointer-arithmetic wrappers, `from_raw_parts`
 //! wrappers, argument-to-return dataflow, and index-disjointness validators.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use rustc_hir::def_id::DefId;
 use rustc_middle::{
@@ -19,7 +19,7 @@ use crate::analysis::dataflow::{DataflowAnalysis, default::DataflowAnalyzer};
 use crate::analysis::path::graph::{PathEnumerator, PathGraph};
 use crate::helpers::mir_utils as helpers;
 
-use super::CallEffect;
+use super::{CallContext, CallEffect};
 
 /// Trace backward from an operand (inner call arg) through Copy/Move/Cast/
 /// Ref/RawPtr assignments to the outer callee's argument local, returning its
@@ -114,12 +114,64 @@ fn trace_to_callee_arg<'tcx>(
     None
 }
 
-/// Detect when a local callee wraps a pointer-arithmetic call (add/sub) and
-/// produce the correct `ReturnPointerAdd` / `ReturnPointerSub` effect.
+/// Memo state for the transitive wrapper-effect walk: `Computing` marks a
+/// callee currently being resolved (a re-entry is a self/mutual-recursive
+/// cycle), `Done` caches the finished result.
+enum WrapperEffectMemo {
+    Computing,
+    Done(Option<CallEffect>),
+}
+
+/// Resolve `callee`'s wrapper effect by walking nested wrapper calls, with
+/// cycle detection and memoization. `probe` inspects `callee`'s body and, for
+/// a nested call it follows, invokes `recurse`, which routes back through this
+/// resolver so the memo applies uniformly. A callee re-entered while still
+/// being resolved is a cycle and resolves to `None` (no finite wrapper chain).
+fn resolve_wrapper_effect<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    callee: DefId,
+    memo: &mut HashMap<DefId, WrapperEffectMemo>,
+    probe: &dyn Fn(
+        TyCtxt<'tcx>,
+        DefId,
+        &mut (dyn FnMut(DefId) -> Option<CallEffect> + '_),
+    ) -> Option<CallEffect>,
+) -> Option<CallEffect> {
+    if let Some(state) = memo.get(&callee) {
+        return match state {
+            WrapperEffectMemo::Computing => None,
+            WrapperEffectMemo::Done(effect) => effect.clone(),
+        };
+    }
+    memo.insert(callee, WrapperEffectMemo::Computing);
+    let result = {
+        let recurse = &mut |inner: DefId| resolve_wrapper_effect(tcx, inner, memo, probe);
+        probe(tcx, callee, recurse)
+    };
+    memo.insert(callee, WrapperEffectMemo::Done(result.clone()));
+    result
+}
+
+/// Probe whether `callee` is a pointer-arithmetic (add/sub) wrapper, following
+/// nested wrapper calls transitively. `effect_summary` runs this on every local
+/// callee; it returns `None` for anything that is not — transitively — a
+/// pointer add/sub wrapper.
 pub(super) fn try_pointer_arith_wrapper_effect<'tcx>(
     tcx: TyCtxt<'tcx>,
     callee: DefId,
     _destination: Option<Local>,
+) -> Option<CallEffect> {
+    let mut memo: HashMap<DefId, WrapperEffectMemo> = HashMap::new();
+    resolve_wrapper_effect(tcx, callee, &mut memo, &pointer_arith_wrapper_probe)
+}
+
+/// Single-effect recognizer for [`resolve_wrapper_effect`]: does `callee`
+/// directly wrap a pointer add/sub, or delegate to a nested callee that itself
+/// resolves to one?
+fn pointer_arith_wrapper_probe<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    callee: DefId,
+    recurse: &mut (dyn FnMut(DefId) -> Option<CallEffect> + '_),
 ) -> Option<CallEffect> {
     if !tcx.is_mir_available(callee) {
         return None;
@@ -153,7 +205,7 @@ pub(super) fn try_pointer_arith_wrapper_effect<'tcx>(
                 {
                     return None;
                 }
-                try_pointer_arith_wrapper_effect(tcx, inner_callee, Some(call_dest.local))
+                recurse(inner_callee)
             })
         } else {
             None
@@ -1136,14 +1188,32 @@ fn single_call_wrapper_target<'tcx>(tcx: TyCtxt<'tcx>, callee: DefId) -> Option<
     found
 }
 
+/// Cached must-write summaries, keyed by `(callee, depth)`. Depth is part of
+/// the key because the `depth > 4` cutoff makes a summary computed deeper in the
+/// wrapper chain less complete than one computed higher up, and the DFS reaches
+/// the deep ones first.
+type MustWriteMemo = HashMap<(DefId, usize), Option<HashSet<usize>>>;
+
 /// Return callee argument indices that are definitely written on every
-/// reachable return path. Works for any callee with available MIR, and follows
-/// wrapper calls (`Vec::push` → `push_mut`) with bounded depth.
-pub(super) fn local_must_write_args(tcx: TyCtxt<'_>, callee: DefId) -> Option<Vec<usize>> {
-    must_write_args_rec(tcx, callee, 0).map(|set| set.into_iter().collect())
+/// reachable return path, pruning paths infeasible under `context`. Works for
+/// any callee with available MIR, and follows wrapper calls
+/// (`Vec::push` → `push_mut`) with bounded depth.
+pub(super) fn local_must_write_args(
+    tcx: TyCtxt<'_>,
+    callee: DefId,
+    context: &CallContext,
+) -> Option<Vec<usize>> {
+    must_write_args_rec(tcx, callee, 0, context, &mut HashMap::new())
+        .map(|set| set.into_iter().collect())
 }
 
-fn must_write_args_rec(tcx: TyCtxt<'_>, callee: DefId, depth: usize) -> Option<HashSet<usize>> {
+fn must_write_args_rec(
+    tcx: TyCtxt<'_>,
+    callee: DefId,
+    depth: usize,
+    context: &CallContext,
+    memo: &mut MustWriteMemo,
+) -> Option<HashSet<usize>> {
     if depth > 4 {
         return None;
     }
@@ -1153,8 +1223,11 @@ fn must_write_args_rec(tcx: TyCtxt<'_>, callee: DefId, depth: usize) -> Option<H
     if tcx.intrinsic(callee).is_some() || helpers::is_drop_in_place(callee) {
         return None;
     }
+    if let Some(summary) = memo.get(&(callee, depth)) {
+        return summary.clone();
+    }
 
-    helpers::catch_panic(|| {
+    let summary = helpers::catch_panic(|| {
         let body = tcx.optimized_mir(callee);
         let mut graph = PathGraph::new(tcx, callee);
         graph.find_scc();
@@ -1166,7 +1239,10 @@ fn must_write_args_rec(tcx: TyCtxt<'_>, callee: DefId, depth: usize) -> Option<H
             if !path_ends_in_return(body, &path) {
                 continue;
             }
-            let writes = write_args_on_path(tcx, body, &path, depth);
+            if path_infeasible_under_context(body, &path, context) {
+                continue;
+            }
+            let writes = write_args_on_path(tcx, body, &path, depth, context, memo);
             must_write = Some(match must_write {
                 Some(current) => current.intersection(&writes).copied().collect(),
                 None => writes,
@@ -1175,7 +1251,89 @@ fn must_write_args_rec(tcx: TyCtxt<'_>, callee: DefId, depth: usize) -> Option<H
 
         must_write.unwrap_or_default()
     })
-    .ok()
+    .ok();
+    memo.insert((callee, depth), summary.clone());
+    summary
+}
+
+/// Return `true` if `path` is provably infeasible under `context`, by folding a
+/// `SwitchInt` whose discriminant is a direct copy of a concrete argument. Only
+/// prunes when the taken target is uniquely determined, so a feasible path is
+/// never removed.
+fn path_infeasible_under_context(
+    body: &rustc_middle::mir::Body<'_>,
+    path: &[usize],
+    context: &CallContext,
+) -> bool {
+    if context.concrete.is_empty() {
+        return false;
+    }
+    for window in path.windows(2) {
+        let (block, next) = (window[0], window[1]);
+        let Some(data) = body.basic_blocks.get(BasicBlock::from_usize(block)) else {
+            continue;
+        };
+        let Some(terminator) = &data.terminator else {
+            continue;
+        };
+        let TerminatorKind::SwitchInt { discr, targets } = &terminator.kind else {
+            continue;
+        };
+        let Some(value) = switch_discriminant_concrete(body, discr, context) else {
+            continue;
+        };
+        let expected = targets
+            .iter()
+            .find(|(val, _)| *val == value as u128)
+            .map(|(_, t)| t)
+            .unwrap_or_else(|| targets.otherwise());
+        if expected.as_usize() != next {
+            return true;
+        }
+    }
+    false
+}
+
+/// Trace a `SwitchInt` discriminant back to a concrete argument value, following
+/// only direct `Copy`/`Move` assignments (no casts or pointer arithmetic) so the
+/// recovered value is identical to the argument's.
+fn switch_discriminant_concrete(
+    body: &rustc_middle::mir::Body<'_>,
+    discr: &Operand<'_>,
+    context: &CallContext,
+) -> Option<i128> {
+    let local = match discr {
+        Operand::Copy(place) | Operand::Move(place) => place.local,
+        _ => return None,
+    };
+    let mut queue = VecDeque::from([local]);
+    let mut seen = HashSet::from([local]);
+    while let Some(current) = queue.pop_front() {
+        let cidx = current.as_usize();
+        if cidx >= 1 && cidx <= body.arg_count {
+            return context.concrete.get(&(cidx - 1)).copied();
+        }
+        for bb in body.basic_blocks.iter() {
+            for stmt in &bb.statements {
+                let StatementKind::Assign(assign) = &stmt.kind else {
+                    continue;
+                };
+                if assign.0.local != current {
+                    continue;
+                }
+                let source = match &assign.1 {
+                    Rvalue::Use(Operand::Copy(place), ..)
+                    | Rvalue::Use(Operand::Move(place), ..) => place.local,
+                    _ => continue,
+                };
+                if !seen.contains(&source) {
+                    seen.insert(source);
+                    queue.push_back(source);
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Recognize the standard-library `get_disjoint_check_valid` helper as a
@@ -1319,6 +1477,8 @@ fn write_args_on_path<'tcx>(
     body: &rustc_middle::mir::Body<'tcx>,
     path: &[usize],
     depth: usize,
+    context: &CallContext,
+    memo: &mut MustWriteMemo,
 ) -> HashSet<usize> {
     let mut writes = HashSet::new();
     for block in path {
@@ -1360,7 +1520,7 @@ fn write_args_on_path<'tcx>(
         // Wrapper calls: a nested callee that writes its own args maps those
         // writes back onto this callee's args.
         if let Some(nested) = helpers::dep_callee_def_id(func) {
-            if let Some(nested_writes) = must_write_args_rec(tcx, nested, depth + 1) {
+            if let Some(nested_writes) = must_write_args_rec(tcx, nested, depth + 1, context, memo) {
                 for (i, arg) in args.iter().enumerate() {
                     if nested_writes.contains(&i) {
                         if let Some(outer) = trace_to_callee_arg(tcx, body, &arg.node) {
