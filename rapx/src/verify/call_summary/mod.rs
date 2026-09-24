@@ -11,11 +11,11 @@
 pub(crate) mod builtin_models;
 pub(crate) mod interprocedural;
 
-use rustc_hir::def_id::DefId;
 #[cfg(not(rapx_ge_100))]
 use rustc_hir::LangItem;
 #[cfg(rapx_ge_100)]
 use rustc_hir::attrs::lang_items::LangItem;
+use rustc_hir::def_id::DefId;
 use rustc_middle::{
     mir::{Local, Operand},
     ty::{Ty, TyCtxt, TyKind},
@@ -133,7 +133,11 @@ pub(crate) enum CallEffect {
     /// which mutates its `end_or_len` field via `pre_dec_end(offset)` before
     /// returning it — so the returned pointer is `field - offset` elements past
     /// the stored field value.
-    ReturnFieldOfArgSub { arg: usize, field: usize, offset: u64 },
+    ReturnFieldOfArgSub {
+        arg: usize,
+        field: usize,
+        offset: u64,
+    },
     /// The return value is `min(lhs_arg, rhs_arg)`, satisfying
     /// `return <= lhs_arg` and `return <= rhs_arg`.
     ReturnMin { lhs_arg: usize, rhs_arg: usize },

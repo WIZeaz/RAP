@@ -17,8 +17,8 @@ use crate::helpers::fn_info::{
 };
 use crate::verify::contract::PropertyKind;
 use crate::verify::property_checker::{
-    ref_send_check, no_internal_mut_check, no_raw_ptr_check, contain_no_type_check,
-    uni_internal_mut_check, atomic_update_check, field_invariant_check,
+    atomic_update_check, contain_no_type_check, field_invariant_check, no_internal_mut_check,
+    no_raw_ptr_check, ref_send_check, uni_internal_mut_check,
 };
 use crate::verify::target::get_contract_from_annotation;
 
@@ -39,8 +39,7 @@ use super::{
     report::{CheckResult, PropertyCheckResult, VerificationReport},
     slicer::RelevantItem,
     target::{
-        FunctionTarget, MarkerTraitKind, TraitEnsurance, TraitEnsuranceKind,
-        VerifyTargetCollector,
+        FunctionTarget, MarkerTraitKind, TraitEnsurance, TraitEnsuranceKind, VerifyTargetCollector,
     },
 };
 
@@ -149,9 +148,12 @@ impl<'target, 'tcx> VerifyDriver<'target, 'tcx> {
         match property {
             Property::Atom(atom)
                 if atom.kind == PropertyKind::Alias
-                    && crate::verify::api_classify::is_manually_drop_drop(view.checkpoint.callee) =>
+                    && crate::verify::api_classify::is_manually_drop_drop(
+                        view.checkpoint.callee,
+                    ) =>
             {
-                self.engine.check_drop_from_tree(view.tree, view.checkpoint, property)
+                self.engine
+                    .check_drop_from_tree(view.tree, view.checkpoint, property)
             }
             Property::Atom(_) => self.engine.check_callsite_from_tree(
                 view.tree,
@@ -159,18 +161,14 @@ impl<'target, 'tcx> VerifyDriver<'target, 'tcx> {
                 property,
                 &self.target.caller_requires,
             ),
-            Property::And(and) => self.combine_check_paths(
-                view,
-                &and.conjuncts,
-                CheckResult::and,
-                |r| matches!(r, CheckResult::Failed | CheckResult::Unknown),
-            ),
-            Property::Or(or) => self.combine_check_paths(
-                view,
-                &or.disjuncts,
-                CheckResult::or,
-                |r| r.is_proved(),
-            ),
+            Property::And(and) => {
+                self.combine_check_paths(view, &and.conjuncts, CheckResult::and, |r| {
+                    matches!(r, CheckResult::Failed | CheckResult::Unknown)
+                })
+            }
+            Property::Or(or) => {
+                self.combine_check_paths(view, &or.disjuncts, CheckResult::or, |r| r.is_proved())
+            }
         }
     }
 
@@ -269,9 +267,13 @@ impl<'target, 'tcx> VerifyDriver<'target, 'tcx> {
             })
             .collect();
 
-        report
-            .results
-            .extend(self.run_invariant_checks(invariants, &entry_facts, is_constructor, !is_constructor, "struct"));
+        report.results.extend(self.run_invariant_checks(
+            invariants,
+            &entry_facts,
+            is_constructor,
+            !is_constructor,
+            "struct",
+        ));
 
         // For plain methods, and for "wrapped" constructors (`Result<Self>`,
         // `Option<Self>`, `Box<Self>`), `Unknown` results are benign: methods
@@ -312,9 +314,13 @@ impl<'target, 'tcx> VerifyDriver<'target, 'tcx> {
             })
             .collect();
 
-        report
-            .results
-            .extend(self.run_invariant_checks(invariants, &entry_facts, false, false, "type"));
+        report.results.extend(self.run_invariant_checks(
+            invariants,
+            &entry_facts,
+            false,
+            false,
+            "type",
+        ));
 
         // A path that returns early without touching the receiver leaves the
         // invariant `Unknown`; keep it only when some path actually `Failed`.
@@ -357,8 +363,7 @@ impl<'target, 'tcx> VerifyDriver<'target, 'tcx> {
             // never initialized, so an invariant on the *return value* would
             // spuriously fail — skip it.  Invariants on the receiver/arguments
             // are still checked there (the owner drops them on unwind).
-            let is_return =
-                is_return_block(self.tcx, self.target.def_id, checkpoint.block);
+            let is_return = is_return_block(self.tcx, self.target.def_id, checkpoint.block);
 
             for (property_index, invariant) in invariants.iter().enumerate() {
                 if !is_return && targets_return_value(invariant) {
@@ -391,7 +396,10 @@ impl<'target, 'tcx> VerifyDriver<'target, 'tcx> {
                         result: result.clone(),
                         diagnostics: Some(format!("vm-{label}-invariant: {:?}", result)),
                         path_description,
-                        callee_name: format!("{label}-invariant(bb{})", checkpoint.block.as_usize()),
+                        callee_name: format!(
+                            "{label}-invariant(bb{})",
+                            checkpoint.block.as_usize()
+                        ),
                     });
                 }
             }
@@ -752,7 +760,9 @@ impl<'tcx> Analysis for VerifyRun<'tcx> {
                             let verdict = struct_report
                                 .results
                                 .iter()
-                                .fold(CheckResult::ProvedByRule, |acc, r| acc.and(r.result.clone()));
+                                .fold(CheckResult::ProvedByRule, |acc, r| {
+                                    acc.and(r.result.clone())
+                                });
                             self.struct_invariant_results
                                 .entry(struct_id)
                                 .and_modify(|v| *v = v.clone().and(verdict.clone()))
@@ -935,12 +945,8 @@ impl<'tcx> VerifyRun<'tcx> {
                     any_unknown = true;
                     continue;
                 };
-                let result = self.check_type_obligation(
-                    property,
-                    unit.impl_def_id,
-                    self_ty,
-                    is_sync,
-                );
+                let result =
+                    self.check_type_obligation(property, unit.impl_def_id, self_ty, is_sync);
                 let label = property.display_for_report(self.tcx, unit.self_ty_def_id, None);
                 let verdict = match result {
                     CheckResult::ProvedByRule | CheckResult::ProvedBySmt => "PROVED",
@@ -1029,11 +1035,7 @@ impl<'tcx> VerifyRun<'tcx> {
                         _ => return CheckResult::Unknown,
                     };
                     let field = atom.args.first().and_then(|a| {
-                        crate::verify::contract::place::field_name_from_arg(
-                            self.tcx,
-                            adt_def_id,
-                            a,
-                        )
+                        crate::verify::contract::place::field_name_from_arg(self.tcx, adt_def_id, a)
                     });
                     field_invariant_check(
                         self.tcx,
@@ -1066,16 +1068,24 @@ impl<'tcx> VerifyRun<'tcx> {
             Property::And(and) => {
                 let mut overall = CheckResult::ProvedByRule;
                 for conjunct in &and.conjuncts {
-                    overall = overall
-                        .and(self.check_type_obligation(conjunct, impl_def_id, self_ty, is_sync));
+                    overall = overall.and(self.check_type_obligation(
+                        conjunct,
+                        impl_def_id,
+                        self_ty,
+                        is_sync,
+                    ));
                 }
                 overall
             }
             Property::Or(or) => {
                 let mut overall = CheckResult::Failed;
                 for disjunct in &or.disjuncts {
-                    overall = overall
-                        .or(self.check_type_obligation(disjunct, impl_def_id, self_ty, is_sync));
+                    overall = overall.or(self.check_type_obligation(
+                        disjunct,
+                        impl_def_id,
+                        self_ty,
+                        is_sync,
+                    ));
                 }
                 overall
             }

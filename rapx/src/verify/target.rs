@@ -1153,10 +1153,7 @@ impl<'tcx> Analysis for PrepareTargets<'tcx> {
                         MarkerTraitKind::Sync => "Sync",
                     };
                     rap_info!("============================================================");
-                    rap_info!(
-                        "[rapx::verify] prepare targets for marker trait: {}",
-                        name
-                    );
+                    rap_info!("[rapx::verify] prepare targets for marker trait: {}", name);
                     rap_info!("============================================================");
 
                     self.log_marker_trait(trait_target, obligations);
@@ -1246,7 +1243,11 @@ impl<'tcx> PrepareTargets<'tcx> {
         }
     }
 
-    fn log_marker_trait(&self, trait_target: &TraitEnsurance<'tcx>, obligations: &[Property<'tcx>]) {
+    fn log_marker_trait(
+        &self,
+        trait_target: &TraitEnsurance<'tcx>,
+        obligations: &[Property<'tcx>],
+    ) {
         if let Some(self_ty) = trait_target.self_ty_def_id {
             rap_info!("  impl for: {}", self.tcx.def_path_str(self_ty));
         }
@@ -1535,8 +1536,7 @@ fn build_type_atom<'tcx>(
                 return None;
             }
 
-            if let Some(spec) = super::contract::compound::find_compound(def_id.krate, &entry.tag)
-            {
+            if let Some(spec) = super::contract::compound::find_compound(def_id.krate, &entry.tag) {
                 for i in exprs.len()..spec.param_tys.len() {
                     if spec.param_tys.get(i).map(|s| s.as_str()) != Some("Ptr") {
                         return None;

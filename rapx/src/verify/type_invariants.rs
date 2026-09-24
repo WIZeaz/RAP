@@ -44,13 +44,29 @@ pub(crate) fn build_type_invariants_from_params<'tcx>(
         }
         let param_name = param_names.get(index).cloned().unwrap_or_default();
         let (type_path, elem_ty) = type_path_key(tcx, param_ty);
-        collect_type_invariants(tcx, def_id, &db, &type_path, &param_name, elem_ty, &mut results);
+        collect_type_invariants(
+            tcx,
+            def_id,
+            &db,
+            &type_path,
+            &param_name,
+            elem_ty,
+            &mut results,
+        );
     }
 
     // Also add invariants for the return type
     if !output.is_unit() && !output.is_primitive() {
         let (type_path, elem_ty) = type_path_key(tcx, output);
-        collect_type_invariants(tcx, def_id, &db, &type_path, "return", elem_ty, &mut results);
+        collect_type_invariants(
+            tcx,
+            def_id,
+            &db,
+            &type_path,
+            "return",
+            elem_ty,
+            &mut results,
+        );
     }
 
     results
@@ -69,11 +85,7 @@ fn collect_type_invariants<'tcx>(
     if let Some(entry) = db.get(type_path) {
         for prop_entry in &entry.invariants {
             results.extend(instantiate_type_invariant(
-                tcx,
-                def_id,
-                prop_entry,
-                param_name,
-                elem_ty,
+                tcx, def_id, prop_entry, param_name, elem_ty,
             ));
         }
     }
@@ -84,11 +96,7 @@ fn collect_type_invariants<'tcx>(
             if let Some(entry) = db.get(&prefixed) {
                 for prop_entry in &entry.invariants {
                     results.extend(instantiate_type_invariant(
-                        tcx,
-                        def_id,
-                        prop_entry,
-                        param_name,
-                        elem_ty,
+                        tcx, def_id, prop_entry, param_name, elem_ty,
                     ));
                 }
             }

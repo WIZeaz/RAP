@@ -31,8 +31,8 @@ mod typed;
 mod util;
 
 pub(crate) use auto_trait::{
-    ref_send_check, no_internal_mut_check, no_raw_ptr_check, contain_no_type_check,
-    uni_internal_mut_check, atomic_update_check, field_invariant_check,
+    atomic_update_check, contain_no_type_check, field_invariant_check, no_internal_mut_check,
+    no_raw_ptr_check, ref_send_check, uni_internal_mut_check,
 };
 
 pub(crate) struct PropertyChecker;
@@ -65,16 +65,10 @@ impl PropertyChecker {
             return CheckResult::ProvedByRule;
         }
         match property {
-            Property::Or(_) => {
-                self.check_or(vm_state, solver, checkpoint, property)
-            }
-            Property::And(_) => {
-                self.check_and(vm_state, solver, checkpoint, property)
-            }
+            Property::Or(_) => self.check_or(vm_state, solver, checkpoint, property),
+            Property::And(_) => self.check_and(vm_state, solver, checkpoint, property),
             Property::Atom(atom) => match atom.kind {
-                PropertyKind::Align => {
-                    self.check_align(vm_state, solver, checkpoint, property)
-                }
+                PropertyKind::Align => self.check_align(vm_state, solver, checkpoint, property),
                 PropertyKind::NonNull => {
                     self.check_non_null(vm_state, solver, checkpoint, property)
                 }

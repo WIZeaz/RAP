@@ -100,8 +100,13 @@ fn eq_ty<'tcx>(lhs: Ty<'tcx>, rhs: Ty<'tcx>) -> bool {
             ty::TyKind::Ref(_, inner_ty1, mutability1),
             ty::TyKind::Ref(_, inner_ty2, mutability2),
         ) => mutability1 == mutability2 && eq_ty(*inner_ty1, *inner_ty2),
-        (ty::TyKind::Array(inner_ty1, _), ty::TyKind::Array(inner_ty2, _))
-        | (ty::TyKind::Pat(inner_ty1, _), ty::TyKind::Pat(inner_ty2, _))
+        (ty::TyKind::Array(inner_ty1, len1), ty::TyKind::Array(inner_ty2, len2)) => {
+            if len1 != len2 {
+                return false;
+            }
+            eq_ty(*inner_ty1, *inner_ty2)
+        }
+        (ty::TyKind::Pat(inner_ty1, _), ty::TyKind::Pat(inner_ty2, _))
         | (ty::TyKind::Slice(inner_ty1), ty::TyKind::Slice(inner_ty2)) => {
             eq_ty(*inner_ty1, *inner_ty2)
         }

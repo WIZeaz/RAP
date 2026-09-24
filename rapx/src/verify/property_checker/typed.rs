@@ -134,13 +134,11 @@ impl PropertyChecker {
                                             if (vm_state.tcx.is_lang_item(
                                                 wrap_adt.did(),
                                                 LangItem::ManuallyDrop,
-                                            ) || vm_state.tcx.is_lang_item(
-                                                wrap_adt.did(),
-                                                LangItem::UnsafeCell,
-                                            )) && wrap_substs
-                                                .first()
-                                                .and_then(|s| s.as_type())
-                                                == Some(expected_ty)
+                                            ) || vm_state
+                                                .tcx
+                                                .is_lang_item(wrap_adt.did(), LangItem::UnsafeCell))
+                                                && wrap_substs.first().and_then(|s| s.as_type())
+                                                    == Some(expected_ty)
                                             {
                                                 if vm_state.alloc(alloc_id).initialized {
                                                     return CheckResult::ProvedByRule;

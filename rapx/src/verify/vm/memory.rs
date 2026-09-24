@@ -1,11 +1,11 @@
 //! Symbolic memory model for the VM.
 
+#[cfg(rapx_const_ext)]
+use rustc_middle::ty::consts::ConstExt;
 use rustc_middle::{
     mir::{Local, Place, ProjectionElem},
     ty::{Ty, TyKind},
 };
-#[cfg(rapx_const_ext)]
-use rustc_middle::ty::consts::ConstExt;
 use z3::ast::{Ast, Int};
 
 use super::state::{AllocId, Allocation, Provenance, ValueInvariants, VmState, VmValue};
@@ -118,9 +118,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     // otherwise `&raw const self.inner` collapses the slice length
                     // to the struct's own (minimal) size.
                     let field_replacement = match field_ty.kind() {
-                        TyKind::Slice(_) => self.field_value(place.local, &field_path).and_then(
-                            |fv| fv.provenance.clone().map(|p| (fv.term.clone(), p)),
-                        ),
+                        TyKind::Slice(_) => self
+                            .field_value(place.local, &field_path)
+                            .and_then(|fv| fv.provenance.clone().map(|p| (fv.term.clone(), p))),
                         TyKind::Array(..) => {
                             // An array field decomposed into its own allocation by
                             // `decompose_pointee_fields` (e.g. `keys: [MaybeUninit<K>; N]`)
@@ -223,7 +223,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 (size, Some(*elem), false, Some(n_term))
             }
             _ => {
-                let size = self.struct_size_sym(ty).unwrap_or_else(|| self.size_sym(ty));
+                let size = self
+                    .struct_size_sym(ty)
+                    .unwrap_or_else(|| self.size_sym(ty));
                 (size, Some(ty), false, None)
             }
         };
@@ -377,11 +379,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         self.path_conditions.push(a.ge(&one));
         // Lower bound from the trait bounds (0 for an unconstrained `T`): any
         // implementor is at least this aligned.
-        let min_a = crate::helpers::mir_utils::min_align_of_generic_param(
-            self.tcx,
-            self.caller_def_id,
-            ty,
-        );
+        let min_a =
+            crate::helpers::mir_utils::min_align_of_generic_param(self.tcx, self.caller_def_id, ty);
         if min_a > 1 {
             self.path_conditions
                 .push(a.ge(&Int::from_u64(self.ctx, min_a)));
@@ -389,11 +388,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // Upper bound from the trait bounds (0 for an unconstrained `T`): any
         // implementor is at most this aligned, which is what lets a cross-cast
         // from a *more* aligned source (`&[U]` -> `*const T`) be discharged.
-        let max_a = crate::helpers::mir_utils::max_align_of_generic_param(
-            self.tcx,
-            self.caller_def_id,
-            ty,
-        );
+        let max_a =
+            crate::helpers::mir_utils::max_align_of_generic_param(self.tcx, self.caller_def_id, ty);
         if max_a > 0 {
             self.path_conditions
                 .push(a.le(&Int::from_u64(self.ctx, max_a)));
@@ -405,8 +401,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             if !adt_def.is_enum() {
                 let variant = adt_def.non_enum_variant();
                 for field in variant.fields.iter() {
-                    let field_ty =
-                        crate::helpers::mir_utils::field_ty(self.tcx, field, substs);
+                    let field_ty = crate::helpers::mir_utils::field_ty(self.tcx, field, substs);
                     let field_align = self.align_sym(field_ty);
                     self.path_conditions.push(a.rem(&field_align)._eq(&zero));
                 }
@@ -446,11 +441,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if let Some(a) = self.sym_aligns.get(&ty) {
             return a.clone();
         }
-        let min_a = crate::helpers::mir_utils::min_align_of_generic_param(
-            self.tcx,
-            self.caller_def_id,
-            ty,
-        );
+        let min_a =
+            crate::helpers::mir_utils::min_align_of_generic_param(self.tcx, self.caller_def_id, ty);
         Int::from_u64(self.ctx, min_a.max(1))
     }
 

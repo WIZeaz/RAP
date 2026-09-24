@@ -315,15 +315,17 @@ impl PropertyChecker {
 
         // Prefer the materialized slice length; fall back to `size / elem_size`
         // for allocations that never got a materialized `slice_len`.
-        let len = vm_state.slice_len_from_value(&slice_val).unwrap_or_else(|| {
-            let size = vm_state.allocation_size(data_alloc_id).clone();
-            let elem_sz = vm_state
-                .alloc(data_alloc_id)
-                .element_ty
-                .map(|ty| vm_state.size_sym_read(ty))
-                .unwrap_or_else(|| Int::from_u64(vm_state.ctx, 1));
-            size.div(&elem_sz)
-        });
+        let len = vm_state
+            .slice_len_from_value(&slice_val)
+            .unwrap_or_else(|| {
+                let size = vm_state.allocation_size(data_alloc_id).clone();
+                let elem_sz = vm_state
+                    .alloc(data_alloc_id)
+                    .element_ty
+                    .map(|ty| vm_state.size_sym_read(ty))
+                    .unwrap_or_else(|| Int::from_u64(vm_state.ctx, 1));
+                size.div(&elem_sz)
+            });
 
         solver.push();
         let negated = if is_range {
@@ -368,7 +370,9 @@ impl PropertyChecker {
         // (field 0). `RangeFrom`/`RangeFull`/`RangeToInclusive` have no usable end
         // field here and fall back to the single-index path.
         let end_idx = match crate::helpers::mir_utils::range_kind(vm_state.tcx, adt_def.did()) {
-            crate::helpers::mir_utils::RangeKind::RangeTo => Some(rustc_abi::FieldIdx::from_usize(0)),
+            crate::helpers::mir_utils::RangeKind::RangeTo => {
+                Some(rustc_abi::FieldIdx::from_usize(0))
+            }
             crate::helpers::mir_utils::RangeKind::Range
             | crate::helpers::mir_utils::RangeKind::RangeInclusive => {
                 Some(rustc_abi::FieldIdx::from_usize(1))

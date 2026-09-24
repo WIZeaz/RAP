@@ -62,10 +62,8 @@ pub(crate) fn parse_contract_expr<'tcx>(
     // A `const` item (e.g. `CAPACITY` in `ValidNum(len <= CAPACITY)`).
     if let Expr::Path(expr_path) = expr
         && let Some(ident) = expr_path.path.get_ident()
-        && let Some(value) = crate::helpers::mir_utils::resolve_const_item_value(
-            tcx,
-            &ident.to_string(),
-        )
+        && let Some(value) =
+            crate::helpers::mir_utils::resolve_const_item_value(tcx, &ident.to_string())
     {
         return ContractExpr::Const(value);
     }
@@ -332,9 +330,7 @@ fn parse_interval_predicates<'tcx>(
             ))
         }
         Expr::Lit(expr_lit) => match &expr_lit.lit {
-            Lit::Str(range_lit) => {
-                parse_string_interval(tcx, def_id, value, &range_lit.value())
-            }
+            Lit::Str(range_lit) => parse_string_interval(tcx, def_id, value, &range_lit.value()),
             Lit::Int(int_lit) => {
                 // A bare integer `ValidNum(v, n)` is shorthand for the singleton
                 // interval `[n, n]`, i.e. `v == n`.
@@ -387,7 +383,11 @@ fn parse_string_interval<'tcx>(
         let lower = syn::parse_str::<Expr>(lower_raw).ok()?;
         predicates.push(NumericPredicate::new(
             expr_to_pest(tcx, def_id, &lower),
-            if lower_inclusive { RelOp::Le } else { RelOp::Lt },
+            if lower_inclusive {
+                RelOp::Le
+            } else {
+                RelOp::Lt
+            },
             value_expr.clone(),
         ));
     }
@@ -396,7 +396,11 @@ fn parse_string_interval<'tcx>(
         let upper = syn::parse_str::<Expr>(upper_raw).ok()?;
         predicates.push(NumericPredicate::new(
             value_expr,
-            if upper_inclusive { RelOp::Le } else { RelOp::Lt },
+            if upper_inclusive {
+                RelOp::Le
+            } else {
+                RelOp::Lt
+            },
             expr_to_pest(tcx, def_id, &upper),
         ));
     }

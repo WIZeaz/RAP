@@ -201,8 +201,7 @@ fn pointer_arith_wrapper_probe<'tcx>(
 
         let inner_effect = if !is_add && !is_sub {
             helpers::dep_callee_def_id(func).and_then(|inner_callee| {
-                if tcx.intrinsic(inner_callee).is_some()
-                    || helpers::is_drop_in_place(inner_callee)
+                if tcx.intrinsic(inner_callee).is_some() || helpers::is_drop_in_place(inner_callee)
                 {
                     return None;
                 }
@@ -239,10 +238,7 @@ fn pointer_arith_wrapper_probe<'tcx>(
             };
             let base_arg = trace_to_callee_arg(tcx, body, &args.get(inner_base)?.node)?;
             let offset_arg = trace_to_callee_arg(tcx, body, &args.get(inner_offset)?.node)?;
-            let is_sub = matches!(
-                effect,
-                CallEffect::ReturnPointerSub { .. }
-            );
+            let is_sub = matches!(effect, CallEffect::ReturnPointerSub { .. });
             return Some(if is_sub {
                 CallEffect::ReturnPointerSub {
                     base_arg,
@@ -464,10 +460,7 @@ pub(crate) fn try_field_load_effect(tcx: TyCtxt<'_>, callee: DefId) -> Option<Ca
 /// conservative over-approximation: for a ZST receiver the returned pointer is
 /// never dereferenced (ZST accesses are vacuous), so preferring the raw field
 /// is sound.
-pub(crate) fn try_ptr_field_return_effect(
-    tcx: TyCtxt<'_>,
-    callee: DefId,
-) -> Option<CallEffect> {
+pub(crate) fn try_ptr_field_return_effect(tcx: TyCtxt<'_>, callee: DefId) -> Option<CallEffect> {
     if !tcx.is_mir_available(callee) {
         return None;
     }
@@ -764,7 +757,10 @@ fn block_dominates(body: &rustc_middle::mir::Body<'_>, a: BasicBlock, b: BasicBl
         if cur == a.as_usize() {
             continue; // skip a's successors
         }
-        for succ in body.basic_blocks[BasicBlock::from_usize(cur)].terminator().successors() {
+        for succ in body.basic_blocks[BasicBlock::from_usize(cur)]
+            .terminator()
+            .successors()
+        {
             if seen.insert(succ.as_usize()) {
                 queue.push_back(succ.as_usize());
             }
@@ -802,9 +798,10 @@ pub(crate) fn try_decode_length_return_effect(
     let TyKind::Tuple(tys) = inner.kind() else {
         return None;
     };
-    let Some(field) = tys.iter().position(|t| {
-        matches!(t.kind(), TyKind::Uint(rustc_middle::ty::UintTy::Usize))
-    }) else {
+    let Some(field) = tys
+        .iter()
+        .position(|t| matches!(t.kind(), TyKind::Uint(rustc_middle::ty::UintTy::Usize)))
+    else {
         return None;
     };
 
@@ -862,7 +859,10 @@ pub(crate) fn try_decode_length_return_effect(
         }) {
             continue;
         }
-        let Some(k) = args.get(1).and_then(|a| helpers::operand_const_u64(&a.node)) else {
+        let Some(k) = args
+            .get(1)
+            .and_then(|a| helpers::operand_const_u64(&a.node))
+        else {
             continue;
         };
         gets.push((bb, k));
@@ -947,10 +947,7 @@ fn tuple_field_len_kind<'tcx>(
                 if p.projection.len() == 1
                     && matches!(
                         p.projection[0].kind(),
-                        rustc_middle::mir::ProjectionElem::Field(
-                            rustc_abi::FieldIdx::ZERO,
-                            _
-                        )
+                        rustc_middle::mir::ProjectionElem::Field(rustc_abi::FieldIdx::ZERO, _)
                     ) =>
             {
                 p.local
@@ -985,7 +982,10 @@ fn tuple_field_len_kind<'tcx>(
 
 /// Whether `operand` (through copy/move temps) is `PtrMetadata(slice)`,
 /// including a `slice.len()` call (which is semantically `PtrMetadata`).
-fn operand_is_ptr_metadata<'tcx>(body: &rustc_middle::mir::Body<'tcx>, operand: &Operand<'tcx>) -> bool {
+fn operand_is_ptr_metadata<'tcx>(
+    body: &rustc_middle::mir::Body<'tcx>,
+    operand: &Operand<'tcx>,
+) -> bool {
     let mut cur = operand.clone();
     loop {
         let local = match &cur {
@@ -994,7 +994,10 @@ fn operand_is_ptr_metadata<'tcx>(body: &rustc_middle::mir::Body<'tcx>, operand: 
         };
         // A `slice.len()` call result is the slice's length.
         for bb in body.basic_blocks.iter() {
-            let TerminatorKind::Call { func, destination, .. } = &bb.terminator().kind else {
+            let TerminatorKind::Call {
+                func, destination, ..
+            } = &bb.terminator().kind
+            else {
                 continue;
             };
             if destination.local == local
@@ -1048,7 +1051,9 @@ fn detect_pre_dec_end_offset<'tcx>(
             continue;
         }
         // Receiver is arg 0 (the iterator), offset is arg 1.
-        return args.get(1).and_then(|a| helpers::operand_const_u64(&a.node));
+        return args
+            .get(1)
+            .and_then(|a| helpers::operand_const_u64(&a.node));
     }
     None
 }

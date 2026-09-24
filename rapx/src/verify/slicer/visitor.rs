@@ -370,7 +370,9 @@ impl<'tcx> BackwardSlicer<'tcx> {
                 .iter()
                 .any(|dp| newly_added.iter().any(|np| dp.local() == np.local()));
             if any_new {
-                visitor.visit_statement(def_id, block, si, stmt, flow, relevant, items, keep_inv, keep_owner);
+                visitor.visit_statement(
+                    def_id, block, si, stmt, flow, relevant, items, keep_inv, keep_owner,
+                );
             }
         }
     }
@@ -409,8 +411,7 @@ impl<'tcx> BackwardSlicer<'tcx> {
                 let (place, _) = &**assign;
                 let body = self.tcx.optimized_mir(def_id);
                 let ty = body.local_decls[place.local].ty;
-                let typing_env =
-                    rustc_middle::ty::TypingEnv::non_body_analysis(self.tcx, def_id);
+                let typing_env = rustc_middle::ty::TypingEnv::non_body_analysis(self.tcx, def_id);
                 if ty.needs_drop(self.tcx, typing_env) {
                     let mut defs = RelevantPlaces::new();
                     defs.insert_mir_place(place);
@@ -494,8 +495,8 @@ impl<'tcx> BackwardSlicer<'tcx> {
             // chain so `Allocated`/`Owning` can see the freed allocation and
             // detect a later use / second drop.
             if let TerminatorKind::Call { func, args, .. } = &terminator.kind {
-                let is_drop_call = crate::helpers::mir_utils::dep_callee_def_id(func)
-                    .is_some_and(|c| {
+                let is_drop_call =
+                    crate::helpers::mir_utils::dep_callee_def_id(func).is_some_and(|c| {
                         crate::verify::api_classify::is_manually_drop_drop(Some(c))
                             || crate::verify::api_classify::is_std_drop(Some(c))
                     });
@@ -519,8 +520,7 @@ impl<'tcx> BackwardSlicer<'tcx> {
             // itself relevant, so its field provenance survives.
             if keep_owner {
                 let dest_ty = body.local_decls[destination.local].ty;
-                let typing_env =
-                    rustc_middle::ty::TypingEnv::non_body_analysis(self.tcx, def_id);
+                let typing_env = rustc_middle::ty::TypingEnv::non_body_analysis(self.tcx, def_id);
                 if dest_ty.needs_drop(self.tcx, typing_env) {
                     let use_def = terminator_use_def(terminator);
                     items.push(RelevantItem::Terminator { def_id, block });

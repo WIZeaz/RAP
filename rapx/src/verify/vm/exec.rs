@@ -640,8 +640,11 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                                     // element (which would make `inner.len()` == 1).
                                     let elem_align = self.align_sym(*elem_ty);
                                     let max_size = Int::from_u64(self.ctx, i64::MAX as u64);
-                                    let (data_alloc_id, data_base) =
-                                        self.allocate_external(max_size, elem_align, Some(*elem_ty));
+                                    let (data_alloc_id, data_base) = self.allocate_external(
+                                        max_size,
+                                        elem_align,
+                                        Some(*elem_ty),
+                                    );
                                     self.alloc_mut(data_alloc_id).initialized = true;
                                     self.set_field_value(
                                         local,
@@ -1009,7 +1012,14 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             // so `(*ptr).field` derefs resolve to the field value (not the raw
             // pointer term). This is what lets `&*NonNull<LeafNode>` expose
             // `LeafNode.len`.
-            self.decompose_pointee_fields(field_alloc_id, Vec::new(), pointee, pointee, local_idx, 0);
+            self.decompose_pointee_fields(
+                field_alloc_id,
+                Vec::new(),
+                pointee,
+                pointee,
+                local_idx,
+                0,
+            );
             // A `NonNull`/`Box` pointee is a valid value of `pointee`, so its
             // struct invariants (`ValidNum(len <= CAPACITY)` on `LeafNode`)
             // hold for the freshly-decomposed allocation.  Raw pointers carry no
@@ -1170,11 +1180,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 );
             } else if matches!(
                 field_ty.kind(),
-                TyKind::Uint(_)
-                    | TyKind::Int(_)
-                    | TyKind::Float(_)
-                    | TyKind::Bool
-                    | TyKind::Char
+                TyKind::Uint(_) | TyKind::Int(_) | TyKind::Float(_) | TyKind::Bool | TyKind::Char
             ) {
                 let field_term = self.fresh_int(&format!("pointee_field_{}_{}", local_idx, idx));
                 self.alloc_field_values.insert(
@@ -1816,16 +1822,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     .projection
                     .iter()
                     .any(|p| matches!(p.kind(), rustc_middle::mir::ProjectionElem::Deref));
-                let only_field_deref = sp
-                    .projection
-                    .iter()
-                    .all(|p| {
-                        matches!(
-                            p.kind(),
-                            rustc_middle::mir::ProjectionElem::Field(..)
-                                | rustc_middle::mir::ProjectionElem::Deref
-                        )
-                    });
+                let only_field_deref = sp.projection.iter().all(|p| {
+                    matches!(
+                        p.kind(),
+                        rustc_middle::mir::ProjectionElem::Field(..)
+                            | rustc_middle::mir::ProjectionElem::Deref
+                    )
+                });
                 if only_field || (only_field_deref && has_deref_src) {
                     let keys: Vec<Vec<usize>> = self
                         .field_values
@@ -2918,9 +2921,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 return None;
             };
             let variant = adt_def.non_enum_variant();
-            let field_def = variant
-                .fields
-                .get(rustc_abi::FieldIdx::from_usize(idx))?;
+            let field_def = variant.fields.get(rustc_abi::FieldIdx::from_usize(idx))?;
             ty = crate::helpers::mir_utils::field_ty(self.tcx, field_def, substs);
         }
         Some(ty)
@@ -3021,9 +3022,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // non-null even when the lhs pointer is.  Other pointer arithmetic
         // (`add`/`sub`/`offset`) preserves non-nullness under the VM's
         // no-wrap assumption.
-        let non_null = !matches!(op, BinOp::BitAnd)
-            && provenance.is_some()
-            && lhs.invariants.non_null;
+        let non_null =
+            !matches!(op, BinOp::BitAnd) && provenance.is_some() && lhs.invariants.non_null;
 
         let align_n = match op {
             BinOp::Add
@@ -3040,11 +3040,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     (Some(a), None) => match a.simplify().as_u64() {
                         Some(au) => {
                             let c = rhs.term.as_u64().unwrap_or(1);
-                            if c % au == 0 {
-                                Some(a.clone())
-                            } else {
-                                None
-                            }
+                            if c % au == 0 { Some(a.clone()) } else { None }
                         }
                         // Symbolic alignment: only a zero RHS is a guaranteed
                         // multiple of `align_T`.
@@ -3061,16 +3057,14 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     _ => None,
                 }
             }
-            BinOp::Mul | BinOp::MulWithOverflow | BinOp::MulUnchecked => {
-                match rhs.term.as_u64() {
-                    Some(c) => pow2_factor(c).map(|p| Int::from_u64(self.ctx, p)),
-                    None => lhs
-                        .term
-                        .as_u64()
-                        .and_then(pow2_factor)
-                        .map(|p| Int::from_u64(self.ctx, p)),
-                }
-            }
+            BinOp::Mul | BinOp::MulWithOverflow | BinOp::MulUnchecked => match rhs.term.as_u64() {
+                Some(c) => pow2_factor(c).map(|p| Int::from_u64(self.ctx, p)),
+                None => lhs
+                    .term
+                    .as_u64()
+                    .and_then(pow2_factor)
+                    .map(|p| Int::from_u64(self.ctx, p)),
+            },
             _ => lhs.invariants.align_n.clone(),
         };
 
@@ -3086,7 +3080,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     fn rhs_is_aligned_multiple(&self, val: &VmValue<'ctx, 'tcx>, align: &Int<'ctx>) -> bool {
         // If both the value's align_n and `align` are concrete, compare directly.
         if let Some(au) = align.simplify().as_u64() {
-            if let Some(a) = val.invariants.align_n.as_ref().and_then(|a| a.simplify().as_u64()) {
+            if let Some(a) = val
+                .invariants
+                .align_n
+                .as_ref()
+                .and_then(|a| a.simplify().as_u64())
+            {
                 if a >= au && a % au == 0 {
                     return true;
                 }
@@ -3850,19 +3849,21 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 if path.is_empty() {
                     self.local_value(local).map(|v| v.term.clone())
                 } else {
-                    self.field_value(local, &path).map(|v| v.term.clone()).or_else(|| {
-                        // Deref+Field: the base local is a reference whose pointee
-                        // fields live in the per-allocation map (e.g. the
-                        // `ValidNum(len <= CAPACITY)` invariant on `&LeafNode`
-                        // reads `(*leaf).len` through `alloc_field_values`).
-                        let base_val = self.local_value(local)?;
-                        let alloc_id = base_val.provenance_alloc_id()?;
-                        let view_ty = crate::helpers::mir_utils::pointee_ty(base_val.ty)
-                            .unwrap_or(base_val.ty);
-                        self.alloc_field_values
-                            .get(&(alloc_id, view_ty, path.clone()))
-                            .map(|v| v.term.clone())
-                    })
+                    self.field_value(local, &path)
+                        .map(|v| v.term.clone())
+                        .or_else(|| {
+                            // Deref+Field: the base local is a reference whose pointee
+                            // fields live in the per-allocation map (e.g. the
+                            // `ValidNum(len <= CAPACITY)` invariant on `&LeafNode`
+                            // reads `(*leaf).len` through `alloc_field_values`).
+                            let base_val = self.local_value(local)?;
+                            let alloc_id = base_val.provenance_alloc_id()?;
+                            let view_ty = crate::helpers::mir_utils::pointee_ty(base_val.ty)
+                                .unwrap_or(base_val.ty);
+                            self.alloc_field_values
+                                .get(&(alloc_id, view_ty, path.clone()))
+                                .map(|v| v.term.clone())
+                        })
                 }
             }
             ContractExpr::Len(inner) => {
@@ -4122,7 +4123,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             },
             _ => None,
         };
-        let Some(slice_local) = slice_local else { return };
+        let Some(slice_local) = slice_local else {
+            return;
+        };
         let Some(da_id) = self
             .locals
             .get(&slice_local)

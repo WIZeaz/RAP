@@ -6,6 +6,8 @@ use rustc_hir::{
     ItemKind,
     def_id::{DefId, LocalDefId},
 };
+#[cfg(rapx_const_ext)]
+use rustc_middle::ty::consts::ConstExt;
 use rustc_middle::{
     mir::interpret::{AllocId, GlobalAlloc},
     mir::{
@@ -16,8 +18,6 @@ use rustc_middle::{
         TyKind, TypingEnv,
     },
 };
-#[cfg(rapx_const_ext)]
-use rustc_middle::ty::consts::ConstExt;
 use rustc_span::{DUMMY_SP, Symbol};
 
 use std::collections::HashSet;
@@ -25,10 +25,7 @@ use std::collections::HashSet;
 #[cfg(not(rapx_has_skip_norm_wip))]
 use crate::compat::SkipNormWip;
 
-use crate::{
-    compat::FxHashMap,
-    helpers::mir_scan::Checkpoint,
-};
+use crate::{compat::FxHashMap, helpers::mir_scan::Checkpoint};
 
 use super::def_use::PlaceKey;
 
@@ -500,8 +497,7 @@ pub(crate) fn resolve_const_item_value<'tcx>(tcx: TyCtxt<'tcx>, name: &str) -> O
             instance,
             promoted: None,
         };
-        let Ok(val) =
-            tcx.const_eval_global_id(TypingEnv::fully_monomorphized(), cid, DUMMY_SP)
+        let Ok(val) = tcx.const_eval_global_id(TypingEnv::fully_monomorphized(), cid, DUMMY_SP)
         else {
             continue;
         };
@@ -801,8 +797,7 @@ pub fn eval_const_scalar_int<'tcx>(
     // An unevaluated `const` item (e.g. `const CAPACITY: usize = 2 * B - 1`)
     // must be const-evaluated to its scalar value, so comparisons like
     // `idx < CAPACITY` are modeled as `idx < 11` rather than an opaque symbol.
-    let is_unevaluated =
-        matches!(*constant, rustc_middle::mir::Const::Unevaluated(..));
+    let is_unevaluated = matches!(*constant, rustc_middle::mir::Const::Unevaluated(..));
     if !is_num_bound && !is_unevaluated && offset_of_container(tcx, constant).is_none() {
         return None;
     }
@@ -976,7 +971,8 @@ pub fn type_contains_raw_ptr<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> bool {
                 return true;
             }
             let adt = tcx.adt_def(def.did());
-            adt.all_fields().any(|field| type_contains_raw_ptr(tcx, field_ty(tcx, field, args)))
+            adt.all_fields()
+                .any(|field| type_contains_raw_ptr(tcx, field_ty(tcx, field, args)))
         }
         _ => false,
     }

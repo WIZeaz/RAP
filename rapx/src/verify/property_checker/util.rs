@@ -12,9 +12,9 @@ use crate::verify::contract::{
 use crate::verify::report::CheckResult;
 use crate::verify::vm::state::{VmState, VmValue};
 use rustc_middle::mir::{Local, Operand, Rvalue, StatementKind, TerminatorKind};
-use rustc_middle::ty::{GenericArg, GenericArgKind, Ty, TyKind};
 #[cfg(rapx_const_ext)]
 use rustc_middle::ty::consts::ConstExt;
+use rustc_middle::ty::{GenericArg, GenericArgKind, Ty, TyKind};
 use z3::{
     SatResult, Solver,
     ast::{Ast, Bool, Int},
@@ -446,8 +446,9 @@ impl PropertyChecker {
                 // element type from the target's pointee, peeling `[T]` /
                 // `[T; N]` down to `T` so `n * sizeof(elem)` is computed.
                 crate::helpers::mir_utils::pointee_ty(value.ty).map(|ty| match ty.kind() {
-                    rustc_middle::ty::TyKind::Slice(e)
-                    | rustc_middle::ty::TyKind::Array(e, _) => *e,
+                    rustc_middle::ty::TyKind::Slice(e) | rustc_middle::ty::TyKind::Array(e, _) => {
+                        *e
+                    }
                     _ => ty,
                 })
             });
@@ -461,9 +462,10 @@ impl PropertyChecker {
             .and_then(|a| self.resolve_arg_term(vm_state, checkpoint, a))
             .unwrap_or_else(|| Int::from_u64(vm_state.ctx, 1));
         // Simplify the multiplication for concrete count and elem_size
-        if let (Some(elem), Some(count)) =
-            (elem_size_term.simplify().as_u64(), count_term.simplify().as_u64())
-        {
+        if let (Some(elem), Some(count)) = (
+            elem_size_term.simplify().as_u64(),
+            count_term.simplify().as_u64(),
+        ) {
             return Int::from_u64(vm_state.ctx, elem.max(1) * count.max(1));
         }
         Int::mul(vm_state.ctx, &[&elem_size_term, &count_term])
@@ -730,16 +732,17 @@ impl PropertyChecker {
                 // through a `NonNull` field.
                 if let crate::verify::contract::ContractExpr::Place(cp) = &**inner {
                     if let Some(field_path) = cp.plain_field_path() {
-                        let base_local = match cp.base {
-                            PlaceBase::Return => Some(Local::from_usize(0)),
-                            PlaceBase::Local(n) => Some(Local::from_usize(n)),
-                            PlaceBase::Arg(n) => checkpoint
-                                .and_then(|ck| ck.args.get(n))
-                                .and_then(|op| match op {
-                                    Operand::Copy(p) | Operand::Move(p) => Some(p.local),
-                                    _ => None,
-                                }),
-                        };
+                        let base_local =
+                            match cp.base {
+                                PlaceBase::Return => Some(Local::from_usize(0)),
+                                PlaceBase::Local(n) => Some(Local::from_usize(n)),
+                                PlaceBase::Arg(n) => checkpoint
+                                    .and_then(|ck| ck.args.get(n))
+                                    .and_then(|op| match op {
+                                        Operand::Copy(p) | Operand::Move(p) => Some(p.local),
+                                        _ => None,
+                                    }),
+                            };
                         if let Some(local) = base_local {
                             if let Some(len) =
                                 vm_state.try_struct_nn_len_field(local, &field_path, val.ty)
@@ -798,9 +801,7 @@ impl PropertyChecker {
             ContractExpr::Place(cp) => {
                 if cp.projections.is_empty() {
                     return match cp.base {
-                        PlaceBase::Return => {
-                            vm_state.local_value(Local::from_usize(0)).cloned()
-                        }
+                        PlaceBase::Return => vm_state.local_value(Local::from_usize(0)).cloned(),
                         PlaceBase::Arg(n) => checkpoint?
                             .args
                             .get(n)

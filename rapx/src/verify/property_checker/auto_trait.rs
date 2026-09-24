@@ -326,9 +326,8 @@ fn type_implements_clone<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> bool {
     let Some(clone_did) = tcx.lang_items().clone_trait() else {
         return false;
     };
-    tcx.all_impls(clone_did).any(|impl_did| {
-        tcx.impl_trait_ref(impl_did).skip_binder().self_ty() == ty
-    })
+    tcx.all_impls(clone_did)
+        .any(|impl_did| tcx.impl_trait_ref(impl_did).skip_binder().self_ty() == ty)
 }
 
 /// Whether a generic type parameter carries a `Send`/`Sync` bound on the impl,

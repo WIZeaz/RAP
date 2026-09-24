@@ -62,7 +62,9 @@ impl CheckResult {
             (CheckResult::ProvedByRule, _) | (_, CheckResult::ProvedByRule) => {
                 CheckResult::ProvedByRule
             }
-            (CheckResult::ProvedBySmt, _) | (_, CheckResult::ProvedBySmt) => CheckResult::ProvedBySmt,
+            (CheckResult::ProvedBySmt, _) | (_, CheckResult::ProvedBySmt) => {
+                CheckResult::ProvedBySmt
+            }
             (CheckResult::Failed, CheckResult::Failed) => CheckResult::Failed,
             _ => CheckResult::Unknown,
         }

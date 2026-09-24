@@ -267,8 +267,7 @@ fn init_types(tcx: TyCtxt) -> Types {
 /// Whether a type's short name denotes a synchronization primitive that guards
 /// its interior mutability (`Mutex`/`RwLock`/`OnceLock`/`OnceCell`/`Atomic*`).
 fn is_sync_primitive_short_name(short: &str) -> bool {
-    matches!(short, "Mutex" | "RwLock" | "OnceLock" | "OnceCell")
-        || short.starts_with("Atomic")
+    matches!(short, "Mutex" | "RwLock" | "OnceLock" | "OnceCell") || short.starts_with("Atomic")
 }
 
 /// The negative-type name for a short type name, if it is one of the std
@@ -873,7 +872,9 @@ fn init_inner(tcx: TyCtxt) -> Intrinsics {
                 // compilation. Entries pointing solely at unloaded crates (e.g.
                 // `alloc` when verifying `core`) are expected to be absent.
                 let in_loaded_crate = INTRINSICS[idx].iter().any(|p| {
-                    p.split("::").next().is_some_and(|pfx| loaded_crates.contains(pfx))
+                    p.split("::")
+                        .next()
+                        .is_some_and(|pfx| loaded_crates.contains(pfx))
                 });
                 in_loaded_crate.then_some(INTRINSICS[idx])
             })

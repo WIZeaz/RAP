@@ -23,6 +23,10 @@ will perform two kinds of detection in a row.
                      trace: print all the detailed RAPx execution traces.
                      debug: display intermediate analysis results.
                      warn: show bugs detected only.
+                     RAPX_LOG supports both global and module level settings. For example:
+                     * Global level: `RAPX_LOG=TRACE`
+                     * Module level: `RAPX_LOG=some::module:DEBUG`
+                     * Mixed: `RAPX_LOG=TRACE,some::module:INFO,other::module:DEBUG`
 
     RAPX_CLEAN        run cargo clean before check: true, false
                       * true is the default value except that false is set

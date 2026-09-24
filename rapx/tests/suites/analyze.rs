@@ -438,8 +438,8 @@ fn adg_simple_graph() {
     assert_contain(&graph_str, "path: vec_arg");
     assert_contain(&graph_str, "path: std::vec::Vec::<i32, std::alloc::Global>");
     assert_contain(&graph_str, "path: Item");
-    assert_contain(&graph_str, "type: Api");
-    assert_contain(&graph_str, "type: Ty");
+    assert_contain(&graph_str, "type: api");
+    assert_contain(&graph_str, "type: ty");
     assert_contain(&graph_str, "type: Ret");
     assert_contain(&graph_str, "type: Arg");
     assert_contain(&graph_str, "from: 0");

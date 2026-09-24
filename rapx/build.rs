@@ -20,6 +20,7 @@ fn main() {
     emit_check_cfg("rapx_rvalue_has_nullary_op");
     emit_check_cfg("rapx_constkind_alias");
     emit_check_cfg("rapx_alias_const_inherent_self");
+    emit_check_cfg("rapx_alias_ty_structured_kind");
     emit_check_cfg("rapx_has_deeply_resolve_ignoring_regions");
 
     emit_cfg("rapx_ge_95", minor >= 95);
@@ -94,10 +95,7 @@ fn main() {
     // `opt_def_id` was dropped (extract the def_id by matching) around 2026-09.
     emit_cfg(
         "rapx_alias_const_inherent_self",
-        rustc_src_contains_path(
-            "compiler/rustc_type_ir/src/const_kind.rs",
-            "InherentSelf",
-        ),
+        rustc_src_contains_path("compiler/rustc_type_ir/src/const_kind.rs", "InherentSelf"),
     );
     // `InferCtxt::resolve_vars_if_possible` was renamed to
     // `deeply_resolve_ignoring_regions` in nightly 2026-09-11.
@@ -115,6 +113,15 @@ fn main() {
         rustc_src_contains_path(
             "compiler/rustc_middle/src/ty/consts.rs",
             "pub trait ConstExt",
+        ),
+    );
+    // `AliasTyKind` variants gained named fields (`Projection { def_id }`) and
+    // `AliasTy::kind` changed from a method to a field around 2026-07.
+    emit_cfg(
+        "rapx_alias_ty_structured_kind",
+        rustc_src_contains_path(
+            "compiler/rustc_type_ir/src/ty_kind.rs",
+            "Projection { def_id",
         ),
     );
 }

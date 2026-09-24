@@ -32,6 +32,7 @@ use std::path::Path;
 use std::time;
 
 const MAX_TY_COMPLX: usize = 5;
+const RESOLVE_DEBUG: bool = false;
 
 fn add_return_type_if_reachable<'tcx>(
     fn_did: DefId,
@@ -164,16 +165,17 @@ impl<'tcx> TypeCandidates<'tcx> {
             tcx.lifetimes.re_erased,
             tcx.types.str_,
         ));
-        // String
-        prelude_tys.push(Ty::new_adt(
-            self.tcx,
-            self.tcx.adt_def(self.tcx.lang_items().string().unwrap()),
-            ty::GenericArgs::empty(),
-        ));
-        for element_ty in &primitive_tys {
-            // Vec<T>
-            prelude_tys.push(std_tys::std_vec(*element_ty, self.tcx));
+
+        if let Some(string_ty) = std_tys::std_string(tcx) {
+            prelude_tys.push(string_ty);
         }
+
+        for element_ty in &primitive_tys {
+            if let Some(vec_ty) = std_tys::std_vec(*element_ty, tcx) {
+                prelude_tys.push(vec_ty);
+            }
+        }
+
         prelude_tys.into_iter().for_each(|ty| {
             self.insert_all(ty);
         });
@@ -217,7 +219,10 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
 
         rap_info!("finish resolving generic APIs");
         self.statistics().info();
-        self.dump_to_file(Path::new("api_graph_unpruned.dot"));
+
+        if RESOLVE_DEBUG {
+            self.dump_to_file(Path::new("api_graph_unpruned.dot"));
+        }
 
         let reserved = self.prune_by_similarity(generic_map);
 
@@ -253,9 +258,12 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
             );
 
             // dump all reachable types to files, each line output a type
-            let mut file = rap_create_file(Path::new("reachable_types.txt"), "create file fail");
-            for ty in all_reachable_tys.iter() {
-                writeln!(file, "{}", ty.ty()).unwrap();
+            if RESOLVE_DEBUG {
+                let mut file =
+                    rap_create_file(Path::new("reachable_types.txt"), "create file fail");
+                for ty in all_reachable_tys.iter() {
+                    writeln!(file, "{}", ty.ty()).unwrap();
+                }
             }
 
             let mut current_tys = HashSet::new();
@@ -371,7 +379,7 @@ impl<'tcx> ApiDependencyGraph<'tcx> {
                 DepNode::Ty(..) => {
                     for edge in self.graph.edges_directed(node, Direction::Outgoing) {
                         let weight = self.graph.edge_weight(edge.id()).unwrap();
-                        if let DepEdge::Transform(_) | DepEdge::Arg { no: 0 } = weight {
+                        if let DepEdge::Transform { .. } | DepEdge::Arg { .. } = weight {
                             worklist.push_back(edge.target());
                         }
                     }

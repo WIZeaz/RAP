@@ -378,9 +378,7 @@ impl PropertyChecker {
             let unrolled = vm_state.path.as_ref().is_some_and(|p| {
                 let mut seen = FxHashSet::default();
                 p.steps.iter().any(|s| match s {
-                    crate::verify::path_extractor::PathStep::Block(b) => {
-                        !seen.insert(b.as_usize())
-                    }
+                    crate::verify::path_extractor::PathStep::Block(b) => !seen.insert(b.as_usize()),
                     _ => false,
                 })
             });

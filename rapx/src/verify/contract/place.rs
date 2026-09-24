@@ -311,7 +311,10 @@ pub(crate) fn field_name_from_place<'tcx>(
         _ => None,
     })?;
     let adt = tcx.adt_def(adt_def_id);
-    let field = adt.non_enum_variant().fields.get(FieldIdx::from_usize(idx))?;
+    let field = adt
+        .non_enum_variant()
+        .fields
+        .get(FieldIdx::from_usize(idx))?;
     Some(field.name.to_string())
 }
 
