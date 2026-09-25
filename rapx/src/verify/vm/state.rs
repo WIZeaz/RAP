@@ -168,18 +168,14 @@ impl<'ctx, 'tcx> Allocation<'ctx, 'tcx> {
         size: Int<'ctx>,
         align: Int<'ctx>,
         element_ty: Option<Ty<'tcx>>,
-        is_external: bool,
+        kind: AllocKind<'ctx>,
     ) -> Self {
         Allocation {
             base,
             size,
             align,
             element_ty,
-            kind: if is_external {
-                AllocKind::External
-            } else {
-                AllocKind::Object
-            },
+            kind,
             dead: false,
             initialized: false,
             alive_assumed: false,
@@ -476,7 +472,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         align: Int<'ctx>,
         element_ty: Option<Ty<'tcx>>,
     ) -> (AllocId, Int<'ctx>) {
-        self.allocate_internal(size, align, element_ty, false)
+        self.allocate_internal(size, align, element_ty, AllocKind::Object)
     }
 
     /// Allocate a fresh external allocation (for raw-pointer parameters).
@@ -487,7 +483,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         align: Int<'ctx>,
         element_ty: Option<Ty<'tcx>>,
     ) -> (AllocId, Int<'ctx>) {
-        self.allocate_internal(size, align, element_ty, true)
+        self.allocate_internal(size, align, element_ty, AllocKind::External)
     }
 
     fn allocate_internal(
@@ -495,15 +491,23 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         size: Int<'ctx>,
         align: Int<'ctx>,
         element_ty: Option<Ty<'tcx>>,
-        is_external: bool,
+        kind: AllocKind<'ctx>,
     ) -> (AllocId, Int<'ctx>) {
         let id = AllocId(self.next_alloc_id);
         self.next_alloc_id += 1;
         let base = {
-            let name = format!("{}_{}", if is_external { "ext" } else { "heap" }, id.0);
+            let name = format!(
+                "{}_{}",
+                if matches!(kind, AllocKind::External) {
+                    "ext"
+                } else {
+                    "heap"
+                },
+                id.0
+            );
             Int::new_const(self.ctx, name.as_str())
         };
-        let alloc = Allocation::new(base.clone(), size, align, element_ty, is_external);
+        let alloc = Allocation::new(base.clone(), size, align, element_ty, kind);
         self.allocations.push(alloc);
         (id, base)
     }

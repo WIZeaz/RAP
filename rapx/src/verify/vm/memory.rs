@@ -8,7 +8,7 @@ use rustc_middle::{
 };
 use z3::ast::{Ast, Int};
 
-use super::state::{AllocId, Allocation, Provenance, ValueInvariants, VmState, VmValue};
+use super::state::{AllocId, AllocKind, Allocation, Provenance, ValueInvariants, VmState, VmValue};
 
 impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     pub(crate) fn address_of_place(&mut self, place: &Place<'tcx>) -> Option<VmValue<'ctx, 'tcx>> {
@@ -205,7 +205,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // `len() = size / elem_size` equal to `N`, letting downstream
         // InBound checks (e.g. `get_unchecked_mut(idx)` where `idx < N`) be
         // discharged against the loop's `idx < N` path condition.
-        let (size_term, element_ty, is_external, slice_len) = match ty.kind() {
+        let (size_term, element_ty, slice_len) = match ty.kind() {
             TyKind::Array(elem, const_len) => {
                 // Concrete element size (`.max(1)` so a generic `T` collapses to
                 // 1 byte, keeping `len() = size / elem_size` equal to the
@@ -220,16 +220,16 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     Some(n) => Int::from_u64(self.ctx, n.saturating_mul(elem_size)),
                     None => Int::mul(self.ctx, &[&n_term, &Int::from_u64(self.ctx, elem_size)]),
                 };
-                (size, Some(*elem), false, Some(n_term))
+                (size, Some(*elem), Some(n_term))
             }
             _ => {
                 let size = self
                     .struct_size_sym(ty)
                     .unwrap_or_else(|| self.size_sym(ty));
-                (size, Some(ty), false, None)
+                (size, Some(ty), None)
             }
         };
-        let mut alloc = Allocation::new(base, size_term, align, element_ty, is_external);
+        let mut alloc = Allocation::new(base, size_term, align, element_ty, AllocKind::Object);
         if let Some(len) = slice_len {
             alloc.set_slice_len(len);
         }
