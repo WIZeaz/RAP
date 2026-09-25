@@ -61,7 +61,7 @@ impl PropertyChecker {
             // Check provenance: does the allocation's element type match the expected type?
             if let Some(alloc_id) = value.provenance_alloc_id() {
                 let alloc = vm_state.alloc(alloc_id);
-                if let Some(mut elem_ty) = alloc.element_ty {
+                if let Some(mut elem_ty) = alloc.element_ty.as_ty() {
                     // Resolve generic type param to concrete callsite type.
                     elem_ty = self.resolve_ty_params(vm_state, checkpoint, elem_ty);
                     if matches!(elem_ty.kind(), TyKind::Param(_)) {
@@ -217,7 +217,7 @@ impl PropertyChecker {
             if let Some(alloc_id) = value.provenance_alloc_id()
                 && vs == es
             {
-                if vm_state.alloc(alloc_id).element_ty.is_some() {
+                if !vm_state.alloc(alloc_id).element_ty.is_generic() {
                     return CheckResult::ProvedByRule;
                 }
             }

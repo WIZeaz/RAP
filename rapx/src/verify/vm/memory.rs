@@ -342,7 +342,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// non-ZST).  Returns `None` for concrete element types, where the size is a
     /// known constant and no case split is needed.
     pub(crate) fn generic_elem_size(&self, alloc_id: AllocId) -> Option<Int<'ctx>> {
-        let elem_ty = self.alloc(alloc_id).element_ty?;
+        let elem_ty = self.alloc(alloc_id).element_ty.as_ty()?;
         if !crate::helpers::mir_utils::ty_has_type_param(elem_ty) {
             return None;
         }

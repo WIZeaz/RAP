@@ -24,7 +24,7 @@ use crate::{
     },
 };
 
-use super::state::{AllocId, InlineFrame, Provenance, ValueInvariants, VmState, VmValue};
+use super::state::{AllocId, ContentTy, InlineFrame, Provenance, ValueInvariants, VmState, VmValue};
 
 use crate::verify::api_classify;
 
@@ -2788,7 +2788,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         if let Some(len) = alloc.slice_len() {
             return Some(len.clone());
         }
-        let elem_ty = alloc.element_ty?;
+        let elem_ty = alloc.element_ty.as_ty()?;
         let elem_term = self.size_sym_read(elem_ty);
         if elem_term.simplify().as_u64() == Some(1) {
             return Some(alloc.size.clone());
@@ -2801,7 +2801,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
     /// pointee's `len` field term, or `None` when the pointee has no such field.
     pub(crate) fn try_adt_len_field(&self, val: &VmValue<'ctx, 'tcx>) -> Option<Int<'ctx>> {
         let alloc_id = val.provenance_alloc_id()?;
-        let elem_ty = self.alloc(alloc_id).element_ty?;
+        let elem_ty = self.alloc(alloc_id).element_ty.as_ty()?;
 
         let rustc_middle::ty::TyKind::Adt(adt_def, _) = elem_ty.kind() else {
             return None;
@@ -2863,7 +2863,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         }
         let alloc_id = val.provenance_alloc_id()?;
         let alloc = self.alloc(alloc_id);
-        let elem_ty = alloc.element_ty?;
+        let elem_ty = alloc.element_ty.as_ty()?;
         let elem_term = self.size_sym_read(elem_ty);
         if elem_term.simplify().as_u64() == Some(1) {
             return Some(alloc.size.clone());
@@ -3484,8 +3484,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             // `T/#1` vs the `T/#0` used to size the allocation),
                             // which must not clobber the original element type —
                             // doing so makes `len()` fall back to the byte size.
-                            if self.alloc(alloc_id).element_ty.is_none() {
-                                self.alloc_mut(alloc_id).element_ty = Some(expected_ty);
+                            if self.alloc(alloc_id).element_ty.is_generic() {
+                                self.alloc_mut(alloc_id).element_ty = ContentTy::Typed(expected_ty);
                             }
                         }
                     }
@@ -3568,8 +3568,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             return false;
         };
         self.alloc_mut(alloc_id).dead = false;
-        if self.alloc(alloc_id).element_ty.is_none() {
-            self.alloc_mut(alloc_id).element_ty = Some(elem_ty);
+        if self.alloc(alloc_id).element_ty.is_generic() {
+            self.alloc_mut(alloc_id).element_ty = ContentTy::Typed(elem_ty);
         }
         true
     }
@@ -4077,7 +4077,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         let elem_sz = slice_local
             .and_then(|loc| self.locals.get(&loc))
             .and_then(|sl_val| sl_val.provenance_alloc_id())
-            .and_then(|da_id| self.alloc(da_id).element_ty)
+            .and_then(|da_id| self.alloc(da_id).element_ty.as_ty())
             .map(|ty| self.size_of_ty(ty) as u64)
             .unwrap_or(1)
             .max(1);
@@ -4142,6 +4142,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             None => {
                 let elem_sz_term = alloc
                     .element_ty
+                    .as_ty()
                     .map(|ty| self.size_sym_read(ty))
                     .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                 alloc.size.div(&elem_sz_term)

@@ -103,7 +103,7 @@ impl PropertyChecker {
         let size = vm_state.allocation_size(alloc_id).clone();
 
         let alloc = vm_state.alloc(alloc_id);
-        if let (Some(alloc_elem_ty), Some(req_ty)) = (alloc.element_ty, required_ty) {
+        if let (Some(alloc_elem_ty), Some(req_ty)) = (alloc.element_ty.as_ty(), required_ty) {
             if self.alloc_elem_is_array_of(alloc_elem_ty, req_ty) {
                 return CheckResult::ProvedByRule;
             }
@@ -155,6 +155,7 @@ impl PropertyChecker {
         let alloc_elem_is_generic = vm_state
             .alloc(alloc_id)
             .element_ty
+            .as_ty()
             .map_or(false, |ty| matches!(ty.kind(), TyKind::Param(_)));
         let fallback_for_generic =
             alloc_elem_is_generic && !size.as_u64().is_some() && !access.as_u64().is_some();
@@ -322,6 +323,7 @@ impl PropertyChecker {
                 let elem_sz = vm_state
                     .alloc(data_alloc_id)
                     .element_ty
+                    .as_ty()
                     .map(|ty| vm_state.size_sym_read(ty))
                     .unwrap_or_else(|| Int::from_u64(vm_state.ctx, 1));
                 size.div(&elem_sz)

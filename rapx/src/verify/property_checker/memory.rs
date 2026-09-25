@@ -325,7 +325,7 @@ impl PropertyChecker {
             && {
                 let a = vm_state.alloc(alloc_id);
                 !a.is_external()
-                    && a.element_ty.map_or(false, |ty| {
+                    && a.element_ty.as_ty().map_or(false, |ty| {
                         if let TyKind::Adt(adt, _) = ty.kind() {
                             api_classify::is_maybe_uninit_type(adt.did())
                         } else {
@@ -415,7 +415,7 @@ impl PropertyChecker {
             .map(|ty| self.instantiate_callsite_ty(vm_state, checkpoint, ty));
 
         let alloc = vm_state.alloc(alloc_id);
-        if let (Some(alloc_elem_ty), Some(req_ty)) = (alloc.element_ty, required_ty) {
+        if let (Some(alloc_elem_ty), Some(req_ty)) = (alloc.element_ty.as_ty(), required_ty) {
             if self.alloc_elem_is_array_of(alloc_elem_ty, req_ty) {
                 return CheckResult::ProvedByRule;
             }
@@ -539,6 +539,7 @@ impl PropertyChecker {
         let alloc_elem_is_generic = vm_state
             .alloc(alloc_id)
             .element_ty
+            .as_ty()
             .map_or(false, |ty| matches!(ty.kind(), TyKind::Param(_)));
         let elem_size = vm_state.generic_elem_size(alloc_id);
         if alloc_elem_is_generic && !size.as_u64().is_some() && !access.as_u64().is_some() {

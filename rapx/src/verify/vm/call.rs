@@ -20,7 +20,7 @@ use crate::verify::api_classify;
 use crate::verify::call_summary::{self, CallEffect};
 use crate::verify::def_use::{PlaceBaseKey, PlaceKey};
 
-use super::state::{AllocId, Provenance, ValueInvariants, VmState, VmValue};
+use super::state::{AllocId, ContentTy, Provenance, ValueInvariants, VmState, VmValue};
 
 /// Classification of a call site for dispatch prioritization.
 const MAX_INLINE_DEPTH: usize = 5;
@@ -1491,7 +1491,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let (elem_ty, elem_sz_term, alloc_size) = src_alloc_id
                         .map(|id| self.alloc(id))
                         .map(|a| {
-                            let ty = a.element_ty;
+                            let ty = a.element_ty.as_ty();
                             let sz_term = self.size_sym_read(ty.unwrap_or(self_val.ty));
                             (ty, sz_term, a.size.clone())
                         })
@@ -1696,7 +1696,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 };
                 let alloc = self.alloc(src_prov.alloc_id);
                 let (elem_ty, elem_sz, len_bytes) = {
-                    let ty = alloc.element_ty;
+                    let ty = alloc.element_ty.as_ty();
                     let sz = self.size_of_ty(ty.unwrap_or(self_val.ty)).max(1) as u64;
                     (ty, sz, alloc.size.clone())
                 };
@@ -2373,7 +2373,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         if let rustc_middle::ty::TyKind::RawPtr(inner, _)
                         | rustc_middle::ty::TyKind::Ref(_, inner, _) = arg_val.ty.kind()
                         {
-                            let cur = self.alloc(prov.alloc_id).element_ty;
+                            let cur = self.alloc(prov.alloc_id).element_ty.as_ty();
                             let is_u8 = |t: rustc_middle::ty::Ty<'_>| {
                                 matches!(
                                     t.kind(),
@@ -2382,7 +2382,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             };
                             if let Some(c) = cur {
                                 if is_u8(c) && !is_u8(*inner) {
-                                    self.alloc_mut(prov.alloc_id).element_ty = Some(*inner);
+                                    self.alloc_mut(prov.alloc_id).element_ty = ContentTy::Typed(*inner);
                                 }
                             }
                         }
@@ -3274,7 +3274,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             self.set_local(dest, val);
             return true;
         }
-        if let Some(elem_ty) = self.alloc(alloc_id).element_ty {
+        if let Some(elem_ty) = self.alloc(alloc_id).element_ty.as_ty() {
             let elem_term = self.size_sym_read(elem_ty);
             let size = self.allocation_size(alloc_id);
             if elem_term.simplify().as_u64() == Some(1) {

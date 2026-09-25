@@ -119,6 +119,44 @@ pub(crate) enum AllocKind<'ctx> {
     External,
 }
 
+/// The type of an allocation's contents.
+///
+/// This replaces the previous `Option<Ty>` (whose `None` conflated two distinct
+/// cases): `Typed` carries a concrete `Ty` — the element type of a slice, the
+/// object type of a `Box<T>`/struct, or `u8` for a raw byte buffer — while
+/// `Generic` marks a symbolic element type whose concrete `Ty` cannot be
+/// determined (e.g. `from_raw_parts::<T>`; its `size` uses the shared symbolic
+/// `sizeof_T` and its length must be materialized via `set_slice_len`).
+#[derive(Clone, Debug)]
+pub(crate) enum ContentTy<'tcx> {
+    Typed(Ty<'tcx>),
+    Generic,
+}
+
+impl<'tcx> ContentTy<'tcx> {
+    /// The concrete type, if known.
+    pub(crate) fn as_ty(&self) -> Option<Ty<'tcx>> {
+        match self {
+            ContentTy::Typed(t) => Some(*t),
+            ContentTy::Generic => None,
+        }
+    }
+
+    /// Whether the element type is symbolic/unknown (no concrete `Ty`).
+    pub(crate) fn is_generic(&self) -> bool {
+        matches!(self, ContentTy::Generic)
+    }
+}
+
+impl<'tcx> From<Option<Ty<'tcx>>> for ContentTy<'tcx> {
+    fn from(o: Option<Ty<'tcx>>) -> Self {
+        match o {
+            Some(t) => ContentTy::Typed(t),
+            None => ContentTy::Generic,
+        }
+    }
+}
+
 /// A memory allocation (stack or heap).
 ///
 /// The allocation is stored in `VmState::allocations` at index `AllocId.0`
@@ -135,8 +173,8 @@ pub(crate) struct Allocation<'ctx, 'tcx> {
     /// type).
     pub align: Int<'ctx>,
 
-    /// Element type for bounds checking.
-    pub element_ty: Option<Ty<'tcx>>,
+    /// Type of the allocation's contents (concrete `Ty` or symbolic `Generic`).
+    pub element_ty: ContentTy<'tcx>,
 
     /// The allocation shape (object vs slice vs external).
     pub kind: AllocKind<'ctx>,
@@ -179,7 +217,7 @@ impl<'ctx, 'tcx> Allocation<'ctx, 'tcx> {
             base,
             size,
             align,
-            element_ty,
+            element_ty: element_ty.into(),
             kind,
             dead: false,
             initialized: false,
