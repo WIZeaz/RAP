@@ -376,7 +376,7 @@ impl<T> NonNull<[T]> {
     pub const fn slice_from_raw_parts(data: NonNull<T>, len: usize) -> Self {
         // SAFETY: `data` is a `NonNull` pointer which is necessarily non-null.
         unsafe {
-            NonNull { pointer: slice::from_raw_parts_mut(data.pointer as *mut T, len) as *const [T] }
+            NonNull { pointer: ptr::slice_from_raw_parts_mut(data.pointer as *mut T, len) }
         }
     }
 
@@ -386,8 +386,7 @@ impl<T> NonNull<[T]> {
         // SAFETY: the data pointer is non-null, so the assembled wide pointer is non-null.
         unsafe {
             NonNull {
-                pointer: slice::from_raw_parts_mut(data_pointer.pointer as *mut T, metadata)
-                    as *const [T],
+                pointer: ptr::slice_from_raw_parts_mut(data_pointer.pointer as *mut T, metadata),
             }
         }
     }

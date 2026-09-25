@@ -4,6 +4,7 @@
 
 use std::marker::PhantomData;
 
+#[rapx::invariant(Alive(ptr, 'a))]
 pub struct ReadOnlySlot<'a> {
     ptr: *const u32,
     _marker: PhantomData<&'a u32>,

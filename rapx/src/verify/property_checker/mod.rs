@@ -5,12 +5,9 @@
 //! submodules (`memory`, `bounds`, `typed`, `numeric`, `string`, `alias`,
 //! `cstr`, `transmute`).  Shared helpers live in `util`.
 
-use rustc_hir::def_id::DefId;
-use rustc_middle::ty::TyCtxt;
 use z3::{
     Solver,
-    ast::{Ast, Bool, Int},
-};
+    ast::{Ast, Bool, Int},};
 
 use crate::helpers::mir_scan::Checkpoint;
 use crate::verify::vm::state::VmState;
@@ -172,25 +169,6 @@ impl PropertyChecker {
         }
         overall
     }
-}
-
-/// Check if the source-level function signature has a named lifetime in return type.
-pub(super) fn signature_return_has_lifetime(
-    tcx: TyCtxt<'_>,
-    def_id: DefId,
-) -> Option<(String, String)> {
-    let local = def_id.as_local()?;
-    let hir_id = tcx.local_def_id_to_hir_id(local);
-    let span = tcx.hir_span(hir_id);
-    let snippet = tcx.sess.source_map().span_to_snippet(span).ok()?;
-    let start = snippet.find("fn ")?;
-    let rest = &snippet[start..];
-    let end = rest.find('{').unwrap_or(rest.len());
-    let sig = &rest[..end];
-    // Extract return type after "->"
-    let ret = sig.split("->").nth(1)?;
-    let ret = ret.split("where").next()?.trim();
-    Some((sig.to_string(), ret.to_string()))
 }
 
 /// Build the boolean expression "`bytes` form a valid UTF-8 sequence".

@@ -2,13 +2,20 @@
 #![register_tool(rapx)]
 #![allow(dead_code)]
 
-pub struct PrivateSlot {
+use std::marker::PhantomData;
+
+#[rapx::invariant(Alive(ptr, 'a))]
+pub struct PrivateSlot<'a> {
     ptr: *mut u32,
+    _marker: PhantomData<&'a mut u32>,
 }
 
-impl PrivateSlot {
-    pub fn new(value: &mut u32) -> Self {
-        Self { ptr: value }
+impl<'a> PrivateSlot<'a> {
+    pub fn new(value: &'a mut u32) -> Self {
+        Self {
+            ptr: value,
+            _marker: PhantomData,
+        }
     }
 
     // SOUND: a &mut self returns a unique view through the private raw field.

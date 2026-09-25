@@ -4,6 +4,7 @@
 
 use std::marker::PhantomData;
 
+#[rapx::invariant(Alive(ptr, 'a))]
 pub struct SliceHost<'a, T> {
     ptr: *const T,
     len: usize,

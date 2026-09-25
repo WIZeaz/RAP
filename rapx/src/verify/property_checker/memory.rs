@@ -12,7 +12,7 @@ use crate::verify::report::CheckResult;
 use crate::verify::vm::state::{AllocId, VmState, VmValue};
 use rustc_hash::FxHashSet;
 use rustc_middle::mir::{Local, Operand, Rvalue, StatementKind};
-use rustc_middle::ty::{GenericArgKind, TyKind};
+use rustc_middle::ty::TyKind;
 use z3::{
     SatResult, Solver,
     ast::{Ast, Int},
@@ -854,112 +854,85 @@ impl PropertyChecker {
         let Some(value) = self.target_value(vm_state, checkpoint, property) else {
             return CheckResult::Unknown;
         };
-        if let Some(id) = value.provenance_alloc_id() {
-            if vm_state.alloc(id).dead {
-                if let Some(origin) = vm_state.resolve_origin(&value) {
-                    let is_param = origin.local.as_usize() <= vm_state.body.arg_count
-                        && origin.local != Local::from_usize(0);
-                    if is_param {
-                        return CheckResult::ProvedByRule;
-                    }
-                }
-                return CheckResult::Failed;
-            }
+        let Some(id) = value.provenance_alloc_id() else {
+            return if value.invariants.non_null || value.invariants.init {
+                CheckResult::ProvedByRule
+            } else {
+                CheckResult::Unknown
+            };
+        };
+
+        if vm_state.alloc(id).dead {
             if let Some(origin) = vm_state.resolve_origin(&value) {
-                let is_raw_ptr =
-                    matches!(origin.kind, crate::verify::vm::alias::VmOriginKind::RawPtr);
-                if is_raw_ptr {
-                    let is_field = origin.local.as_usize() > vm_state.body.arg_count;
-                    if is_field {
-                        let mut root_id = id;
-                        while let Some(parent_id) = vm_state.alloc(root_id).parent {
-                            root_id = parent_id;
-                        }
-                        if root_id != id
-                            && vm_state.alloc(root_id).alive_assumed
-                            && !vm_state.alloc(root_id).dead
-                        {
-                            return CheckResult::ProvedByRule;
-                        }
-                        if vm_state.allocations.iter().any(|a| a.alive_assumed) {
-                            let root_is_external = vm_state.alloc(root_id).is_external();
-                            if root_is_external {
-                                return CheckResult::ProvedByRule;
-                            }
-                        }
-                        // Only fail for raw pointer struct fields when the
-                        // return type has an explicit named lifetime (from
-                        // struct generics) that is not grounded in &self.
-                        let ret_ty = &vm_state.body.local_decls[Local::from_usize(0)].ty;
-                        let is_named = match ret_ty.kind() {
-                            rustc_middle::ty::TyKind::Ref(r, _, _) => {
-                                !matches!(r.kind(), rustc_middle::ty::RegionKind::ReErased)
-                            }
-                            _ => false,
-                        };
-                        if is_named
-                            || super::signature_return_has_lifetime(
-                                vm_state.tcx,
-                                vm_state.caller_def_id,
-                            )
-                            .map_or(false, |(_, t)| t.contains('\''))
-                        {
-                            // Named/explicit return lifetime: check whether
-                            // a reference parameter pointee is an ADT that
-                            // carries NO lifetime parameters.  When the
-                            // struct has no lifetimes of its own, the
-                            // returned view's lifetime is guaranteed to be
-                            // caller-chosen and tied to the borrow (e.g.
-                            // &self).  In that case the pointer field's
-                            // provenance is grounded in a live reference.
-                            let body = vm_state.body;
-                            let adt_no_lifetime = (1..=body.arg_count).any(|i| {
-                                let param_ty = body.local_decls[Local::from_usize(i)].ty;
-                                if let rustc_middle::ty::TyKind::Ref(_, pointee, _) =
-                                    param_ty.kind()
-                                {
-                                    if let rustc_middle::ty::TyKind::Adt(_adt_def, substs) =
-                                        pointee.kind()
-                                    {
-                                        return !substs.types().any(|t| {
-                                            matches!(t.kind(), rustc_middle::ty::TyKind::Param(_))
-                                        }) && !substs.iter().any(|g| {
-                                            matches!(g.kind(), GenericArgKind::Lifetime(_))
-                                        });
-                                    }
-                                }
-                                false
-                            });
-                            if !adt_no_lifetime {
-                                return CheckResult::Failed;
-                            }
-                        }
-                        return CheckResult::ProvedByRule;
-                    }
-                    // Raw pointer param: check if any ref param shares provenance.
-                    let body = vm_state.body;
-                    let matches_ref_param = (1..=body.arg_count).any(|i| {
-                        let param_local = Local::from_usize(i);
-                        let param_ty = body.local_decls[param_local].ty;
-                        if !matches!(param_ty.kind(), rustc_middle::ty::TyKind::Ref(..)) {
-                            return false;
-                        }
-                        vm_state
-                            .local_value(param_local)
-                            .and_then(|v| v.provenance_alloc_id())
-                            .is_some_and(|pid| pid == id)
-                    });
-                    if !matches_ref_param && !vm_state.alloc(id).alive_assumed {
-                        return CheckResult::Failed;
-                    }
+                let is_param = origin.local.as_usize() <= vm_state.body.arg_count
+                    && origin.local != Local::from_usize(0);
+                if is_param {
+                    return CheckResult::ProvedByRule;
                 }
+            }
+            return CheckResult::Failed;
+        }
+
+        // Classify by the *value's own type*, not `resolve_origin`'s kind: a raw
+        // pointer field can be misclassified when a derived temp (`&mut T` from a
+        // call) shares the allocation's provenance and reads back as `MutRef`.
+        // A raw pointer / `NonNull` carries no liveness guarantee, so `Alive`
+        // must be justified by an explicit assumption (an `Alive` precondition /
+        // struct invariant, materialized as `alive_assumed`) or by provenance
+        // shared with a live reference parameter.
+        let is_raw_ptr = matches!(value.ty.kind(), TyKind::RawPtr(..))
+            || matches!(value.ty.kind(), TyKind::Adt(adt_def, _)
+                if crate::helpers::mir_utils::is_raw_ptr_wrapper(vm_state.tcx, adt_def.did()));
+
+        if is_raw_ptr {
+            let mut root_id = id;
+            while let Some(parent_id) = vm_state.alloc(root_id).parent {
+                root_id = parent_id;
+            }
+            // A non-external allocation (stack local, owned heap, or const
+            // materialization) is a real allocation whose liveness is tracked by
+            // `dead`, so "not dead" means alive.
+            if !vm_state.alloc(root_id).is_external() && !vm_state.alloc(root_id).dead {
                 return CheckResult::ProvedByRule;
             }
-            return CheckResult::ProvedByRule;
+            // An external allocation is a placeholder for arbitrary external
+            // memory (raw-pointer params/fields) and carries no liveness
+            // guarantee; it is alive only if explicitly assumed (`Alive`
+            // precondition / struct invariant), or grounded in a live reference.
+            if vm_state.alloc(root_id).alive_assumed && !vm_state.alloc(root_id).dead {
+                return CheckResult::ProvedByRule;
+            }
+            // A raw pointer derived from a live reference or owned (Box/Vec)
+            // parameter is alive: the reference / ownership guarantees liveness.
+            let body = vm_state.body;
+            let matches_live_param = (1..=body.arg_count).any(|i| {
+                let param_local = Local::from_usize(i);
+                let param_ty = body.local_decls[param_local].ty;
+                let guarantees = matches!(param_ty.kind(), TyKind::Ref(..))
+                    || matches!(param_ty.kind(), TyKind::Adt(adt_def, _)
+                        if api_classify::is_std_box(adt_def.did())
+                            || api_classify::is_std_vec(adt_def.did()));
+                if !guarantees {
+                    return false;
+                }
+                vm_state
+                    .local_value(param_local)
+                    .and_then(|v| v.provenance_alloc_id())
+                    .is_some_and(|pid| pid == root_id)
+            });
+            if matches_live_param {
+                return CheckResult::ProvedByRule;
+            }
+            // No local origin: the allocation is not tied to any local, so it
+            // outlives the function (e.g. `static` data not materialized as a
+            // const byte array).
+            if vm_state.resolve_origin(&value).is_none() {
+                return CheckResult::ProvedByRule;
+            }
+            return CheckResult::Failed;
         }
-        if value.invariants.non_null || value.invariants.init {
-            return CheckResult::ProvedByRule;
-        }
-        CheckResult::Unknown
+
+        // A reference or owned value guarantees its pointee is live.
+        CheckResult::ProvedByRule
     }
 }

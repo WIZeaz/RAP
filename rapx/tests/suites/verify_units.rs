@@ -256,7 +256,7 @@ sound_tests! {
     alias_sound_04: "verify_units/alias_sound_04" => "sound_struct_slice_only",
     alias_sound_05: "verify_units/alias_sound_05" => "sound_helper_shared_slice",
     alias_sound_06: "verify_units/alias_sound_06" => "sound_cstr_from_ptr_read_only",
-    alias_sound_07: "verify_units/alias_sound_07" => "PrivateSlot::as_slice_mut",
+    alias_sound_07: "verify_units/alias_sound_07" => "PrivateSlot::<'a>::as_slice_mut",
     alias_sound_08: "verify_units/alias_sound_08" => "ReadOnlySlot::<'a>::as_slice",
     alias_sound_09: "verify_units/alias_sound_09" => "sound_box_from_raw_then_into_raw",
     alias_sound_10: "verify_units/alias_sound_10" => "sound_cstring_from_raw_no_reuse",
@@ -570,6 +570,15 @@ fn alive_unsound_03() {
         "static_slice_from_local_vec",
         &["Alive", "Init", "Alias", "Align", "NonNull", "ValidPtr"],
     );
+}
+
+// Regression: `Alive` on a raw-pointer field must NOT be proved from the struct
+// parameter alone — a raw pointer field has no liveness guarantee unless the
+// struct declares an `Alive`/`Allocated` invariant on it.
+#[test]
+fn alive_unsound_04() {
+    let output = run_with_args("verify_units/alive_unsound_04", CMD_VERIFY_TARGETED);
+    assert_unproved_exclusive(&output, "use_after_free", &["Alive"]);
 }
 
 // ================ Struct Invariant =============

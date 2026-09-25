@@ -4519,6 +4519,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         let align = self.align_sym(pointee_ty);
                         let (alloc_id, base) = self.allocate(size, align, Some(pointee_ty));
                         self.alloc_mut(alloc_id).initialized = true;
+                        // A const/static byte materialization lives for the
+                        // whole program (`'static`), so it is always alive.
+                        self.alloc_mut(alloc_id).alive_assumed = true;
                         for (i, &b) in bytes.iter().enumerate() {
                             self.record_byte_value(
                                 alloc_id,

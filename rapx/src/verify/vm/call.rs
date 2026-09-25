@@ -1407,10 +1407,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // `mem::replace(dest, src)` returns `*dest`: the pointee value,
                 // not the `&mut` reference. Prefer the materialized pointee
                 // (`field_values` at the empty path, set by
-                // `propagate_field_values_to_ref` for `&mut self.field`).  When
-                // the borrow chain was dropped by the slicer (no pointee), model
-                // the returned slice as a fresh external allocation so a
-                // downstream `Allocated`/`InBound` can still match `[T]` vs `T`.
+                // `propagate_field_values_to_ref` for `&mut self.field`); then
+                // recover the old field value from the materialized field maps;
+                // finally, when the borrow chain was dropped by the slicer and no
+                // field value is recoverable, model the returned slice as a fresh
+                // external allocation so a downstream `Allocated`/`InBound` can
+                // still match `[T]` vs `T`.
                 let dest_ty = self.body.local_decls[dest].ty;
                 let mut val = args.get(*arg).cloned().unwrap_or_else(|| VmValue::new(self.fresh_int("replaced"), dest_ty));
                 let arg_local = caller_arg_locals.get(*arg).copied().flatten();
@@ -1418,6 +1420,19 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     arg_local.and_then(|l| self.field_values.get(&(l, Vec::new())).cloned());
                 if let Some(p) = pointee {
                     val = p;
+                } else if let Some(search) = self
+                    .field_values
+                    .values()
+                    .chain(self.alloc_field_values.values())
+                    .find(|v| v.ty == dest_ty && v.provenance.is_some())
+                    .cloned()
+                {
+                    // The `&mut self.field` reborrow was pruned by the forward
+                    // slicer, so the field value was not propagated to the
+                    // reference. Recover the old field value (e.g. `self.v:
+                    // *mut [T]`) from the materialized field values by type +
+                    // provenance, keeping the parent chain intact.
+                    val = search;
                 } else if let Some(elem) = crate::helpers::mir_utils::pointee_ty(dest_ty) {
                     let is_slice = matches!(elem.kind(), rustc_middle::ty::TyKind::Slice(_));
                     if is_slice {
