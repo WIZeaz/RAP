@@ -230,7 +230,9 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             }
         };
         let mut alloc = Allocation::new(base, size_term, align, element_ty, is_external);
-        alloc.slice_len = slice_len;
+        if let Some(len) = slice_len {
+            alloc.set_slice_len(len);
+        }
         self.allocations.push(alloc);
         self.local_alloc_ids.insert(local, id);
     }

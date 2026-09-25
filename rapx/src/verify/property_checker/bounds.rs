@@ -110,7 +110,7 @@ impl PropertyChecker {
         }
 
         // External allocations have unbounded size.
-        if vm_state.alloc(alloc_id).is_external {
+        if vm_state.alloc(alloc_id).is_external() {
             return CheckResult::ProvedByRule;
         }
 
@@ -124,7 +124,7 @@ impl PropertyChecker {
         // byte-range proof below handles that direction.
         if !api_classify::is_pointer_sub(checkpoint.callee) {
             if let (Some(len), Some(k)) = (
-                alloc.slice_len.clone(),
+                alloc.slice_len().cloned(),
                 value
                     .provenance
                     .as_ref()

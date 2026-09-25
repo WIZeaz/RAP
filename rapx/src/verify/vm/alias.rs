@@ -416,7 +416,7 @@ pub(crate) fn check_alias_vm<'ctx, 'tcx>(
             }
             // Pointer has provenance: check if it's safe.
             if let Some(prov) = &origin_val.provenance {
-                let is_external = vm_state.alloc(prov.alloc_id).is_external;
+                let is_external = vm_state.alloc(prov.alloc_id).is_external();
                 if !is_external {
                     return VmAliasResult::Proved;
                 }

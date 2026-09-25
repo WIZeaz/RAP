@@ -103,6 +103,20 @@ impl<'ctx, 'tcx> VmValue<'ctx, 'tcx> {
     }
 }
 
+/// The shape of an allocation. Replaces the implicit `slice_len` / `is_external`
+/// combination that previously encoded the kind. `element_ty` (typed vs untyped)
+/// and `parent`/`slice_data` (sub-view / slice-ref edges) stay separate fields.
+#[derive(Clone, Debug)]
+pub(crate) enum AllocKind<'ctx> {
+    /// A single object: a `Box<T>` heap object, a struct, a scalar, or an
+    /// untyped raw buffer.
+    Object,
+    /// A slice/array buffer with a known element count.
+    Slice { len: Int<'ctx> },
+    /// An external raw-pointer parameter (unknown size/nullability).
+    External,
+}
+
 /// A memory allocation (stack or heap).
 ///
 /// The allocation is stored in `VmState::allocations` at index `AllocId.0`
@@ -122,15 +136,8 @@ pub(crate) struct Allocation<'ctx, 'tcx> {
     /// Element type for bounds checking.
     pub element_ty: Option<Ty<'tcx>>,
 
-    /// Element count (the slice/array length), materialized like the fat
-    /// pointer's metadata word.  `size` is derived from it as
-    /// `slice_len * size_of(element_ty)`.  `None` for allocations that are not
-    /// slice/array data (e.g. a single object or a Vec's external buffer).
-    pub slice_len: Option<Int<'ctx>>,
-
-    /// True if this allocation models an external raw-pointer parameter
-    /// whose exact size and nullability are unknown.
-    pub is_external: bool,
+    /// The allocation shape (object vs slice vs external).
+    pub kind: AllocKind<'ctx>,
 
     /// Allocations that have been freed (StorageDead, Drop).
     pub dead: bool,
@@ -168,8 +175,11 @@ impl<'ctx, 'tcx> Allocation<'ctx, 'tcx> {
             size,
             align,
             element_ty,
-            slice_len: None,
-            is_external,
+            kind: if is_external {
+                AllocKind::External
+            } else {
+                AllocKind::Object
+            },
             dead: false,
             initialized: false,
             alive_assumed: false,
@@ -177,6 +187,24 @@ impl<'ctx, 'tcx> Allocation<'ctx, 'tcx> {
             parent: None,
             slice_data: None,
         }
+    }
+
+    /// Whether this allocation models an external raw-pointer parameter.
+    pub(crate) fn is_external(&self) -> bool {
+        matches!(self.kind, AllocKind::External)
+    }
+
+    /// The slice/array element count, if this allocation is slice data.
+    pub(crate) fn slice_len(&self) -> Option<&Int<'ctx>> {
+        match &self.kind {
+            AllocKind::Slice { len } => Some(len),
+            _ => None,
+        }
+    }
+
+    /// Mark this allocation as slice data with the given element count.
+    pub(crate) fn set_slice_len(&mut self, len: Int<'ctx>) {
+        self.kind = AllocKind::Slice { len };
     }
 }
 
@@ -661,7 +689,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         }
         let zero = Int::from_u64(self.ctx, 0);
         for alloc in &self.allocations {
-            if !alloc.is_external {
+            if !alloc.is_external() {
                 solver.assert(&alloc.base._eq(&zero).not());
             }
             solver.assert(&alloc.size.ge(&zero));

@@ -272,7 +272,7 @@ impl PropertyChecker {
         // allocations whose base addresses are never zero.  Raw-pointer
         // parameters get external provenance which may be null.
         if let Some(ref prov) = value.provenance {
-            if !vm_state.alloc(prov.alloc_id).is_external {
+            if !vm_state.alloc(prov.alloc_id).is_external() {
                 return CheckResult::ProvedByRule;
             }
         }
@@ -324,7 +324,7 @@ impl PropertyChecker {
                         if api_classify::is_maybe_uninit_type(adt.did()))))
             && {
                 let a = vm_state.alloc(alloc_id);
-                !a.is_external
+                !a.is_external()
                     && a.element_ty.map_or(false, |ty| {
                         if let TyKind::Adt(adt, _) = ty.kind() {
                             api_classify::is_maybe_uninit_type(adt.did())
@@ -480,7 +480,7 @@ impl PropertyChecker {
         let base = vm_state.allocation_base(alloc_id).clone();
         let size = vm_state.allocation_size(alloc_id).clone();
 
-        if vm_state.alloc(alloc_id).is_external {
+        if vm_state.alloc(alloc_id).is_external() {
             return CheckResult::ProvedByRule;
         }
 
@@ -881,7 +881,7 @@ impl PropertyChecker {
                             return CheckResult::ProvedByRule;
                         }
                         if vm_state.allocations.iter().any(|a| a.alive_assumed) {
-                            let root_is_external = vm_state.alloc(root_id).is_external;
+                            let root_is_external = vm_state.alloc(root_id).is_external();
                             if root_is_external {
                                 return CheckResult::ProvedByRule;
                             }

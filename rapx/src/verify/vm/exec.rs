@@ -471,7 +471,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         // Materialize the slice length (the fat pointer's
                         // metadata word) on the data allocation; `len()` reads it
                         // directly rather than dividing `size / sizeof_T`.
-                        self.alloc_mut(data_alloc_id).slice_len = Some(len);
+                        self.alloc_mut(data_alloc_id).set_slice_len(len);
                         if let Some(ref_alloc_id) = self.alloc_for_local(local) {
                             self.alloc_mut(ref_alloc_id).slice_data = Some(data_alloc_id);
                         }
@@ -782,7 +782,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         let max_size = Int::from_u64(self.ctx, i64::MAX as u64);
                         self.allocate_external(max_size, align, Some(*elem_ty))
                     };
-                    self.alloc_mut(alloc_id).slice_len = Some(n_term);
+                    self.alloc_mut(alloc_id).set_slice_len(n_term);
                     self.alloc_mut(alloc_id).initialized = true;
                     self.local_alloc_ids.insert(local, alloc_id);
                     if let Some(n) = n {
@@ -1208,7 +1208,8 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // Materialize the array length so `len()` reads the constant `n`
                 // directly rather than `size / elem_size`, which is ill-defined
                 // when the element type is a generic ZST (`elem_size = 0`).
-                self.alloc_mut(fa).slice_len = Some(Int::from_u64(self.ctx, n));
+                let len = Int::from_u64(self.ctx, n);
+                self.alloc_mut(fa).set_slice_len(len);
                 self.alloc_field_values.insert(
                     (alloc_id, root_ty, path.clone()),
                     VmValue {
@@ -2784,7 +2785,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // metadata word); `size` is `slice_len * sizeof_T`.  Fall back to the
         // `size / elem_size` derivation for allocations created before the
         // materialization was introduced (e.g. some call effects).
-        if let Some(len) = &alloc.slice_len {
+        if let Some(len) = alloc.slice_len() {
             return Some(len.clone());
         }
         let elem_ty = alloc.element_ty?;
@@ -4136,7 +4137,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         // Prefer the materialized slice length; fall back to `size / elem_size`
         // for allocations that never got a materialized `slice_len`.
         let alloc = self.alloc(da_id);
-        let len = match &alloc.slice_len {
+        let len = match alloc.slice_len() {
             Some(len) => len.clone(),
             None => {
                 let elem_sz_term = alloc

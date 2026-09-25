@@ -644,7 +644,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
             || ptr
                 .provenance
                 .as_ref()
-                .is_some_and(|p| !self.alloc(p.alloc_id).is_external);
+                .is_some_and(|p| !self.alloc(p.alloc_id).is_external());
         if definitely_non_null {
             // Some(NonNull(ptr)): the Option data payload is the non-null pointer.
             let mut val = ptr.clone();
@@ -1538,7 +1538,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
                         let (alloc_id, _base) =
                             self.allocate(field_size.clone(), field_alloc_align.clone(), elem_ty);
-                        self.alloc_mut(alloc_id).slice_len = Some(field_len.clone());
+                        self.alloc_mut(alloc_id).set_slice_len(field_len.clone());
                         let src_bytes = Int::mul(self.ctx, &[&total_len, &elem_sz_term]);
                         if f == 0 {
                             self.path_conditions.push(field_size._eq(&mid_bytes));
@@ -1750,7 +1750,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     let f_size = Int::mul(self.ctx, &[&f_len, &Int::from_u64(self.ctx, f_elem_sz)]);
                     let f_elem_ty = if f == 1 { Some(body_elem_ty) } else { elem_ty };
                     let (alloc_id, _) = self.allocate(f_size.clone(), f_align.clone(), f_elem_ty);
-                    self.alloc_mut(alloc_id).slice_len = Some(f_len.clone());
+                    self.alloc_mut(alloc_id).set_slice_len(f_len.clone());
                     self.alloc_mut(alloc_id).initialized = true;
                     self.alloc_mut(alloc_id).parent = Some(src_prov.alloc_id);
                     if let Some(ref_dest_alloc_id) = self.local_alloc_ids.get(&dest).copied() {
@@ -2386,7 +2386,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         let is_vec = crate::verify::api_classify::is_vec_push_or_reserve(
                             self.last_call_callee,
                         );
-                        let is_external = self.alloc(prov.alloc_id).is_external;
+                        let is_external = self.alloc(prov.alloc_id).is_external();
                         if is_vec && !is_external {
                             let elem_ty = match arg_val.ty.kind() {
                                 TyKind::Ref(_, inner, _) | TyKind::RawPtr(inner, _) => {
@@ -2488,7 +2488,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .map(|ty| self.align_sym(ty))
                         .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                     let (alloc_id, base) = self.allocate(total, heap_align, elem_ty);
-                    self.alloc_mut(alloc_id).slice_len = Some(size_val.term.clone());
+                    self.alloc_mut(alloc_id).set_slice_len(size_val.term.clone());
                     let prov = Provenance {
                         alloc_id,
                         offset: Int::from_u64(self.ctx, 0),
@@ -2797,7 +2797,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 let size = args
                     .first()
                     .and_then(|v| v.provenance.as_ref())
-                    .and_then(|p| self.alloc(p.alloc_id).slice_len.clone())
+                    .and_then(|p| self.alloc(p.alloc_id).slice_len().cloned())
                     .unwrap_or_else(|| Int::from_u64(self.ctx, i64::MAX as u64));
                 let (alloc_id, base) = self.allocate_external(size, heap_align, elem_ty);
                 let dest_alloc_id = self.local_alloc_ids.get(&dest).copied();
@@ -3259,7 +3259,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         };
         let dest_ty = self.body.local_decls[dest].ty;
         // Prefer the materialized slice length.
-        if let Some(len) = self.alloc(alloc_id).slice_len.clone() {
+        if let Some(len) = self.alloc(alloc_id).slice_len().cloned() {
             let val = VmValue::new(len, dest_ty);
             self.set_local(dest, val);
             return true;
