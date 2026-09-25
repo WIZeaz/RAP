@@ -1536,9 +1536,12 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             .map(|p| self.alloc(p.alloc_id).align.clone())
                             .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
 
-                        let (alloc_id, _base) =
-                            self.allocate(field_size.clone(), field_alloc_align.clone(), elem_ty);
-                        self.alloc_mut(alloc_id).set_slice_len(field_len.clone());
+                        let (alloc_id, _base) = self.allocate_slice(
+                            field_len.clone(),
+                            elem_sz_term.clone(),
+                            field_alloc_align.clone(),
+                            elem_ty,
+                        );
                         let src_bytes = Int::mul(self.ctx, &[&total_len, &elem_sz_term]);
                         if f == 0 {
                             self.path_conditions.push(field_size._eq(&mid_bytes));
@@ -1747,10 +1750,13 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
 
                 for (f, (f_len, f_ptr, f_ty, f_elem_sz, f_align)) in fields.into_iter().enumerate()
                 {
-                    let f_size = Int::mul(self.ctx, &[&f_len, &Int::from_u64(self.ctx, f_elem_sz)]);
                     let f_elem_ty = if f == 1 { Some(body_elem_ty) } else { elem_ty };
-                    let (alloc_id, _) = self.allocate(f_size.clone(), f_align.clone(), f_elem_ty);
-                    self.alloc_mut(alloc_id).set_slice_len(f_len.clone());
+                    let (alloc_id, _) = self.allocate_slice(
+                        f_len.clone(),
+                        Int::from_u64(self.ctx, f_elem_sz),
+                        f_align.clone(),
+                        f_elem_ty,
+                    );
                     self.alloc_mut(alloc_id).initialized = true;
                     self.alloc_mut(alloc_id).parent = Some(src_prov.alloc_id);
                     if let Some(ref_dest_alloc_id) = self.local_alloc_ids.get(&dest).copied() {
@@ -2483,12 +2489,15 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                     } else {
                         Int::from_u64(self.ctx, *elem_size)
                     };
-                    let total = Int::mul(self.ctx, &[&size_val.term, &elem_sz_term]);
                     let heap_align = elem_ty
                         .map(|ty| self.align_sym(ty))
                         .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
-                    let (alloc_id, base) = self.allocate(total, heap_align, elem_ty);
-                    self.alloc_mut(alloc_id).set_slice_len(size_val.term.clone());
+                    let (alloc_id, base) = self.allocate_slice(
+                        size_val.term.clone(),
+                        elem_sz_term.clone(),
+                        heap_align,
+                        elem_ty,
+                    );
                     let prov = Provenance {
                         alloc_id,
                         offset: Int::from_u64(self.ctx, 0),
@@ -2660,6 +2669,7 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                         .map(|ty| self.align_sym(ty))
                         .unwrap_or_else(|| Int::from_u64(self.ctx, 1));
                     let (alloc_id, base) = self.allocate_external(total, heap_align, elem_ty);
+                    self.alloc_mut(alloc_id).set_slice_len(size_val.term.clone());
                     let dest_alloc_id = self.local_alloc_ids.get(&dest).copied();
                     if let Some(dest_alloc_id) = dest_alloc_id {
                         self.alloc_mut(dest_alloc_id).slice_data = Some(alloc_id);

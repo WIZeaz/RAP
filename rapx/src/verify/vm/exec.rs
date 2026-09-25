@@ -459,19 +459,16 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                             .push(Int::mul(self.ctx, &[&len, &elem_sz_term]).le(&isize_max));
                         // The data allocation's byte size uses the shared
                         // symbolic `sizeof_T` so `InBound` can cancel the factor
-                        // (`len·S / S == len`).
-                        let data_size = Int::mul(self.ctx, &[&len, &self.size_sym(*elem_ty)]);
-                        // The data allocation's alignment is the element type's
-                        // alignment — symbolic (`align_T`) for a generic element
-                        // type, with the layout constraint `sizeof_T % align_T
-                        // == 0` established by `align_sym`.
+                        // (`len·S / S == len`); `allocate_slice` computes
+                        // `size = len * sizeof_T` and materializes `len` together
+                        // so the two can never diverge. The alignment is the
+                        // element type's alignment — symbolic (`align_T`) for a
+                        // generic element type, with the layout constraint
+                        // `sizeof_T % align_T == 0` established by `align_sym`.
                         let elem_align = self.align_sym(*elem_ty);
+                        let elem_size_sym = self.size_sym(*elem_ty);
                         let (data_alloc_id, data_base) =
-                            self.allocate(data_size, elem_align, Some(*elem_ty));
-                        // Materialize the slice length (the fat pointer's
-                        // metadata word) on the data allocation; `len()` reads it
-                        // directly rather than dividing `size / sizeof_T`.
-                        self.alloc_mut(data_alloc_id).set_slice_len(len);
+                            self.allocate_slice(len, elem_size_sym, elem_align, Some(*elem_ty));
                         if let Some(ref_alloc_id) = self.alloc_for_local(local) {
                             self.alloc_mut(ref_alloc_id).slice_data = Some(data_alloc_id);
                         }
@@ -1200,16 +1197,19 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
                 // resolve to the concrete array length.
                 let n = crate::helpers::mir_utils::eval_array_len(self.tcx, const_len).unwrap_or(0)
                     as u64;
-                let elem_sz = self.size_sym(*elem_ty);
-                let arr_size = Int::mul(self.ctx, &[&Int::from_u64(self.ctx, n), &elem_sz]);
                 let arr_align = self.align_sym(*elem_ty);
-                let (fa, fb) = self.allocate(arr_size, arr_align, Some(*elem_ty));
+                let arr_elem_size = self.size_sym(*elem_ty);
+                // Materialize the array length (via `allocate_slice`) so `len()`
+                // reads the constant `n` directly rather than `size / elem_size`,
+                // which is ill-defined when the element type is a generic ZST
+                // (`elem_size = 0`).
+                let (fa, fb) = self.allocate_slice(
+                    Int::from_u64(self.ctx, n),
+                    arr_elem_size,
+                    arr_align,
+                    Some(*elem_ty),
+                );
                 self.alloc_mut(fa).initialized = true;
-                // Materialize the array length so `len()` reads the constant `n`
-                // directly rather than `size / elem_size`, which is ill-defined
-                // when the element type is a generic ZST (`elem_size = 0`).
-                let len = Int::from_u64(self.ctx, n);
-                self.alloc_mut(fa).set_slice_len(len);
                 self.alloc_field_values.insert(
                     (alloc_id, root_ty, path.clone()),
                     VmValue {

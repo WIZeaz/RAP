@@ -113,7 +113,9 @@ pub(crate) enum AllocKind<'ctx> {
     Object,
     /// A slice/array buffer with a known element count.
     Slice { len: Int<'ctx> },
-    /// An external raw-pointer parameter (unknown size/nullability).
+    /// An external raw-pointer parameter. `size` is an unconstrained symbolic
+    /// term (the caller may pass any allocation); nullability is *not* stored
+    /// here — it is tracked via the pointer term (`term == 0`) path conditions.
     External,
 }
 
@@ -153,6 +155,9 @@ pub(crate) struct Allocation<'ctx, 'tcx> {
     pub nul_terminated: bool,
 
     /// Parent allocation for sub-allocations created by split_at / from_raw_parts.
+    /// The sub-view has its own fresh `base`; the address linkage back to the
+    /// parent lives in the pointer term (`parent_term + offset`) and provenance
+    /// `offset`, not in base arithmetic. `root_alloc` follows this edge.
     pub parent: Option<AllocId>,
 
     /// Slice data allocation: for a `&[T]` reference's stack allocation, the
@@ -191,6 +196,12 @@ impl<'ctx, 'tcx> Allocation<'ctx, 'tcx> {
     }
 
     /// The slice/array element count, if this allocation is slice data.
+    ///
+    /// Invariant: `size == len * sizeof(element_ty)` is maintained by the
+    /// callers that call [`Self::set_slice_len`] (they compute `size` from the
+    /// same `len` and push the equality as a path condition); it is *not*
+    /// enforced here. `slice_len_from_value` falls back to `size / elem_size`
+    /// when the length was never materialized.
     pub(crate) fn slice_len(&self) -> Option<&Int<'ctx>> {
         match &self.kind {
             AllocKind::Slice { len } => Some(len),
@@ -199,6 +210,7 @@ impl<'ctx, 'tcx> Allocation<'ctx, 'tcx> {
     }
 
     /// Mark this allocation as slice data with the given element count.
+    /// Callers must keep `size == len * sizeof(element_ty)` consistent.
     pub(crate) fn set_slice_len(&mut self, len: Int<'ctx>) {
         self.kind = AllocKind::Slice { len };
     }
@@ -484,6 +496,24 @@ impl<'ctx, 'tcx> VmState<'ctx, 'tcx> {
         element_ty: Option<Ty<'tcx>>,
     ) -> (AllocId, Int<'ctx>) {
         self.allocate_internal(size, align, element_ty, AllocKind::External)
+    }
+
+    /// Allocate a slice/array data allocation with a known (possibly symbolic)
+    /// element count. Computes `size = len * elem_size` and materializes `len`
+    /// in one step, so `size` and the slice length can never diverge (the
+    /// `size == len * elem_size` invariant is established here instead of being
+    /// re-derived by every caller).
+    pub(crate) fn allocate_slice(
+        &mut self,
+        len: Int<'ctx>,
+        elem_size: Int<'ctx>,
+        align: Int<'ctx>,
+        element_ty: Option<Ty<'tcx>>,
+    ) -> (AllocId, Int<'ctx>) {
+        let size = Int::mul(self.ctx, &[&len, &elem_size]);
+        let (id, base) = self.allocate(size, align, element_ty);
+        self.alloc_mut(id).set_slice_len(len);
+        (id, base)
     }
 
     fn allocate_internal(
