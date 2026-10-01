@@ -27,20 +27,3 @@ To run the conservative checker, use `cargo rapx test --naive-check`.
 ## Micro-benchmark
 
 Our micro-benchmark is release at `lifetime-bench`, includes 5 positive tests (prefix with `p`), and 2 negative tests (prefix with `n`).
-
-## Issue Links
-
-| Crate | Status | Link |
-|-------|--------|------|
-| aliasable-0.1.3 | Confirmed | [avitex/rust-aliasable#9](https://github.com/avitex/rust-aliasable/issues/9) |
-| arrow-buffer-57.2.0 | Confirmed | [apache/arrow-rs#9286](https://github.com/apache/arrow-rs/issues/9286) |
-| arrow-buffer-57.2.1 | Confirmed | [apache/arrow-rs#9287](https://github.com/apache/arrow-rs/issues/9287) |
-| compact_str-0.9.0 | Confirmed | [ParkMyCar/compact_str#452](https://github.com/ParkMyCar/compact_str/issues/452) |
-| pxfm-0.1.28 | Confirmed | [awxkee/pxfm#87](https://github.com/awxkee/pxfm/issues/87) |
-| pxfm-0.1.28 | Confirmed | [awxkee/pxfm#88](https://github.com/awxkee/pxfm/issues/88) |
-| str_stack-0.1.0 | Confirmed | [Stebalien/str_stack#4](https://github.com/Stebalien/str_stack/issues/4) |
-| redox_syscall-0.7.3 | Confirmed | contacted by email |
-| orbclient-0.3.54 | Confirmed | contacted by email |
-| bitmaps-3.2.1 | Pending | [bodil/bitmaps#33](https://github.com/bodil/bitmaps/issues/33) |
-| widestring-1.2.1 | Pending | [VoidStarKat/widestring-rs#51](https://github.com/VoidStarKat/widestring-rs/issues/51) |
-| quick-protobuf-0.8.1 | Pending | [tafia/quick-protobuf#272](https://github.com/tafia/quick-protobuf/issues/272) |
