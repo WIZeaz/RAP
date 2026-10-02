@@ -1,5 +1,15 @@
 // Challenge: type outlives bound `T: 'a`. The synthesizer must inspect
 // lifetimes contained in `T`, not only direct reference parameters.
+// 
+// Negative test: the synthesizer should generate a test that contains expected
+// API sequence while all cases are valid.
+// expected sequence:
+//```
+//    let mut x = item();
+//    let y = item();
+//    let r = type_bound(&x, &y);
+//    read(r);
+//```
 
 pub struct Item(String);
 
