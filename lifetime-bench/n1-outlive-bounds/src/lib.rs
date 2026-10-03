@@ -7,7 +7,6 @@
 //     let x = item();
 //     let y = item();
 //     let r = choose_with_bound(&x, &y);
-//     read_mut(&mut x); // can not borrow `x` as mutable
 //     read(r);
 // ```
 
